@@ -33,7 +33,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 
 ## Latest validation evidence
 
-- Ubuntu WSL, Rust 1.88.0: final format and strict Clippy passed; 87 tests passed with no failures or ignored tests; the locked optimized build and RustSec audit of 251 dependencies passed. Clean Cargo packaging and extracted-package verification passed with 78 files (1011.6 KiB unpacked, 487.4 KiB compressed), including the public documentation and release-note assets while excluding ignored local/release material.
+- Ubuntu WSL, Rust 1.88.0: final format and strict Clippy passed; 87 tests passed with no failures or ignored tests; the locked optimized build and RustSec audit of 251 dependencies passed. Clean Cargo packaging and extracted-package verification passed with 77 files (1010.1 KiB unpacked, 486.9 KiB compressed), including the public documentation and release-note assets while excluding ignored local/release material.
 - Windows, Rust 1.98.1/MSVC after Smart App Control was disabled: final format and strict Clippy passed; 83 native tests passed with no failures or ignored tests, including the formerly blocked Git integration executable; the locked optimized build passed.
 - The final 6,482,432-byte Windows release executable ran version and status after archive extraction with isolated first-run state; warm version startup was 42.83 ms. The real TUI rendered, navigated Help and Profiles, restored the terminal, exited normally, and left no `ctxwake` process or execution-blocking dialog.
 - The final 6,843,512-byte Linux executable retained mode `0755` after archive extraction and ran version/status from a non-repository directory. The Windows and Linux archives contain only the binary, README, and LICENSE; `SHA256SUMS` was generated and verified locally.
@@ -42,6 +42,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 - Public CI run `34576605189` passed RustSec plus format, strict Clippy, tests, and release builds on Ubuntu, Windows, and macOS. The macOS job passed 87 tests; this is automated CI evidence, not physical-device TUI QA.
 - Manual release-workflow run `34576636745` built and packaged Windows x86_64, Linux x86_64, and macOS arm64 using the current official Node 24 artifact actions. All three archives contain only the native binary, README, and LICENSE; downloaded checksums verified. Downloaded Windows and Linux binaries ran from isolated non-repository directories, and the macOS payload was verified as a mode-`0755` Mach-O arm64 executable.
 - Tagged CI run `34577840714` passed all Ubuntu, Windows, macOS, and RustSec jobs on commit `b67143d`. Tagged release run `34577840582` validated the Cargo version, rebuilt all three targets, generated checksums, and published the verified GitHub prerelease at `v0.1.0-alpha.1`.
+- Cleanup commit `46fb23c` removed superseded planning/design documents and the unused `predicates` direct dependency, consolidated the retained TUI contract into architecture documentation, and expanded local-artifact ignore rules. CI run `34583329621` passed all Ubuntu, Windows, macOS, and RustSec jobs on the cleaned tree.
 
 ## Known alpha limitations
 
