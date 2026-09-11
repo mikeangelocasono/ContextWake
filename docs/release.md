@@ -6,7 +6,7 @@ ContextWake `0.1.0-alpha.1` is the first prepared pre-release. Public publicatio
 
 Run the final locked format, Clippy, test, release-build, RustSec audit, and Cargo package checks from a clean tree. Exercise the native binary outside the repository before producing archives.
 
-`scripts/package-release.ps1` accepts an explicit Rust target and safe label, stages only the binary, README, and Apache-2.0 license, then creates a platform archive under ignored `dist/`. `scripts/write-checksums.ps1` generates `SHA256SUMS` for those archives.
+`scripts/package-release.ps1` accepts an explicit Rust target and safe label, stages only the binary, README, and Apache-2.0 license, then creates a platform archive under ignored `dist/`. Unix archives must be packaged on a Unix host so executable mode bits survive; the script deliberately refuses to create them on Windows. `scripts/write-checksums.ps1` generates `SHA256SUMS` for those archives.
 
 ## CI
 
