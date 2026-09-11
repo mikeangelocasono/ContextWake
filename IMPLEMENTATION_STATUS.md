@@ -39,14 +39,12 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 - The final 6,843,512-byte Linux executable retained mode `0755` after archive extraction and ran version/status from a non-repository directory. The Windows and Linux archives contain only the binary, README, and LICENSE; `SHA256SUMS` was generated and verified locally.
 - Windows detected Codex 0.154.0, Claude Code 2.1.267, OpenCode 1.18.25, Gemini CLI 0.59.0, and Kiro CLI 2.21.3. Gemini's isolated unauthenticated invocation failed closed. Kiro live QA listed nine models, synchronized and resumed a real session, and exposed its shared Windows credential boundary honestly.
 - A controlled dirty repository exercised Codex to Claude, Claude to OpenCode, and OpenCode to Codex AWHF 1.2 artifact flows. Every hop retained objective/task/completed/decisions/pending/issues, branch and HEAD, staged/unstaged/untracked counts, diff summary, validation results, project instructions, source/destination, timestamps, and `portable_handoff`; secret and absolute-path checks passed.
-- Public CI run `34573822893` passed RustSec plus format, strict Clippy, tests, and release builds on Ubuntu, Windows, and macOS. The macOS job passed 87 tests; this is automated CI evidence, not physical-device TUI QA.
-- Manual release-workflow run `34574585272` built and packaged Windows x86_64, Linux x86_64, and macOS arm64. All three archives contain only the native binary, README, and LICENSE; downloaded checksums verified. Downloaded Windows and Linux binaries ran from isolated non-repository directories, and the macOS payload was verified as a mode-`0755` Mach-O arm64 executable.
+- Public CI run `34576605189` passed RustSec plus format, strict Clippy, tests, and release builds on Ubuntu, Windows, and macOS. The macOS job passed 87 tests; this is automated CI evidence, not physical-device TUI QA.
+- Manual release-workflow run `34576636745` built and packaged Windows x86_64, Linux x86_64, and macOS arm64 using the current official Node 24 artifact actions. All three archives contain only the native binary, README, and LICENSE; downloaded checksums verified. Downloaded Windows and Linux binaries ran from isolated non-repository directories, and the macOS payload was verified as a mode-`0755` Mach-O arm64 executable.
 
-## Release blockers
+## Remaining release constraints
 
-- Disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini.
-- Cross-agent target-model comprehension QA requires deliberately authorized disposable profiles; artifact preservation is verified.
-- Windows Authenticode signing and Apple signing/notarization identities are unavailable.
-- macOS has automated CI and artifact evidence but no interactive physical-device QA.
+- **Internal:** the `v0.1.0-alpha.1` tag and prerelease have not yet been published. All enforced local, CI, security, packaging, and artifact gates are green.
+- **External/non-blocking for this alpha:** disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini; cross-agent target-model comprehension requires deliberately authorized disposable profiles; Windows Authenticode and Apple signing/notarization identities are unavailable; macOS has automated CI and artifact evidence but no interactive physical-device QA.
 
 These limits are reflected in the [compatibility matrix](docs/providers/compatibility.md); no UI value claims otherwise.
