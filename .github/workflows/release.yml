@@ -82,6 +82,7 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: release-bundle
@@ -89,4 +90,4 @@ jobs:
       - name: Create prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --prerelease --generate-notes --title "ContextWake $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --prerelease --notes-file "docs/releases/$GITHUB_REF_NAME.md" --title "ContextWake $GITHUB_REF_NAME"
