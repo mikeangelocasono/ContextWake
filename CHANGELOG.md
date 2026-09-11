@@ -4,7 +4,9 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
-No unreleased changes.
+### Fixed
+
+- Clarified the Windows archive extraction destination in the public installation instructions.
 
 ## [0.1.0-alpha.1] - 2026-09-11
 

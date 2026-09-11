@@ -101,7 +101,7 @@ Download `contextwake-v0.1.0-alpha.1-windows-x86_64.zip` and `SHA256SUMS` from t
 
 ```powershell
 Get-FileHash .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -Algorithm SHA256
-Expand-Archive .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip
+Expand-Archive .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -DestinationPath .
 .\contextwake-v0.1.0-alpha.1-windows-x86_64\ctxwake.exe doctor
 ```
 
