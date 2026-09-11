@@ -1128,13 +1128,19 @@ impl Application {
     fn agent_command(&self, command: AgentCommand, json: bool) -> Result<()> {
         match command {
             AgentCommand::List => {
-                let agents = [
-                    serde_json::json!({"id":"codex","name":"OpenAI Codex CLI","adapter":"implemented"}),
-                    serde_json::json!({"id":"claude","name":"Claude Code","adapter":"implemented"}),
-                    serde_json::json!({"id":"gemini","name":"Gemini CLI","adapter":"implemented_partial"}),
-                    serde_json::json!({"id":"opencode","name":"OpenCode","adapter":"implemented"}),
-                    serde_json::json!({"id":"kiro","name":"Kiro CLI","adapter":"implemented_partial"}),
-                ];
+                let agents = self
+                    .agents
+                    .implemented()
+                    .into_iter()
+                    .map(|adapter| {
+                        serde_json::json!({
+                            "id": adapter.id(),
+                            "name": adapter.display_name(),
+                            "adapter": "implemented",
+                            "capabilities": adapter.capabilities(),
+                        })
+                    })
+                    .collect::<Vec<_>>();
                 if json {
                     print_json(&agents);
                 } else {

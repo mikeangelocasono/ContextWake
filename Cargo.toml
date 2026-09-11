@@ -6,6 +6,7 @@ rust-version = "1.88"
 description = "Terminal-native workspace, identity, session, and context continuity manager for AI coding CLIs"
 license = "Apache-2.0"
 readme = "README.md"
+documentation = "https://docs.rs/contextwake"
 keywords = ["cli", "tui", "ai", "developer-tools", "handoff"]
 categories = ["command-line-utilities", "development-tools"]
 include = [

@@ -289,7 +289,13 @@ fn agent_and_model_are_distinct_and_persisted() {
     assert_eq!(model_view["available_model_listing"]["support"], "partial");
 
     let agents = json_output(&home, &["agent", "list"]);
-    assert_eq!(agents.as_array().expect("agent list").len(), 5);
+    let agents = agents.as_array().expect("agent list");
+    assert_eq!(agents.len(), 5);
+    assert!(
+        agents.iter().all(|agent| {
+            agent["adapter"] == "implemented" && agent["capabilities"].is_object()
+        })
+    );
 }
 
 #[test]
