@@ -26,6 +26,8 @@ jobs:
       - run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo build --locked --workspace --release
       - if: runner.os == 'Linux'
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/contextwake-package
         run: cargo package --locked
 
   audit:
