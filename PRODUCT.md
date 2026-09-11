@@ -16,7 +16,7 @@ The primary users are developers doing AI-assisted work across repositories and 
 
 ## Product Purpose
 
-ContextWake is a local-first, terminal-native identity, workspace, session, and context continuity manager for AI coding CLIs. Codex and Claude Code are the first implemented coding-agent adapters. Success means the flow “open workspace -> verify agent/profile and Git state -> resume when safe -> checkpoint -> handoff” is dependable from one terminal.
+ContextWake is a local-first, terminal-native identity, workspace, session, and context continuity manager for AI coding CLIs. Codex, Claude Code, Gemini CLI, OpenCode, and Kiro CLI are implemented through one capability-driven adapter boundary. Success means the flow “open workspace -> verify agent/profile and Git state -> resume when safe -> checkpoint -> handoff” is dependable from one terminal.
 
 ## Positioning
 

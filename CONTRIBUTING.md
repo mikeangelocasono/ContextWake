@@ -13,7 +13,7 @@ cargo test --locked --all-targets --all-features
 cargo build --locked --release
 ```
 
-Coding-agent credentials are never required in CI. Adapter behavior should use fixtures or isolated temporary `CODEX_HOME`/`CLAUDE_CONFIG_DIR` roots.
+Coding-agent credentials are never required in CI. Adapter behavior should use fixtures or isolated temporary agent homes. A configuration home must not be described as credential isolation until that boundary is verified on the target platform.
 
 ## Pull requests
 

@@ -1,0 +1,83 @@
+name: Provider compatibility report
+description: Report a safe, redacted coding-agent integration problem
+title: "[Provider]: "
+labels:
+  - provider
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve an adapter. Do not paste API keys, OAuth tokens, cookies, provider auth files, private repository names, or unredacted personal paths.
+  - type: input
+    id: contextwake_version
+    attributes:
+      label: ContextWake version
+      description: Output from `ctxwake --version`.
+      placeholder: ctxwake 0.1.0-alpha.1
+    validations:
+      required: true
+  - type: dropdown
+    id: operating_system
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - macOS
+        - Linux
+        - WSL
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Coding agent and version
+      description: For example, `Codex CLI 0.154.0`. Do not include account identifiers.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: ContextWake command
+      description: The safe command shape, with IDs and paths replaced by placeholders.
+      placeholder: ctxwake session sync --workspace <workspace>
+    validations:
+      required: true
+  - type: dropdown
+    id: capability
+    attributes:
+      label: Capability area
+      options:
+        - Detection or version
+        - Authentication boundary
+        - Profile isolation
+        - Session listing or synchronization
+        - Native resume
+        - Model discovery or selection
+        - Portable handoff
+        - Diagnostics
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: Include only redacted output. `ctxwake doctor --verbose` is designed to be privacy-safe, but review it before posting.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, tokens, cookies, auth files, private repository names, and personal paths.
+          required: true
+        - label: This report does not request quota, rate-limit, subscription, or authentication bypass behavior.
+          required: true

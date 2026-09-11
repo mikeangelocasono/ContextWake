@@ -3,14 +3,14 @@
 ## Validation
 
 - [ ] `cargo fmt --all -- --check`
-- [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-- [ ] `cargo test --all-targets --all-features`
-- [ ] `cargo build --release`
+- [ ] `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
+- [ ] `cargo test --locked --workspace --all-targets --all-features`
+- [ ] `cargo build --locked --workspace --release`
 
 ## Security impact
 
 Describe changes to credentials, process execution, repository trust, handoffs,
-updates, or provider protocols. Write “none” when not applicable.
+updates, or provider protocols. Write `none` when not applicable.
 
 ## Provider capability evidence
 

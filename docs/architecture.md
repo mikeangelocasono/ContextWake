@@ -19,6 +19,7 @@ AgentAdapter (compile-time, capability-gated)
           +-- ClaudeAdapter
           +-- GeminiAdapter
           +-- OpenCodeAdapter
+          +-- KiroAdapter
 
 SQLite schema v4         Versioned local artifacts
 Agent-owned homes        No ContextWake credential database

@@ -4,7 +4,7 @@
 
 - Rust 1.88 or newer
 - Git
-- Codex CLI, Claude Code, Gemini CLI, and OpenCode only for optional live adapter smoke tests
+- Codex CLI, Claude Code, Gemini CLI, OpenCode, and Kiro CLI only for optional live adapter smoke tests
 - Windows: Visual Studio Build Tools with the C++ workload
 
 ## Quality gates
@@ -24,7 +24,7 @@ Tests use temporary application roots and repositories. CI must never require pe
 - `app.rs`: application orchestration and human/JSON command output
 - `store.rs`: SQLite schema and queries
 - `workspace.rs`, `git.rs`: local workspace evidence
-- `provider/`: coding-agent contract, registry, and Codex/Claude/Gemini/OpenCode adapters
+- `provider/`: coding-agent contract, registry, and Codex/Claude/Gemini/OpenCode/Kiro adapters
 - `checkpoint.rs`, `handoff.rs`, `continuity.rs`: continuity vertical slice
 - `security.rs`: terminal sanitization, path rules, redaction
 - `tui/`: terminal application and responsive rendering
