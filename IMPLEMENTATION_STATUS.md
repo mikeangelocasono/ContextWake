@@ -33,7 +33,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 
 ## Latest validation evidence
 
-- Ubuntu WSL, Rust 1.88.0: final format and strict Clippy passed; 87 tests passed with no failures or ignored tests; the locked optimized build and RustSec audit of 251 dependencies passed. Clean Cargo packaging and extracted-package verification passed with 71 files (621.1 KiB unpacked, 130.5 KiB compressed).
+- Ubuntu WSL, Rust 1.88.0: final format and strict Clippy passed; 87 tests passed with no failures or ignored tests; the locked optimized build and RustSec audit of 251 dependencies passed. Clean Cargo packaging and extracted-package verification passed with 77 files (1006.6 KiB unpacked, 485.9 KiB compressed), including the public documentation assets and excluding ignored local/release material.
 - Windows, Rust 1.98.1/MSVC after Smart App Control was disabled: final format and strict Clippy passed; 83 native tests passed with no failures or ignored tests, including the formerly blocked Git integration executable; the locked optimized build passed.
 - The final 6,482,432-byte Windows release executable ran version and status after archive extraction with isolated first-run state; warm version startup was 42.83 ms. The real TUI rendered, navigated Help and Profiles, restored the terminal, exited normally, and left no `ctxwake` process or execution-blocking dialog.
 - The final 6,843,512-byte Linux executable retained mode `0755` after archive extraction and ran version/status from a non-repository directory. The Windows and Linux archives contain only the binary, README, and LICENSE; `SHA256SUMS` was generated and verified locally.
