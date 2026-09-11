@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdeck.invalid/schemas/checkpoint-v1.schema.json",
+  "title": "AgentDeck Checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "workspace_id", "objective", "completed", "decisions", "pending_tasks", "known_issues", "files_changed", "validation_results", "created_at", "redaction_status"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "format": "uuid" },
+    "workspace_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": ["string", "null"], "format": "uuid" },
+    "provider": { "type": ["string", "null"] },
+    "profile_id": { "type": ["string", "null"], "format": "uuid" },
+    "objective": { "type": "string", "minLength": 1 },
+    "active_task": { "type": ["string", "null"] },
+    "completed": { "type": "array", "items": { "type": "string" } },
+    "decisions": { "type": "array", "items": { "type": "string" } },
+    "pending_tasks": { "type": "array", "items": { "type": "string" } },
+    "known_issues": { "type": "array", "items": { "type": "string" } },
+    "user_notes": { "type": ["string", "null"] },
+    "project_instructions": { "type": ["string", "null"], "maxLength": 65536 },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "git": { "type": ["object", "null"] },
+    "validation_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "status", "observed_at", "summary"],
+        "properties": {
+          "command": { "type": "array", "items": { "type": "string" } },
+          "status": { "enum": ["passed", "failed", "not_run"] },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "redaction_status": { "enum": ["clean", "redacted", "needs_review"] }
+  }
+}

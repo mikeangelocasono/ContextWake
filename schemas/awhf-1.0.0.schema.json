@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdeck.invalid/schemas/awhf-1.0.0.schema.json",
+  "title": "AI Workspace Handoff Format 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "handoff_id", "created_at", "source_tool", "checkpoint_id", "workspace", "objective", "content_files", "redactions", "security_flags"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "handoff_id": { "type": "string", "format": "uuid" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "source_tool": { "type": "string" },
+    "source_provider": { "type": ["string", "null"] },
+    "checkpoint_id": { "type": "string", "format": "uuid" },
+    "workspace": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["display_name", "path_fingerprint"],
+      "properties": {
+        "display_name": { "type": "string" },
+        "path_fingerprint": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "branch": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] }
+      }
+    },
+    "objective": { "type": "string", "minLength": 1 },
+    "content_files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "media_type"],
+        "properties": {
+          "path": { "type": "string", "not": { "pattern": "(^/|^\\\\|\\.\\.)" } },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "media_type": { "type": "string" }
+        }
+      }
+    },
+    "redactions": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+    "security_flags": { "type": "array", "items": { "type": "string" } },
+    "extensions": { "type": "object" }
+  }
+}

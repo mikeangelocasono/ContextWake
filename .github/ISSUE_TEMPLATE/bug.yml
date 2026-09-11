@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a reproducible AgentDeck failure without including secrets.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Never attach provider auth files, tokens, API keys, or unredacted handoffs.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include sanitized commands and whether the workspace is Git-backed.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Sanitized doctor output
+      description: Output from adeck doctor. Review it before posting.

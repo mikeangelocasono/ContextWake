@@ -1,0 +1,26 @@
+name: Feature request
+description: Propose a terminal-native, provider-compliant capability.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed terminal workflow
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Product boundaries
+      options:
+        - label: This does not require automatic account cycling or quota circumvention.
+          required: true
+        - label: This does not require a hosted or browser dashboard.
+          required: true

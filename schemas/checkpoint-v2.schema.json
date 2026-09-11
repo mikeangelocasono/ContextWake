@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentdeck.invalid/schemas/checkpoint-v2.schema.json",
+  "title": "AgentDeck Checkpoint v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "id", "workspace_id", "session_id", "agent_id", "model_provider_id", "model", "profile_id", "objective", "active_task", "completed", "decisions", "pending_tasks", "known_issues", "user_notes", "project_instructions", "files_changed", "git", "validation_results", "created_at", "redaction_status"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "id": { "type": "string", "format": "uuid" },
+    "workspace_id": { "type": "string", "format": "uuid" },
+    "session_id": { "type": ["string", "null"], "format": "uuid" },
+    "agent_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "model_provider_id": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "model": { "type": ["string", "null"], "maxLength": 256 },
+    "profile_id": { "type": ["string", "null"], "format": "uuid" },
+    "objective": { "type": "string", "minLength": 1, "maxLength": 65536 },
+    "active_task": { "type": ["string", "null"], "maxLength": 65536 },
+    "completed": { "type": "array", "items": { "type": "string", "maxLength": 65536 } },
+    "decisions": { "type": "array", "items": { "type": "string", "maxLength": 65536 } },
+    "pending_tasks": { "type": "array", "items": { "type": "string", "maxLength": 65536 } },
+    "known_issues": { "type": "array", "items": { "type": "string", "maxLength": 65536 } },
+    "user_notes": { "type": ["string", "null"], "maxLength": 65536 },
+    "project_instructions": { "type": ["string", "null"], "maxLength": 65536 },
+    "files_changed": { "type": "array", "items": { "type": "string", "maxLength": 4096 } },
+    "git": { "type": ["object", "null"] },
+    "validation_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "status", "observed_at", "summary"],
+        "properties": {
+          "command": { "type": "array", "items": { "type": "string", "maxLength": 4096 } },
+          "status": { "enum": ["passed", "failed", "not_run"] },
+          "observed_at": { "type": "string", "format": "date-time" },
+          "summary": { "type": "string", "maxLength": 65536 }
+        }
+      }
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "redaction_status": { "enum": ["clean", "redacted", "needs_review"] }
+  }
+}

@@ -1,0 +1,74 @@
+[package]
+name = "agentdeck"
+version = "0.1.0-alpha.1"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal-native workspace, identity, session, and context continuity manager for AI coding CLIs"
+license = "Apache-2.0"
+readme = "README.md"
+keywords = ["cli", "tui", "codex", "developer-tools", "handoff"]
+categories = ["command-line-utilities", "development-tools"]
+include = [
+    "/src/**",
+    "/tests/**",
+    "/schemas/**",
+    "/examples/**",
+    "/docs/**",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/SECURITY.md",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md",
+    "/IMPLEMENTATION_STATUS.md",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/rustfmt.toml",
+]
+
+[[bin]]
+name = "adeck"
+path = "src/main.rs"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+clap_complete = "4.5"
+crossterm = "0.29"
+directories = "6.0"
+hex = "0.4"
+ratatui = "0.30"
+regex = "1.11"
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "uuid"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.11"
+tempfile = "3.20"
+thiserror = "2.0"
+toml = "1.0"
+uuid = { version = "1.17", features = ["v4", "serde"] }
+wait-timeout = "0.2"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+must_use_candidate = "allow"
+needless_pass_by_value = "allow"
+too_many_arguments = "allow"
+too_many_lines = "allow"
+type_complexity = "allow"
