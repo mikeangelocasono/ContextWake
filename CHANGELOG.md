@@ -30,6 +30,8 @@ No unreleased changes.
 - Real Windows Gemini CLI 0.59.0 detection and unauthenticated-boundary QA.
 - Kiro CLI 2.21.3 JSON authentication/session/model integration and real same-identity session synchronization/resume QA.
 - Three directed Codex/Claude/OpenCode portable artifact flows preserving narrative, Git, validation, and project-instruction state.
+- Public ContextWake landing page with original project artwork, a real sanitized TUI capture, provider-report issue template, and three-platform GitHub Actions validation.
+- GitHub Actions release archives for Windows x86_64, Linux x86_64, and macOS arm64 with a generated SHA-256 manifest.
 
 ### Changed
 
@@ -50,6 +52,6 @@ No unreleased changes.
 
 ### Known limitations
 
-- No public release, signed binary, macOS physical-device QA, or completed hosted CI run exists yet.
+- No signed binary or macOS physical-device QA exists yet; the public prerelease is intentionally gated on the final tagged workflow.
 - Provider context utilization and quota balances are not exposed by current adapters.
 - Cross-agent artifact fidelity is verified; target-model comprehension still requires deliberately authorized disposable provider profiles.

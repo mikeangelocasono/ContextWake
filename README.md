@@ -119,7 +119,15 @@ tar -xzf contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz
 
 ### macOS
 
-Build from source until a macOS artifact has completed the public release workflow. Automated CI is not physical-device TUI validation, signing, or notarization.
+Download `contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz` and `SHA256SUMS` from the prerelease, then:
+
+```sh
+shasum -a 256 contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
+tar -xzf contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
+./contextwake-v0.1.0-alpha.1-macos-aarch64/ctxwake doctor
+```
+
+The Apple Silicon artifact is GitHub Actions-built but unsigned and not notarized. Keep Gatekeeper enabled, verify the checksum, and use macOS's normal explicit approval flow if you choose to run this alpha. Automated CI is not physical-device TUI validation.
 
 ### Build from source
 
@@ -259,7 +267,7 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 |---|---|
 | Windows 11 x86_64 | Native build, 83 tests, release executable, TUI, and five-agent detection verified |
 | Linux x86_64 | WSL build, 87 tests, Cargo package, audit, and extracted artifact verified |
-| macOS | Workflow configured; public GitHub-hosted validation pending |
+| macOS Apple Silicon | GitHub-hosted format, strict Clippy, 87 tests, release build, packaging, and checksum automation passed; no physical-device TUI QA |
 
 ## Current limitations
 
@@ -268,7 +276,7 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 - Cross-agent artifact fidelity is verified; authenticated destination-agent comprehension still needs deliberately authorized disposable profiles.
 - Current adapters do not expose reliable provider quota balances or context percentages.
 - The TUI refresh path is synchronous; event-driven background refresh is planned.
-- Windows artifacts are unsigned. macOS signing, notarization, hosted CI, and physical-device QA remain pending.
+- Windows artifacts are unsigned; macOS signing, notarization, and physical-device QA remain pending.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remaining work.
 

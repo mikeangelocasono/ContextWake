@@ -29,7 +29,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Local activity | COMPLETE | SQLite events and separate CLI/TUI section | Duration tracking |
 | Diagnostics | COMPLETE | Config, DB, Git, all five adapters, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
 | Security controls | COMPLETE | Fixed argv, bounded probes, redaction, terminal sanitization, containment, symlink defense, and transactional switching | Fuzzing and external security review |
-| Open-source readiness | PARTIAL | ContextWake rename with compatibility migration, README, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, CI matrix, and tag-gated artifact workflow | Hosted CI run and signing/notarization |
+| Open-source readiness | PARTIAL | Public ContextWake repository, compatibility migration, README and real TUI image, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, green three-platform CI, and tag-gated artifact workflow | Prerelease publication; optional signing/notarization |
 
 ## Latest validation evidence
 
@@ -39,13 +39,14 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 - The final 6,843,512-byte Linux executable retained mode `0755` after archive extraction and ran version/status from a non-repository directory. The Windows and Linux archives contain only the binary, README, and LICENSE; `SHA256SUMS` was generated and verified locally.
 - Windows detected Codex 0.154.0, Claude Code 2.1.267, OpenCode 1.18.25, Gemini CLI 0.59.0, and Kiro CLI 2.21.3. Gemini's isolated unauthenticated invocation failed closed. Kiro live QA listed nine models, synchronized and resumed a real session, and exposed its shared Windows credential boundary honestly.
 - A controlled dirty repository exercised Codex to Claude, Claude to OpenCode, and OpenCode to Codex AWHF 1.2 artifact flows. Every hop retained objective/task/completed/decisions/pending/issues, branch and HEAD, staged/unstaged/untracked counts, diff summary, validation results, project instructions, source/destination, timestamps, and `portable_handoff`; secret and absolute-path checks passed.
+- Public CI run `34573822893` passed RustSec plus format, strict Clippy, tests, and release builds on Ubuntu, Windows, and macOS. The macOS job passed 87 tests; this is automated CI evidence, not physical-device TUI QA.
+- Manual release-workflow run `34574585272` built and packaged Windows x86_64, Linux x86_64, and macOS arm64. All three archives contain only the native binary, README, and LICENSE; downloaded checksums verified. Downloaded Windows and Linux binaries ran from isolated non-repository directories, and the macOS payload was verified as a mode-`0755` Mach-O arm64 executable.
 
 ## Release blockers
 
 - Disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini.
 - Cross-agent target-model comprehension QA requires deliberately authorized disposable profiles; artifact preservation is verified.
 - Windows Authenticode signing and Apple signing/notarization identities are unavailable.
-- macOS CI is configured but cannot be claimed until a GitHub-hosted run completes.
-- No macOS artifact was generated locally because a compatible Apple host or completed hosted workflow is unavailable.
+- macOS has automated CI and artifact evidence but no interactive physical-device QA.
 
 These limits are reflected in the [compatibility matrix](docs/providers/compatibility.md); no UI value claims otherwise.
