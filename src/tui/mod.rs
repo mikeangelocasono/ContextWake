@@ -1,9 +1,9 @@
 /*
-THESIS: AgentDeck is a continuity console: identity, workspace evidence, and the safe next action stay visible together.
+THESIS: ContextWake is a continuity console: identity, workspace evidence, and the safe next action stay visible together.
 OWN-WORLD: graphite terminal surfaces, cyan focus, amber warnings, square single-line frames, and explicit text markers.
 STORY: inspect real local/agent state, choose a profile deliberately, preserve project context, then continue with the selected coding agent.
 FIRST VIEWPORT: compact title/status rail, profile lane, workspace/Git evidence, continuity panel, and keyboard action bar.
-FORM: dense operator console benchmarked against Lazygit and GitHub CLI, with AgentDeck's continuity decision as the center.
+FORM: dense operator console benchmarked against Lazygit and GitHub CLI, with ContextWake's continuity decision as the center.
 FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
 */
 
@@ -26,7 +26,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 use crate::app::{Application, StatusView};
 use crate::checkpoint::CheckpointInput;
 use crate::doctor::{DoctorReport, run_doctor};
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::model::{
     Capability, Checkpoint, CodingAgent, HandoffRecord, Profile, Session, UsageSummary, Workspace,
 };
@@ -218,7 +218,7 @@ impl UiState {
         };
         if handoff.checkpoint_id.is_nil() {
             self.message = Some(format!(
-                "Imported handoff: run `adeck handoff continue {} --workspace <path>`.",
+                "Imported handoff: run `ctxwake handoff continue {} --workspace <path>`.",
                 handoff.id
             ));
             return false;
@@ -275,7 +275,7 @@ fn load_agents(app: &Application) -> Result<Vec<CodingAgent>> {
             .into_iter()
             .map(|handle| {
                 handle.join().map_err(|_| {
-                    AgentDeckError::InvalidData("coding-agent probe worker panicked".into())
+                    ContextWakeError::InvalidData("coding-agent probe worker panicked".into())
                 })?
             })
             .collect()
@@ -322,13 +322,13 @@ fn run_loop<B: Backend>(
 ) -> Result<Option<LaunchAction>> {
     terminal
         .draw(|frame| render_loading(frame, ascii))
-        .map_err(|error| AgentDeckError::InvalidData(format!("terminal draw failed: {error}")))?;
+        .map_err(|error| ContextWakeError::InvalidData(format!("terminal draw failed: {error}")))?;
     let mut state = UiState::load(app, ascii)?;
     loop {
         terminal
             .draw(|frame| render(frame, &state))
             .map_err(|error| {
-                AgentDeckError::InvalidData(format!("terminal draw failed: {error}"))
+                ContextWakeError::InvalidData(format!("terminal draw failed: {error}"))
             })?;
         if !event::poll(Duration::from_millis(250)).map_err(terminal_error)? {
             continue;
@@ -393,7 +393,7 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
                         state.input = InputMode::Normal;
                         state.screen = Screen::Profiles;
                         state.message = Some(format!(
-                            "Created {} for {}. Authenticate with: adeck profile login {}",
+                            "Created {} for {}. Authenticate with: ctxwake profile login {}",
                             profile.display_name, agent.display_name, profile.name
                         ));
                         state.refresh(app)?;
@@ -487,7 +487,7 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
                 KeyCode::Esc => state.input = InputMode::Normal,
                 KeyCode::Enter => {
                     let profile = state.profiles.get(target).ok_or_else(|| {
-                        AgentDeckError::InvalidData("selected profile disappeared".into())
+                        ContextWakeError::InvalidData("selected profile disappeared".into())
                     })?;
                     let outcome = app.switch_active_profile(
                         &profile.id.to_string(),
@@ -515,7 +515,7 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
                 }
                 KeyCode::Char('x' | 'X') => {
                     let profile = state.profiles.get(target).ok_or_else(|| {
-                        AgentDeckError::InvalidData("selected profile disappeared".into())
+                        ContextWakeError::InvalidData("selected profile disappeared".into())
                     })?;
                     let outcome =
                         app.switch_active_profile(&profile.id.to_string(), None, false, None)?;
@@ -946,7 +946,7 @@ fn render_profiles(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
             frame,
             area,
             " PROFILES ",
-            "No profiles.\n\n[A] Create a profile. AgentDeck stores metadata only; the selected coding agent owns authentication.",
+            "No profiles.\n\n[A] Create a profile. ContextWake stores metadata only; the selected coding agent owns authentication.",
         );
         return;
     }
@@ -1088,7 +1088,7 @@ fn render_workspaces(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
             frame,
             area,
             " WORKSPACES ",
-            "No workspaces.\n\nRun: adeck workspace add <path>",
+            "No workspaces.\n\nRun: ctxwake workspace add <path>",
         );
         return;
     }
@@ -1132,7 +1132,7 @@ fn render_sessions(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
             frame,
             area,
             " RECENT SESSIONS ",
-            "[NO SESSIONS]\n\nAgentDeck has no local session metadata.\nUse an agent's native picker, 'adeck session sync', or 'adeck session resume <id>'.",
+            "[NO SESSIONS]\n\nContextWake has no local session metadata.\nUse an agent's native picker, 'ctxwake session sync', or 'ctxwake session resume <id>'.",
         );
         return;
     }
@@ -1215,7 +1215,7 @@ fn render_session_detail(frame: &mut ratatui::Frame<'_>, state: &UiState, area: 
             Line::from(format!("Continuity     {}", session.continuity.as_str())),
             Line::from(""),
             Line::from(Span::styled(resume_label, Style::default().fg(WARNING))),
-            Line::from("AgentDeck never treats a handoff-created session as a native resume."),
+            Line::from("ContextWake never treats a handoff-created session as a native resume."),
         ])
         .block(
             Block::default()
@@ -1384,7 +1384,7 @@ fn render_handoff_preview(frame: &mut ratatui::Frame<'_>, state: &UiState, area:
         .find(|checkpoint| checkpoint.id == handoff.checkpoint_id);
     let launch_instruction = if handoff.checkpoint_id.is_nil() {
         format!(
-            "Imported package: use `adeck handoff continue {} --workspace <path>`",
+            "Imported package: use `ctxwake handoff continue {} --workspace <path>`",
             handoff.id
         )
     } else {
@@ -1499,7 +1499,10 @@ fn render_usage(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
 fn render_settings(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(format!("Configuration       {}", "run `adeck config path`")),
+            Line::from(format!(
+                "Configuration       {}",
+                "run `ctxwake config path`"
+            )),
             Line::from(format!("Telemetry           {}", false)),
             Line::from("Agent experiment     Codex app-server disabled"),
             Line::from(format!("ASCII mode          {}", state.ascii)),
@@ -1511,7 +1514,7 @@ fn render_settings(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
         ])
         .block(
             Block::default()
-                .title(" SETTINGS · edit with adeck config path ")
+                .title(" SETTINGS · edit with ctxwake config path ")
                 .borders(Borders::ALL),
         )
         .wrap(Wrap { trim: true }),
@@ -1558,7 +1561,7 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
         )),
         Line::from(""),
         Line::from("Profiles are local labels around isolated coding-agent configuration homes."),
-        Line::from("AgentDeck never stores passwords or copies access tokens."),
+        Line::from("ContextWake never stores passwords or copies access tokens."),
         Line::from(""),
     ];
     for agent in &state.agents {
@@ -1595,8 +1598,8 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
 fn render_authentication(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     let profile = state.profiles.get(state.selected);
     let command = profile.map_or_else(
-        || "adeck profile add Personal".into(),
-        |profile| format!("adeck profile login {}", profile.name),
+        || "ctxwake profile add Personal".into(),
+        |profile| format!("ctxwake profile login {}", profile.name),
     );
     frame.render_widget(
         Paragraph::new(vec![
@@ -1605,7 +1608,7 @@ fn render_authentication(frame: &mut ratatui::Frame<'_>, state: &UiState, area: 
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from("AgentDeck does not render password or API-key fields."),
+            Line::from("ContextWake does not render password or API-key fields."),
             Line::from("Leave the TUI and run:"),
             Line::from(""),
             Line::from(Span::styled(command, Style::default().fg(Color::Green))),
@@ -1878,8 +1881,8 @@ fn format_age(seconds: u64) -> String {
     }
 }
 
-fn terminal_error(error: io::Error) -> AgentDeckError {
-    AgentDeckError::InvalidData(format!("terminal operation failed: {error}"))
+fn terminal_error(error: io::Error) -> ContextWakeError {
+    ContextWakeError::InvalidData(format!("terminal operation failed: {error}"))
 }
 
 fn session_matches(session: &Session, query: &str) -> bool {

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AuthState, Capability, CapabilityMaturity, CapabilitySupport,
     ModelProvider,
@@ -21,7 +21,9 @@ pub struct GeminiAdapter {
 
 impl GeminiAdapter {
     pub fn discover() -> Self {
-        if let Some(executable) = std::env::var_os("AGENTDECK_GEMINI_BIN") {
+        if let Some(executable) = std::env::var_os("CONTEXTWAKE_GEMINI_BIN")
+            .or_else(|| std::env::var_os("AGENTDECK_GEMINI_BIN"))
+        {
             return Self::with_executable(executable);
         }
         let (launcher, script) = default_launcher();
@@ -89,13 +91,16 @@ fn default_launcher() -> (PathBuf, Option<PathBuf>) {
         if let Some(result) = discover_windows_launcher() {
             return result;
         }
-        (PathBuf::from(r"C:\__agentdeck_missing__\gemini.exe"), None)
+        (
+            PathBuf::from(r"C:\__contextwake_missing__\gemini.exe"),
+            None,
+        )
     }
     #[cfg(not(windows))]
     {
         (
             super::find_safe_on_path("gemini")
-                .unwrap_or_else(|| PathBuf::from("/__agentdeck_missing__/gemini")),
+                .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/gemini")),
             None,
         )
     }
@@ -193,7 +198,7 @@ impl AgentAdapter for GeminiAdapter {
                 "no supported external context-utilization status probe is used",
             ),
             usage_reporting: Self::unavailable(
-                "no supported provider quota interface is used by AgentDeck",
+                "no supported provider quota interface is used by ContextWake",
             ),
             model_reporting: Self::unavailable(
                 "active model is not queried through an external status command",
@@ -251,7 +256,7 @@ impl AgentAdapter for GeminiAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: format!(
-                    "Gemini CLI could not be found ({error}). Install @google/gemini-cli or set AGENTDECK_GEMINI_BIN."
+                    "Gemini CLI could not be found ({error}). Install @google/gemini-cli or set CONTEXTWAKE_GEMINI_BIN."
                 ),
             }),
         }
@@ -267,7 +272,7 @@ impl AgentAdapter for GeminiAdapter {
             std::fs::create_dir_all(directory).at(directory)?;
             let metadata = std::fs::symlink_metadata(directory).at(directory)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(AgentDeckError::UnsafePath(format!(
+                return Err(ContextWakeError::UnsafePath(format!(
                     "Gemini profile directory must be a real directory: {}",
                     directory.display()
                 )));
@@ -286,7 +291,7 @@ impl AgentAdapter for GeminiAdapter {
                 .file_type()
                 .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "Gemini settings file is a symlink: {}",
                 settings.display()
             )));
@@ -314,7 +319,7 @@ impl AgentAdapter for GeminiAdapter {
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
         if device_auth {
-            return Err(AgentDeckError::CapabilityUnavailable(
+            return Err(ContextWakeError::CapabilityUnavailable(
                 "Gemini CLI does not expose the Codex --device-auth flag; run without --device-auth"
                     .into(),
             ));
@@ -327,20 +332,20 @@ impl AgentAdapter for GeminiAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Gemini CLI: {error}"))
+                ContextWakeError::Provider(format!("could not start Gemini CLI: {error}"))
             })?;
         if status.success() {
             Ok(AuthState::Unknown)
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Gemini CLI authentication flow exited with status {status}; authentication remains unknown"
             )))
         }
     }
 
     fn logout(&self, _agent_home: &Path) -> Result<()> {
-        Err(AgentDeckError::CapabilityUnavailable(
-            "Gemini CLI has no verified non-interactive logout command. AgentDeck did not change provider credentials."
+        Err(ContextWakeError::CapabilityUnavailable(
+            "Gemini CLI has no verified non-interactive logout command. ContextWake did not change provider credentials."
                 .into(),
         ))
     }
@@ -358,12 +363,12 @@ impl AgentAdapter for GeminiAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Gemini CLI resume: {error}"))
+                ContextWakeError::Provider(format!("could not start Gemini CLI resume: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Gemini CLI could not natively resume this session (status {status}). Create a workspace handoff instead."
             )))
         }
@@ -379,7 +384,7 @@ impl AgentAdapter for GeminiAdapter {
     ) -> Result<()> {
         let context_path = handoff_directory.join("context.md");
         if !context_path.is_file() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context.md is unavailable".into(),
             ));
         }
@@ -406,12 +411,12 @@ impl AgentAdapter for GeminiAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Gemini CLI: {error}"))
+                ContextWakeError::Provider(format!("could not start Gemini CLI: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Gemini CLI new-session launch exited with status {status}; no native resume was claimed"
             )))
         }
@@ -448,7 +453,7 @@ mod tests {
 
     #[test]
     fn missing_executable_is_reported_without_crashing() {
-        let health = GeminiAdapter::with_executable("agentdeck-test-missing-gemini")
+        let health = GeminiAdapter::with_executable("contextwake-test-missing-gemini")
             .detect(None)
             .expect("health result");
         assert!(!health.installed);

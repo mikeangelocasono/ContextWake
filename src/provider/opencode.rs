@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AgentModel, AuthState, Capability, CapabilityMaturity,
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
@@ -38,7 +38,7 @@ fn parse_session_output(stdout: &[u8]) -> Result<Vec<DiscoveredAgentSession>> {
         return Ok(Vec::new());
     }
     let sessions: Vec<OpenCodeSession> = serde_json::from_str(&stdout).map_err(|error| {
-        AgentDeckError::Provider(format!(
+        ContextWakeError::Provider(format!(
             "OpenCode returned invalid or truncated session JSON: {error}"
         ))
     })?;
@@ -63,7 +63,7 @@ fn parse_model_output(stdout: &[u8]) -> Result<Vec<AgentModel>> {
         .map(|line| {
             let qualified = validate_external_reference(line.trim())?;
             let (provider_id, model_id) = qualified.split_once('/').ok_or_else(|| {
-                AgentDeckError::Provider(format!(
+                ContextWakeError::Provider(format!(
                     "OpenCode returned an invalid model identifier: {}",
                     sanitize_terminal(&qualified)
                 ))
@@ -86,7 +86,8 @@ fn parse_model_output(stdout: &[u8]) -> Result<Vec<AgentModel>> {
 
 impl OpenCodeAdapter {
     pub fn discover() -> Self {
-        let executable = std::env::var_os("AGENTDECK_OPENCODE_BIN")
+        let executable = std::env::var_os("CONTEXTWAKE_OPENCODE_BIN")
+            .or_else(|| std::env::var_os("AGENTDECK_OPENCODE_BIN"))
             .map_or_else(default_executable, PathBuf::from);
         Self { executable }
     }
@@ -145,7 +146,7 @@ impl OpenCodeAdapter {
             if let Some(provider) = provider {
                 let provider = validate_external_reference(provider)?;
                 if !embedded_provider.eq_ignore_ascii_case(&provider) {
-                    return Err(AgentDeckError::InvalidData(format!(
+                    return Err(ContextWakeError::InvalidData(format!(
                         "model {model} conflicts with selected provider {provider}"
                     )));
                 }
@@ -153,7 +154,7 @@ impl OpenCodeAdapter {
             return Ok(model);
         }
         let provider = provider.ok_or_else(|| {
-            AgentDeckError::InvalidData(
+            ContextWakeError::InvalidData(
                 "OpenCode model selection requires --provider or a provider/model value".into(),
             )
         })?;
@@ -168,12 +169,12 @@ fn default_executable() -> PathBuf {
         if let Some(path) = discover_windows_native_executable() {
             return path;
         }
-        PathBuf::from(r"C:\__agentdeck_missing__\opencode.exe")
+        PathBuf::from(r"C:\__contextwake_missing__\opencode.exe")
     }
     #[cfg(not(windows))]
     {
         super::find_safe_on_path("opencode")
-            .unwrap_or_else(|| PathBuf::from("/__agentdeck_missing__/opencode"))
+            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/opencode"))
     }
 }
 
@@ -258,7 +259,7 @@ impl AgentAdapter for OpenCodeAdapter {
     ) -> Result<(Option<String>, String)> {
         let qualified = Self::model_argument(provider_id, model)?;
         let (provider, model) = qualified.split_once('/').ok_or_else(|| {
-            AgentDeckError::InvalidData("OpenCode models must use provider/model syntax".into())
+            ContextWakeError::InvalidData("OpenCode models must use provider/model syntax".into())
         })?;
         Ok((Some(provider.to_ascii_lowercase()), model.to_string()))
     }
@@ -301,7 +302,7 @@ impl AgentAdapter for OpenCodeAdapter {
                 "official Ollama, LM Studio, llama.cpp, and custom local-provider paths",
             ),
             profile_isolation: Self::partial(
-                "AgentDeck-scoped XDG data roots were locally verified on Windows; cross-platform credential isolation still requires release QA",
+                "ContextWake-scoped XDG data roots were locally verified on Windows; cross-platform credential isolation still requires release QA",
             ),
         }
     }
@@ -344,7 +345,7 @@ impl AgentAdapter for OpenCodeAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: format!(
-                    "OpenCode could not be found ({error}). Install OpenCode or set AGENTDECK_OPENCODE_BIN."
+                    "OpenCode could not be found ({error}). Install OpenCode or set CONTEXTWAKE_OPENCODE_BIN."
                 ),
             }),
         }
@@ -354,7 +355,7 @@ impl AgentAdapter for OpenCodeAdapter {
         let mut command = self.base_command(Some(agent_home));
         command.args(["auth", "list", "--pure"]);
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not query OpenCode credentials: {error}"))
+            ContextWakeError::Provider(format!("could not query OpenCode credentials: {error}"))
         })?;
         if output.timed_out || !output.success {
             return Ok(AuthState::Unknown);
@@ -378,7 +379,7 @@ impl AgentAdapter for OpenCodeAdapter {
             std::fs::create_dir_all(&directory).at(&directory)?;
             let metadata = std::fs::symlink_metadata(&directory).at(&directory)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(AgentDeckError::UnsafePath(format!(
+                return Err(ContextWakeError::UnsafePath(format!(
                     "OpenCode profile directory must be a real directory: {}",
                     directory.display()
                 )));
@@ -395,7 +396,7 @@ impl AgentAdapter for OpenCodeAdapter {
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
         if device_auth {
-            return Err(AgentDeckError::CapabilityUnavailable(
+            return Err(ContextWakeError::CapabilityUnavailable(
                 "OpenCode does not expose the Codex --device-auth flag; run without --device-auth"
                     .into(),
             ));
@@ -408,20 +409,20 @@ impl AgentAdapter for OpenCodeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start OpenCode login: {error}"))
+                ContextWakeError::Provider(format!("could not start OpenCode login: {error}"))
             })?;
         if status.success() {
             Ok(AuthState::SignedIn)
         } else {
-            Err(AgentDeckError::Provider(format!(
-                "OpenCode login exited with status {status}; the previous AgentDeck profile remains unchanged"
+            Err(ContextWakeError::Provider(format!(
+                "OpenCode login exited with status {status}; the previous ContextWake profile remains unchanged"
             )))
         }
     }
 
     fn logout(&self, _agent_home: &Path) -> Result<()> {
-        Err(AgentDeckError::CapabilityUnavailable(
-            "OpenCode credentials are model-provider specific. Use `opencode auth logout <provider>` inside this profile after choosing the exact provider; AgentDeck will not delete every credential implicitly."
+        Err(ContextWakeError::CapabilityUnavailable(
+            "OpenCode credentials are model-provider specific. Use `opencode auth logout <provider>` inside this profile after choosing the exact provider; ContextWake will not delete every credential implicitly."
                 .into(),
         ))
     }
@@ -445,15 +446,15 @@ impl AgentAdapter for OpenCodeAdapter {
             "--pure",
         ]);
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not list OpenCode sessions: {error}"))
+            ContextWakeError::Provider(format!("could not list OpenCode sessions: {error}"))
         })?;
         if output.timed_out {
-            return Err(AgentDeckError::Provider(
+            return Err(ContextWakeError::Provider(
                 "OpenCode session discovery timed out after 10 seconds".into(),
             ));
         }
         if !output.success {
-            return Err(AgentDeckError::Provider(format!(
+            return Err(ContextWakeError::Provider(format!(
                 "OpenCode session discovery failed: {}",
                 safe_probe_diagnostic(&output)
             )));
@@ -477,15 +478,15 @@ impl AgentAdapter for OpenCodeAdapter {
         }
         command.arg("--pure");
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not list OpenCode models: {error}"))
+            ContextWakeError::Provider(format!("could not list OpenCode models: {error}"))
         })?;
         if output.timed_out {
-            return Err(AgentDeckError::Provider(
+            return Err(ContextWakeError::Provider(
                 "OpenCode model discovery timed out after 10 seconds".into(),
             ));
         }
         if !output.success {
-            return Err(AgentDeckError::Provider(format!(
+            return Err(ContextWakeError::Provider(format!(
                 "OpenCode model discovery failed: {}",
                 safe_probe_diagnostic(&output)
             )));
@@ -507,12 +508,12 @@ impl AgentAdapter for OpenCodeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start OpenCode resume: {error}"))
+                ContextWakeError::Provider(format!("could not start OpenCode resume: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "OpenCode could not natively resume this session (status {status}). Create a workspace handoff instead."
             )))
         }
@@ -528,7 +529,7 @@ impl AgentAdapter for OpenCodeAdapter {
     ) -> Result<()> {
         let context_path = handoff_directory.join("context.md");
         if !context_path.is_file() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context.md is unavailable".into(),
             ));
         }
@@ -551,12 +552,12 @@ impl AgentAdapter for OpenCodeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start OpenCode: {error}"))
+                ContextWakeError::Provider(format!("could not start OpenCode: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "OpenCode new-session launch exited with status {status}; no native resume was claimed"
             )))
         }
@@ -723,7 +724,7 @@ fi"#,
 
     #[test]
     fn missing_executable_is_reported_without_crashing() {
-        let health = OpenCodeAdapter::with_executable("agentdeck-test-missing-opencode")
+        let health = OpenCodeAdapter::with_executable("contextwake-test-missing-opencode")
             .detect(None)
             .expect("health result");
         assert!(!health.installed);

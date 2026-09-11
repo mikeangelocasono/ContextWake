@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AuthState, Capability, CapabilityMaturity, CapabilitySupport,
     ModelProvider,
@@ -20,8 +20,9 @@ pub struct ClaudeAdapter {
 
 impl ClaudeAdapter {
     pub fn discover() -> Self {
-        let executable =
-            std::env::var_os("AGENTDECK_CLAUDE_BIN").map_or_else(default_executable, PathBuf::from);
+        let executable = std::env::var_os("CONTEXTWAKE_CLAUDE_BIN")
+            .or_else(|| std::env::var_os("AGENTDECK_CLAUDE_BIN"))
+            .map_or_else(default_executable, PathBuf::from);
         Self { executable }
     }
 
@@ -70,12 +71,12 @@ fn default_executable() -> PathBuf {
         if let Some(path) = discover_windows_native_executable() {
             return path;
         }
-        PathBuf::from(r"C:\__agentdeck_missing__\claude.exe")
+        PathBuf::from(r"C:\__contextwake_missing__\claude.exe")
     }
     #[cfg(not(windows))]
     {
         super::find_safe_on_path("claude")
-            .unwrap_or_else(|| PathBuf::from("/__agentdeck_missing__/claude"))
+            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/claude"))
     }
 }
 
@@ -157,7 +158,7 @@ impl AgentAdapter for ClaudeAdapter {
                 "`/context` is available in-session; no external machine-readable probe",
             ),
             usage_reporting: Self::unavailable(
-                "no stable account quota interface is used by AgentDeck",
+                "no stable account quota interface is used by ContextWake",
             ),
             model_reporting: Self::partial(
                 "model is visible in-session but not queried by the P0 adapter",
@@ -215,7 +216,7 @@ impl AgentAdapter for ClaudeAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: format!(
-                    "Claude Code could not be found ({error}). Install Claude Code or set AGENTDECK_CLAUDE_BIN."
+                    "Claude Code could not be found ({error}). Install Claude Code or set CONTEXTWAKE_CLAUDE_BIN."
                 ),
             }),
         }
@@ -225,7 +226,7 @@ impl AgentAdapter for ClaudeAdapter {
         let mut command = self.base_command(Some(agent_home));
         command.args(["auth", "status", "--json"]);
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not query Claude Code auth: {error}"))
+            ContextWakeError::Provider(format!("could not query Claude Code auth: {error}"))
         })?;
         Ok(if output.timed_out {
             AuthState::Unknown
@@ -240,7 +241,7 @@ impl AgentAdapter for ClaudeAdapter {
         std::fs::create_dir_all(agent_home).at(agent_home)?;
         let metadata = std::fs::symlink_metadata(agent_home).at(agent_home)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "agent home must be a real directory: {}",
                 agent_home.display()
             )));
@@ -256,7 +257,7 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
         if device_auth {
-            return Err(AgentDeckError::CapabilityUnavailable(
+            return Err(ContextWakeError::CapabilityUnavailable(
                 "Claude Code does not expose the Codex --device-auth flag; run without --device-auth"
                     .into(),
             ));
@@ -269,13 +270,13 @@ impl AgentAdapter for ClaudeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Claude Code login: {error}"))
+                ContextWakeError::Provider(format!("could not start Claude Code login: {error}"))
             })?;
         if status.success() {
             Ok(AuthState::SignedIn)
         } else {
-            Err(AgentDeckError::Provider(format!(
-                "Claude Code login exited with status {status}; the previous AgentDeck profile remains unchanged"
+            Err(ContextWakeError::Provider(format!(
+                "Claude Code login exited with status {status}; the previous ContextWake profile remains unchanged"
             )))
         }
     }
@@ -289,12 +290,12 @@ impl AgentAdapter for ClaudeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Claude Code logout: {error}"))
+                ContextWakeError::Provider(format!("could not start Claude Code logout: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Claude Code logout exited with status {status}"
             )))
         }
@@ -312,12 +313,12 @@ impl AgentAdapter for ClaudeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Claude Code resume: {error}"))
+                ContextWakeError::Provider(format!("could not start Claude Code resume: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Claude Code could not natively resume this session (status {status}). Create a workspace handoff instead."
             )))
         }
@@ -333,7 +334,7 @@ impl AgentAdapter for ClaudeAdapter {
     ) -> Result<()> {
         let context_path = handoff_directory.join("context.md");
         if !context_path.is_file() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context.md is unavailable".into(),
             ));
         }
@@ -357,12 +358,12 @@ impl AgentAdapter for ClaudeAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Claude Code: {error}"))
+                ContextWakeError::Provider(format!("could not start Claude Code: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Claude Code new-session launch exited with status {status}; no native resume was claimed"
             )))
         }
@@ -400,7 +401,7 @@ mod tests {
 
     #[test]
     fn missing_executable_is_reported_without_crashing() {
-        let health = ClaudeAdapter::with_executable("agentdeck-test-missing-claude")
+        let health = ClaudeAdapter::with_executable("contextwake-test-missing-claude")
             .detect(None)
             .expect("health result");
         assert!(!health.installed);

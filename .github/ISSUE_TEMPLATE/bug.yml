@@ -1,5 +1,5 @@
 name: Bug report
-description: Report a reproducible AgentDeck failure without including secrets.
+description: Report a reproducible ContextWake failure without including secrets.
 title: "[Bug]: "
 labels: ["bug"]
 body:
@@ -29,4 +29,4 @@ body:
     id: doctor
     attributes:
       label: Sanitized doctor output
-      description: Output from adeck doctor. Review it before posting.
+      description: Output from ctxwake doctor. Review it before posting.

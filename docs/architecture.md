@@ -1,6 +1,6 @@
 # Architecture
 
-AgentDeck is a terminal-only Rust application. The CLI and TUI call the same application services; neither owns business logic.
+ContextWake is a terminal-only Rust application. The CLI and TUI call the same application services; neither owns business logic.
 
 ```text
 CLI router / Ratatui TUI
@@ -21,7 +21,7 @@ AgentAdapter (compile-time, capability-gated)
           +-- OpenCodeAdapter
 
 SQLite schema v4         Versioned local artifacts
-Agent-owned homes        No AgentDeck credential database
+Agent-owned homes        No ContextWake credential database
 ```
 
 ## Domain separation
@@ -62,13 +62,13 @@ If target validation or artifact creation fails, active-profile state is unchang
 
 SQLite schema v4 stores queryable relationships, normalized agent/model-provider/model fields, and provider session titles. Migrations preserve legacy v1/v2/v3 records. Checkpoint v2 and AWHF 1.2 bodies are inspectable JSON/Markdown files. AWHF 1.0/1.1 and checkpoint v1 remain readable.
 
-Agent-owned authentication stays inside profile-specific `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME`, or OpenCode XDG/config roots. AgentDeck does not parse, copy, export, or put credentials in SQLite.
+Agent-owned authentication stays inside profile-specific `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME`, or OpenCode XDG/config roots. ContextWake does not parse, copy, export, or put credentials in SQLite.
 
 ## Trust and responsiveness
 
 Git and non-interactive agent probes are bounded subprocesses. Repository validation is fixed-argv, trusted-workspace gated, explicit-only, and has null standard streams plus a timeout. Imported artifacts and rendered terminal text are untrusted.
 
-The current TUI performs synchronous refreshes, so background event-driven refresh remains P1. Interactive provider processes start only after AgentDeck restores the ordinary terminal.
+The current TUI performs synchronous refreshes, so background event-driven refresh remains P1. Interactive provider processes start only after ContextWake restores the ordinary terminal.
 
 See the [language/TUI](adr/0001-language-and-tui-stack.md), [storage](adr/0002-storage.md), and [adapter](adr/0003-provider-adapter-model.md) decisions.
 

@@ -1,12 +1,12 @@
 # Security Model
 
-AgentDeck assumes the local operating-system user account is trusted. A fully compromised host is out of scope. Repositories, branch names, provider output, handoff packages, symlinks, and exported paths are not trusted.
+ContextWake assumes the local operating-system user account is trusted. A fully compromised host is out of scope. Repositories, branch names, provider output, handoff packages, symlinks, and exported paths are not trusted.
 
 ## Implemented controls
 
-- Credentials stay agent-owned in profile-scoped `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME`, or OpenCode XDG/config roots; ordinary AgentDeck config and SQLite have no secret fields.
+- Credentials stay agent-owned in profile-scoped `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME`, or OpenCode XDG/config roots; ordinary ContextWake config and SQLite have no secret fields.
 - Provider and Git processes receive fixed argument arrays. Repository content is never shell-interpolated.
-- Implicit agent discovery ignores relative PATH entries and binaries located inside the current workspace. Explicit `AGENTDECK_*_BIN` overrides remain a user-owned trust decision.
+- Implicit agent discovery ignores relative PATH entries and binaries located inside the current workspace. Explicit `CONTEXTWAKE_*_BIN` overrides remain a user-owned trust decision.
 - ANSI CSI/OSC sequences and control bytes are stripped before untrusted terminal text is rendered.
 - Provider session titles are terminal-sanitized, secret-redacted, capped at 200 characters, and retained locally.
 - Checkpoint and handoff text passes through a secret scanner with redaction counts.
@@ -26,7 +26,7 @@ AgentDeck assumes the local operating-system user account is trusted. A fully co
 
 Workspace paths, objectives, decisions, filenames, branch names, and validation command names can be sensitive. They stay local unless the user explicitly exports a checkpoint/handoff. Validation subprocess output is not captured or persisted. The user must preview exports before sharing them.
 
-AgentDeck never intentionally persists passwords, API keys, access/refresh tokens, bearer tokens, provider auth-file contents, complete environments, raw transcripts, or hidden model reasoning.
+ContextWake never intentionally persists passwords, API keys, access/refresh tokens, bearer tokens, provider auth-file contents, complete environments, raw transcripts, or hidden model reasoning.
 
 The alpha does not persist application logs. Human and JSON errors are centrally
 sanitized and secret-redacted before they reach the terminal. Future diagnostic

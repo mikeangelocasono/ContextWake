@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::model::GitSnapshot;
 use crate::security::sanitize_terminal;
 
@@ -44,7 +44,7 @@ impl GitClient {
     pub fn version(&self) -> Result<String> {
         let output = self.run(None, [OsStr::new("--version")])?;
         if !output.success {
-            return Err(AgentDeckError::Git(actionable_git_error(&output.stderr)));
+            return Err(ContextWakeError::Git(actionable_git_error(&output.stderr)));
         }
         Ok(sanitize_terminal(output.stdout.trim()))
     }
@@ -82,7 +82,7 @@ impl GitClient {
             }));
         }
         if !status.success {
-            return Err(AgentDeckError::Git(actionable_git_error(&status.stderr)));
+            return Err(ContextWakeError::Git(actionable_git_error(&status.stderr)));
         }
 
         let mut snapshot = parse_porcelain_v2(&status.stdout);
@@ -170,7 +170,7 @@ impl GitClient {
             command.current_dir(cwd);
         }
         let mut child = command.spawn().map_err(|error| {
-            AgentDeckError::Git(format!(
+            ContextWakeError::Git(format!(
                 "could not start {}: {error}. Install Git or configure its executable path.",
                 self.executable.display()
             ))
@@ -178,17 +178,16 @@ impl GitClient {
         let stdout = child
             .stdout
             .take()
-            .ok_or_else(|| AgentDeckError::Git("could not capture Git standard output".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| AgentDeckError::Git("could not capture Git diagnostic output".into()))?;
+            .ok_or_else(|| ContextWakeError::Git("could not capture Git standard output".into()))?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            ContextWakeError::Git("could not capture Git diagnostic output".into())
+        })?;
         let stdout_reader = thread::spawn(move || read_stream(stdout));
         let stderr_reader = thread::spawn(move || read_stream(stderr));
 
         let status = child
             .wait_timeout(self.timeout)
-            .map_err(|error| AgentDeckError::Git(format!("could not wait for Git: {error}")))?;
+            .map_err(|error| ContextWakeError::Git(format!("could not wait for Git: {error}")))?;
         let (success, timed_out) = if let Some(status) = status {
             (status.success(), false)
         } else {
@@ -198,13 +197,15 @@ impl GitClient {
         };
         let stdout = stdout_reader
             .join()
-            .map_err(|_| AgentDeckError::Git("Git output reader failed".into()))?
-            .map_err(|error| AgentDeckError::Git(format!("could not read Git output: {error}")))?;
+            .map_err(|_| ContextWakeError::Git("Git output reader failed".into()))?
+            .map_err(|error| {
+                ContextWakeError::Git(format!("could not read Git output: {error}"))
+            })?;
         let stderr = stderr_reader
             .join()
-            .map_err(|_| AgentDeckError::Git("Git diagnostic reader failed".into()))?
+            .map_err(|_| ContextWakeError::Git("Git diagnostic reader failed".into()))?
             .map_err(|error| {
-                AgentDeckError::Git(format!("could not read Git diagnostics: {error}"))
+                ContextWakeError::Git(format!("could not read Git diagnostics: {error}"))
             })?;
         Ok(CommandOutput {
             success,
@@ -224,7 +225,7 @@ fn read_stream(mut stream: impl Read) -> std::io::Result<Vec<u8>> {
 fn actionable_git_error(stderr: &str) -> String {
     let message = sanitize_terminal(stderr.trim());
     if message.is_empty() {
-        "Git returned a non-zero status. Run `adeck doctor` for details.".into()
+        "Git returned a non-zero status. Run `ctxwake doctor` for details.".into()
     } else {
         message
     }

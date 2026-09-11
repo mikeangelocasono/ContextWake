@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use uuid::Uuid;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
 use crate::model::{Checkpoint, Profile, RedactionStatus, Session, ValidationResult, Workspace};
 use crate::paths::AppPaths;
@@ -59,7 +59,7 @@ impl CheckpointService {
         input: CheckpointInput,
     ) -> Result<Checkpoint> {
         if input.objective.trim().is_empty() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "checkpoint objective cannot be empty".into(),
             ));
         }
@@ -132,7 +132,7 @@ impl CheckpointService {
             .checkpoints_dir()
             .join(format!("{}.json", checkpoint.id));
         let content = serde_json::to_vec_pretty(&checkpoint).map_err(|error| {
-            AgentDeckError::InvalidData(format!("could not serialize checkpoint: {error}"))
+            ContextWakeError::InvalidData(format!("could not serialize checkpoint: {error}"))
         })?;
         atomic_write(&path, &content, false)?;
         if let Err(error) = self.store.insert_checkpoint_index(
@@ -159,10 +159,10 @@ impl CheckpointService {
         ensure_managed_file(&path, &self.paths.checkpoints_dir())?;
         let content = std::fs::read_to_string(&path).at(&path)?;
         let checkpoint: Checkpoint = serde_json::from_str(&content).map_err(|error| {
-            AgentDeckError::InvalidData(format!("invalid checkpoint {}: {error}", path.display()))
+            ContextWakeError::InvalidData(format!("invalid checkpoint {}: {error}", path.display()))
         })?;
         if !matches!(checkpoint.schema_version, 1 | 2) || checkpoint.id.to_string() != reference {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "checkpoint index/content mismatch for {reference}"
             )));
         }
@@ -200,7 +200,7 @@ impl CheckpointService {
     ) -> Result<PathBuf> {
         let checkpoint = self.read(reference)?;
         let content = serde_json::to_vec_pretty(&checkpoint).map_err(|error| {
-            AgentDeckError::InvalidData(format!("could not serialize checkpoint: {error}"))
+            ContextWakeError::InvalidData(format!("could not serialize checkpoint: {error}"))
         })?;
         atomic_write(destination, &content, overwrite)?;
         Ok(destination.to_path_buf())
@@ -209,11 +209,11 @@ impl CheckpointService {
 
 pub(crate) fn atomic_write(path: &Path, content: &[u8], overwrite: bool) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
-        AgentDeckError::UnsafePath(format!("{} has no parent directory", path.display()))
+        ContextWakeError::UnsafePath(format!("{} has no parent directory", path.display()))
     })?;
     std::fs::create_dir_all(parent).at(parent)?;
     if path.exists() && !overwrite {
-        return Err(AgentDeckError::InvalidData(format!(
+        return Err(ContextWakeError::InvalidData(format!(
             "{} already exists; pass --force to replace it",
             path.display()
         )));
@@ -224,7 +224,7 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8], overwrite: bool) -> Resu
             .file_type()
             .is_symlink()
     {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "refusing to replace symlink {}",
             path.display()
         )));
@@ -235,7 +235,7 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8], overwrite: bool) -> Resu
     temporary.as_file().sync_all().at(temporary.path())?;
     temporary
         .persist(path)
-        .map_err(|error| AgentDeckError::Io {
+        .map_err(|error| ContextWakeError::Io {
             path: path.to_path_buf(),
             source: error.error,
         })?;
@@ -251,7 +251,7 @@ fn ensure_managed_file(path: &Path, base: &Path) -> Result<()> {
             .file_type()
             .is_symlink()
     {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "{} is outside managed checkpoint storage or is a symlink",
             sanitize_terminal(&path.display().to_string())
         )));
@@ -319,6 +319,6 @@ mod tests {
             },
         );
         // Missing Git is actionable rather than silently swallowed.
-        assert!(matches!(result, Err(AgentDeckError::Git(_))));
+        assert!(matches!(result, Err(ContextWakeError::Git(_))));
     }
 }

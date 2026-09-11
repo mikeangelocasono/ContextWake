@@ -16,7 +16,7 @@ use crate::cli::{
 use crate::config::AppConfig;
 use crate::continuity::{SwitchOutcome, switch_profile};
 use crate::doctor::{CheckStatus, run_doctor};
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::git::GitClient;
 use crate::guardian::assess;
 use crate::handoff::HandoffService;
@@ -173,7 +173,7 @@ impl Application {
                             && git_timeout_ms.is_none()
                             && validation_timeout_ms.is_none()
                         {
-                            return Err(AgentDeckError::Configuration(
+                            return Err(ContextWakeError::Configuration(
                                 "config set requires at least one setting".into(),
                             ));
                         }
@@ -221,7 +221,7 @@ impl Application {
                         &serde_json::json!({"application": PRODUCT_NAME, "version": VERSION}),
                     );
                 } else {
-                    println!("adeck {VERSION}");
+                    println!("ctxwake {VERSION}");
                 }
                 Ok(0)
             }
@@ -331,8 +331,8 @@ impl Application {
         workspace: &Workspace,
     ) -> Result<Vec<crate::model::ValidationResult>> {
         let project = load_project_config(workspace)?.ok_or_else(|| {
-            AgentDeckError::Configuration(
-                "no .agentdeck/project.toml exists for this workspace".into(),
+            ContextWakeError::Configuration(
+                "no .contextwake/project.toml exists for this workspace".into(),
             )
         })?;
         ValidationRunner::new(Duration::from_millis(self.config.validation_timeout_ms))
@@ -370,7 +370,7 @@ impl Application {
         if let Some(provider) = &model_provider_id
             && !adapter.accepts_model_provider(provider)
         {
-            return Err(AgentDeckError::CapabilityUnavailable(format!(
+            return Err(ContextWakeError::CapabilityUnavailable(format!(
                 "model provider {provider} is not declared by agent {agent_id}"
             )));
         }
@@ -378,7 +378,7 @@ impl Application {
             .map(validate_external_reference)
             .transpose()?;
         if model_preference.is_some() && !adapter.capabilities().model_selection.is_available() {
-            return Err(AgentDeckError::CapabilityUnavailable(format!(
+            return Err(ContextWakeError::CapabilityUnavailable(format!(
                 "agent {agent_id} does not support model selection"
             )));
         }
@@ -433,7 +433,7 @@ impl Application {
         let health = adapter.detect(Some(&target.agent_home))?;
         if !health.installed {
             let reason = health.message.trim().trim_end_matches('.');
-            return Err(AgentDeckError::CapabilityUnavailable(format!(
+            return Err(ContextWakeError::CapabilityUnavailable(format!(
                 "{} is unavailable: {reason}. The active profile was not changed.",
                 adapter.display_name(),
             )));
@@ -455,9 +455,9 @@ impl Application {
         let record = self.store.handoff(handoff)?;
         let workspace = match checkpoints.read(&record.checkpoint_id.to_string()) {
             Ok(checkpoint) => self.store.workspace(&checkpoint.workspace_id.to_string())?,
-            Err(AgentDeckError::CheckpointNotFound(_)) => {
+            Err(ContextWakeError::CheckpointNotFound(_)) => {
                 let path = workspace_path.ok_or_else(|| {
-                    AgentDeckError::InvalidData(
+                    ContextWakeError::InvalidData(
                         "this imported handoff has no local checkpoint; pass --workspace".into(),
                     )
                 })?;
@@ -468,7 +468,7 @@ impl Application {
         let profile = self
             .store
             .active_profile()?
-            .ok_or_else(|| AgentDeckError::InvalidData("an active profile is required".into()))?;
+            .ok_or_else(|| ContextWakeError::InvalidData("an active profile is required".into()))?;
 
         // Validate the manifest and every referenced content digest immediately before launch.
         let _ = service.validate(handoff)?;
@@ -505,24 +505,24 @@ impl Application {
 
     pub fn resume_session(&self, session_reference: &str) -> Result<()> {
         let profile = self.store.active_profile()?.ok_or_else(|| {
-            AgentDeckError::InvalidData(
-                "no active profile; run 'adeck profile add' or 'adeck profile use'".into(),
+            ContextWakeError::InvalidData(
+                "no active profile; run 'ctxwake profile add' or 'ctxwake profile use'".into(),
             )
         })?;
         let known = match self.store.session(session_reference) {
             Ok(session) => Some(session),
-            Err(AgentDeckError::SessionNotFound(_)) => None,
+            Err(ContextWakeError::SessionNotFound(_)) => None,
             Err(error) => return Err(error),
         };
         if let Some(known) = &known {
             if known.agent_id != profile.agent_id {
-                return Err(AgentDeckError::Provider(format!(
+                return Err(ContextWakeError::Provider(format!(
                     "This session belongs to agent {}, but active profile {} uses {}. Native cross-agent resume was not attempted. Create a handoff instead.",
                     known.agent_id, profile.display_name, profile.agent_id
                 )));
             }
             if known.profile_id.is_some_and(|id| id != profile.id) {
-                return Err(AgentDeckError::Provider(
+                return Err(ContextWakeError::Provider(
                     "This session was recorded under another profile. Native cross-profile resume was not attempted. Create a handoff instead."
                         .into(),
                 ));
@@ -530,7 +530,7 @@ impl Application {
             if known.resume_capability != ResumeCapability::Native
                 || known.provider_session_id.is_none()
             {
-                return Err(AgentDeckError::CapabilityUnavailable(
+                return Err(ContextWakeError::CapabilityUnavailable(
                     "this local session has no verified native provider session ID; continue with a workspace handoff"
                         .into(),
                 ));
@@ -596,7 +596,7 @@ impl Application {
                     print_json(&profile);
                 } else {
                     println!(
-                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  adeck profile login {}",
+                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctxwake profile login {}",
                         profile.display_name, profile.agent_id, profile.name
                     );
                 }
@@ -608,7 +608,7 @@ impl Application {
                 } else {
                     let active = self.store.active_profile()?.map(|profile| profile.id);
                     if profiles.is_empty() {
-                        println!("No profiles. Create one with 'adeck profile add Personal'.");
+                        println!("No profiles. Create one with 'ctxwake profile add Personal'.");
                     }
                     for profile in profiles {
                         let active_marker = if active == Some(profile.id) { "*" } else { " " };
@@ -679,7 +679,7 @@ impl Application {
                 require_confirmation(yes, "profile metadata removal", "--yes")?;
                 let removed = self.store.remove_profile(&profile)?;
                 println!(
-                    "Removed AgentDeck metadata for {}. Provider credentials and {} were not deleted.",
+                    "Removed ContextWake metadata for {}. Provider credentials and {} were not deleted.",
                     removed.display_name,
                     removed.agent_home.display()
                 );
@@ -742,7 +742,7 @@ impl Application {
                 if json {
                     print_json(&workspaces);
                 } else if workspaces.is_empty() {
-                    println!("No workspaces. Add one with 'adeck workspace add .'.");
+                    println!("No workspaces. Add one with 'ctxwake workspace add .'.");
                 } else {
                     let active = self.store.active_workspace()?.map(|value| value.id);
                     for workspace in workspaces {
@@ -813,8 +813,8 @@ impl Application {
                 max_count,
             } => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
-                    AgentDeckError::InvalidData(
-                        "an active profile is required; run 'adeck profile add'".into(),
+                    ContextWakeError::InvalidData(
+                        "an active profile is required; run 'ctxwake profile add'".into(),
                     )
                 })?;
                 let workspace = self.resolve_workspace(workspace.as_deref())?;
@@ -822,7 +822,7 @@ impl Application {
                 if adapter.capabilities().session_listing.support
                     != crate::model::CapabilitySupport::Supported
                 {
-                    return Err(AgentDeckError::CapabilityUnavailable(format!(
+                    return Err(ContextWakeError::CapabilityUnavailable(format!(
                         "{} does not expose a supported session list",
                         adapter.display_name()
                     )));
@@ -833,7 +833,7 @@ impl Application {
                     workspace
                         .path
                         .canonicalize()
-                        .map_err(|source| AgentDeckError::Io {
+                        .map_err(|source| ContextWakeError::Io {
                             path: workspace.path.clone(),
                             source,
                         })?;
@@ -1023,7 +1023,7 @@ impl Application {
                     print_json(&checkpoints);
                 } else if checkpoints.is_empty() {
                     println!(
-                        "No checkpoints. Create one with 'adeck checkpoint create --objective ...'."
+                        "No checkpoints. Create one with 'ctxwake checkpoint create --objective ...'."
                     );
                 } else {
                     for checkpoint in checkpoints {
@@ -1041,7 +1041,9 @@ impl Application {
             CheckpointCommand::Delete { checkpoint, yes } => {
                 require_confirmation(yes, "checkpoint deletion", "--yes")?;
                 service.delete(&checkpoint)?;
-                println!("Deleted checkpoint {checkpoint}. This cannot be recovered by AgentDeck.");
+                println!(
+                    "Deleted checkpoint {checkpoint}. This cannot be recovered by ContextWake."
+                );
             }
             CheckpointCommand::Export {
                 checkpoint,
@@ -1065,7 +1067,7 @@ impl Application {
                 let handoff = service.create(&checkpoint, &workspace)?;
                 output_value(&handoff, json, || {
                     format!(
-                        "Created handoff {}. Preview with 'adeck handoff preview {}'.",
+                        "Created handoff {}. Preview with 'ctxwake handoff preview {}'.",
                         handoff.id, handoff.id
                     )
                 });
@@ -1199,8 +1201,8 @@ impl Application {
         match command {
             ModelCommand::List => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
-                    AgentDeckError::InvalidData(
-                        "an active profile is required; run 'adeck profile add'".into(),
+                    ContextWakeError::InvalidData(
+                        "an active profile is required; run 'ctxwake profile add'".into(),
                     )
                 })?;
                 let adapter = self.agents.get(&profile.agent_id)?;
@@ -1268,12 +1270,12 @@ impl Application {
                 let profile = match profile {
                     Some(reference) => self.store.profile(&reference)?,
                     None => self.store.active_profile()?.ok_or_else(|| {
-                        AgentDeckError::InvalidData("an active profile is required".into())
+                        ContextWakeError::InvalidData("an active profile is required".into())
                     })?,
                 };
                 let adapter = self.agents.get(&profile.agent_id)?;
                 if !adapter.capabilities().model_selection.is_available() {
-                    return Err(AgentDeckError::CapabilityUnavailable(format!(
+                    return Err(ContextWakeError::CapabilityUnavailable(format!(
                         "{} does not support model selection",
                         adapter.display_name()
                     )));
@@ -1286,7 +1288,7 @@ impl Application {
                 if let Some(provider) = &provider
                     && !adapter.accepts_model_provider(provider)
                 {
-                    return Err(AgentDeckError::CapabilityUnavailable(format!(
+                    return Err(ContextWakeError::CapabilityUnavailable(format!(
                         "model provider {provider} is not declared by {}",
                         adapter.display_name()
                     )));
@@ -1308,7 +1310,7 @@ impl Application {
                                 .as_deref()
                                 .is_none_or(|value| candidate.provider_id == value)
                     }) {
-                        return Err(AgentDeckError::InvalidData(format!(
+                        return Err(ContextWakeError::InvalidData(format!(
                             "model {model} was not returned by {} for the selected provider",
                             adapter.display_name()
                         )));
@@ -1439,7 +1441,7 @@ fn require_confirmation(confirmed: bool, operation: &str, flag: &str) -> Result<
     if confirmed {
         Ok(())
     } else {
-        Err(AgentDeckError::InvalidData(format!(
+        Err(ContextWakeError::InvalidData(format!(
             "{operation} requires explicit confirmation; review the target and pass {flag}"
         )))
     }

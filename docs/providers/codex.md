@@ -6,7 +6,7 @@ Non-interactive version and authentication probes have a five-second child
 process timeout and bounded, redacted output. Interactive login, resume, and new
 session processes deliberately remain under user control.
 
-| Capability | Classification | AgentDeck behavior |
+| Capability | Classification | ContextWake behavior |
 |---|---|---|
 | Detect executable/version | CONFIRMED | Runs `codex --version` |
 | Auth status | CONFIRMED | Runs `codex login status` inside the selected `CODEX_HOME` |
@@ -23,15 +23,15 @@ session processes deliberately remain under user control.
 
 ## Credential strategy
 
-Each AgentDeck profile owns a separate provider home. The adapter creates a non-secret `config.toml` with:
+Each ContextWake profile owns a separate provider home. The adapter creates a non-secret `config.toml` with:
 
 ```toml
 cli_auth_credentials_store = "file"
 ```
 
-This selects a provider-supported, home-scoped credential file so identity boundaries do not depend on unverified keyring namespacing. Codex creates and owns `auth.json`; AgentDeck does not read, copy, log, export, or store its contents. The containing application-data directory is user-scoped. OS-keyring-per-profile isolation remains a research item.
+This selects a provider-supported, home-scoped credential file so identity boundaries do not depend on unverified keyring namespacing. Codex creates and owns `auth.json`; ContextWake does not read, copy, log, export, or store its contents. The containing application-data directory is user-scoped. OS-keyring-per-profile isolation remains a research item.
 
-Removing AgentDeck profile metadata does not log the provider out or delete the provider home. Logout is a separate, confirmed action.
+Removing ContextWake profile metadata does not log the provider out or delete the provider home. Logout is a separate, confirmed action.
 
 ## Official references
 

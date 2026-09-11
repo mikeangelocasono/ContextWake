@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Clone, Debug, Parser)]
 #[command(
-    name = "adeck",
+    name = "ctxwake",
     version,
     about = "Terminal-native identity and continuity manager for AI coding CLIs",
     long_about = None
@@ -45,7 +45,7 @@ pub enum Command {
     Usage,
     /// Inspect or select a profile's model preference.
     Model(ModelArgs),
-    /// Inspect and validate `AgentDeck` configuration.
+    /// Inspect and validate `ContextWake` configuration.
     Config(ConfigArgs),
     /// Generate completion scripts.
     Completion(CompletionArgs),
@@ -185,7 +185,7 @@ pub enum SessionCommand {
         session: String,
     },
     Resume {
-        /// `AgentDeck` session UUID or provider session UUID/name.
+        /// `ContextWake` session UUID or provider session UUID/name.
         session: String,
     },
     Archive {

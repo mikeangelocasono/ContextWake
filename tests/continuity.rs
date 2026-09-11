@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use agentdeck::checkpoint::{CheckpointInput, CheckpointService};
-use agentdeck::continuity::switch_profile;
-use agentdeck::git::GitClient;
-use agentdeck::handoff::HandoffService;
-use agentdeck::model::{AuthState, Profile, TrustState, Workspace};
-use agentdeck::paths::AppPaths;
-use agentdeck::store::Store;
 use chrono::Utc;
+use contextwake::checkpoint::{CheckpointInput, CheckpointService};
+use contextwake::continuity::switch_profile;
+use contextwake::git::GitClient;
+use contextwake::handoff::HandoffService;
+use contextwake::model::{AuthState, Profile, TrustState, Workspace};
+use contextwake::paths::AppPaths;
+use contextwake::store::Store;
 use uuid::Uuid;
 
 fn profile(paths: &AppPaths, name: &str) -> Profile {
@@ -61,7 +61,7 @@ fn failed_handoff_keeps_previous_profile_active() {
     store.upsert_workspace(&workspace).expect("register");
 
     let broken_git =
-        GitClient::with_executable("agentdeck-test-missing-git", Duration::from_millis(100));
+        GitClient::with_executable("contextwake-test-missing-git", Duration::from_millis(100));
     let checkpoints = CheckpointService::new(store.clone(), paths.clone(), broken_git);
     let handoffs = HandoffService::new(store.clone(), paths);
     let result = switch_profile(

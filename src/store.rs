@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::model::{
     AuthState, ContinuityKind, HandoffRecord, Profile, RedactionStatus, ResumeCapability, Session,
     TrustState, UsageSummary, Workspace,
@@ -86,14 +86,14 @@ impl Store {
         let store = Self { path: path.into() };
         if store.path.exists()
             && std::fs::symlink_metadata(&store.path)
-                .map_err(|source| AgentDeckError::Io {
+                .map_err(|source| ContextWakeError::Io {
                     path: store.path.clone(),
                     source,
                 })?
                 .file_type()
                 .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "state database is a symlink: {}",
                 store.path.display()
             )));
@@ -115,7 +115,7 @@ impl Store {
 
     fn migrate(&self) -> Result<()> {
         if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent).map_err(|source| AgentDeckError::Io {
+            std::fs::create_dir_all(parent).map_err(|source| ContextWakeError::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
@@ -210,6 +210,13 @@ impl Store {
                observed_at TEXT NOT NULL
              );",
         )?;
+        let schema_rows: i64 =
+            connection.query_row("SELECT COUNT(*) FROM schema_meta", [], |row| row.get(0))?;
+        if schema_rows != 1 {
+            return Err(ContextWakeError::InvalidData(format!(
+                "state schema metadata must contain exactly one row, found {schema_rows}"
+            )));
+        }
         let mut version: i64 =
             connection.query_row("SELECT version FROM schema_meta", [], |row| row.get(0))?;
         if version == 1 {
@@ -244,7 +251,7 @@ impl Store {
             version = 4;
         }
         if version != SCHEMA_VERSION {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "state schema {version} is not supported by this build"
             )));
         }
@@ -308,7 +315,7 @@ impl Store {
                 profile_from_row,
             )
             .optional()?;
-        profile.ok_or_else(|| AgentDeckError::ProfileNotFound(reference.into()))
+        profile.ok_or_else(|| ContextWakeError::ProfileNotFound(reference.into()))
     }
 
     pub fn active_profile(&self) -> Result<Option<Profile>> {
@@ -332,7 +339,7 @@ impl Store {
             |row| row.get(0),
         )?;
         if !exists {
-            return Err(AgentDeckError::ProfileNotFound(id.to_string()));
+            return Err(ContextWakeError::ProfileNotFound(id.to_string()));
         }
         let previous: Option<String> = transaction
             .query_row(
@@ -391,7 +398,7 @@ impl Store {
             ],
         )?;
         if changed == 0 {
-            return Err(AgentDeckError::ProfileNotFound(id.to_string()));
+            return Err(ContextWakeError::ProfileNotFound(id.to_string()));
         }
         self.profile(&id.to_string())
     }
@@ -477,7 +484,7 @@ impl Store {
                 workspace_from_row,
             )
             .optional()?;
-        workspace.ok_or_else(|| AgentDeckError::WorkspaceNotFound(reference.into()))
+        workspace.ok_or_else(|| ContextWakeError::WorkspaceNotFound(reference.into()))
     }
 
     pub fn workspace_by_path(&self, path: &Path) -> Result<Option<Workspace>> {
@@ -515,7 +522,7 @@ impl Store {
             |row| row.get(0),
         )?;
         if !exists {
-            return Err(AgentDeckError::WorkspaceNotFound(id.to_string()));
+            return Err(ContextWakeError::WorkspaceNotFound(id.to_string()));
         }
         connection.execute(
             "INSERT INTO settings(key, value) VALUES ('active_workspace_id', ?1)
@@ -594,12 +601,12 @@ impl Store {
     /// record owned by the same agent profile. Returns `true` when inserted.
     pub fn upsert_provider_session(&self, session: &Session) -> Result<bool> {
         let provider_session_id = session.provider_session_id.as_deref().ok_or_else(|| {
-            AgentDeckError::InvalidData(
+            ContextWakeError::InvalidData(
                 "provider session synchronization requires a provider session ID".into(),
             )
         })?;
         let profile_id = session.profile_id.ok_or_else(|| {
-            AgentDeckError::InvalidData(
+            ContextWakeError::InvalidData(
                 "provider session synchronization requires a profile".into(),
             )
         })?;
@@ -731,7 +738,7 @@ impl Store {
                 session_from_row,
             )
             .optional()?;
-        session.ok_or_else(|| AgentDeckError::SessionNotFound(reference.into()))
+        session.ok_or_else(|| ContextWakeError::SessionNotFound(reference.into()))
     }
 
     pub fn archive_session(&self, reference: &str, archived: bool) -> Result<Session> {
@@ -816,7 +823,7 @@ impl Store {
                 |row| row.get::<_, String>(0).map(PathBuf::from),
             )
             .optional()?
-            .ok_or_else(|| AgentDeckError::CheckpointNotFound(reference.into()))
+            .ok_or_else(|| ContextWakeError::CheckpointNotFound(reference.into()))
     }
 
     pub fn list_checkpoint_paths(&self) -> Result<Vec<(Uuid, String, PathBuf, DateTime<Utc>)>> {
@@ -877,7 +884,7 @@ impl Store {
                 handoff_from_row,
             )
             .optional()?
-            .ok_or_else(|| AgentDeckError::HandoffNotFound(reference.into()))
+            .ok_or_else(|| ContextWakeError::HandoffNotFound(reference.into()))
     }
 
     pub fn list_handoffs(&self) -> Result<Vec<HandoffRecord>> {
@@ -1407,5 +1414,96 @@ mod tests {
             .query_row("SELECT version FROM schema_meta", [], |row| row.get(0))
             .expect("schema version");
         assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn migrates_v3_session_titles_and_reopen_is_idempotent() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.db");
+        let connection = Connection::open(&path).expect("legacy database");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                 INSERT INTO schema_meta(version) VALUES (3);
+                 CREATE TABLE sessions (
+                   id TEXT PRIMARY KEY, provider_session_id TEXT, workspace_id TEXT NOT NULL,
+                   profile_id TEXT, agent_id TEXT NOT NULL, model_provider_id TEXT, model TEXT,
+                   started_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+                   resume_capability TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+                   continuity TEXT NOT NULL DEFAULT 'unknown'
+                 );",
+            )
+            .expect("v3 schema");
+        drop(connection);
+
+        Store::open(&path).expect("v3 migration");
+        Store::open(&path).expect("idempotent reopen");
+        let connection = Connection::open(&path).expect("migrated database");
+        assert!(table_has_column(&connection, "sessions", "title").expect("title column"));
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_meta", [], |row| row.get(0))
+            .expect("version");
+        assert_eq!(version, 4);
+    }
+
+    #[test]
+    fn unsupported_schema_version_is_rejected() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.db");
+        let connection = Connection::open(&path).expect("future database");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                 INSERT INTO schema_meta(version) VALUES (99);",
+            )
+            .expect("future schema");
+        drop(connection);
+
+        assert!(matches!(
+            Store::open(&path),
+            Err(ContextWakeError::InvalidData(message)) if message.contains("not supported")
+        ));
+    }
+
+    #[test]
+    fn duplicate_schema_metadata_is_rejected() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.db");
+        let connection = Connection::open(&path).expect("invalid database");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                 INSERT INTO schema_meta(version) VALUES (4), (4);",
+            )
+            .expect("duplicate metadata");
+        drop(connection);
+
+        assert!(matches!(
+            Store::open(&path),
+            Err(ContextWakeError::InvalidData(message)) if message.contains("exactly one row")
+        ));
+    }
+
+    #[test]
+    fn failed_v3_migration_rolls_back_schema_version() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.db");
+        let connection = Connection::open(&path).expect("broken database");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_meta (version INTEGER NOT NULL);
+                 INSERT INTO schema_meta(version) VALUES (3);
+                 CREATE VIEW sessions AS SELECT 1 AS id;",
+            )
+            .expect("broken v3 schema");
+        drop(connection);
+
+        assert!(Store::open(&path).is_err());
+        let connection = Connection::open(&path).expect("database after failure");
+        let version: i64 = connection
+            .query_row("SELECT version FROM schema_meta", [], |row| row.get(0))
+            .expect("version after rollback");
+        assert_eq!(version, 3);
+        assert!(!table_has_column(&connection, "sessions", "title").expect("no title column"));
     }
 }

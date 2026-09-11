@@ -5,7 +5,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Component | Status | Evidence | Remaining work |
 |---|---|---|---|
 | Terminal-only scope | COMPLETE | No web runtime, frontend, server, or hosted control plane exists | Preserve boundary |
-| Rust CLI router | COMPLETE | Coherent CLI/JSON output and completion generation | Complete final-name migration |
+| Rust CLI router | COMPLETE | Coherent CLI/JSON output and completion generation under `ctxwake` | Shell-completion distribution |
 | TUI | COMPLETE | Real service state across dashboard, capabilities, profiles, workspaces, sessions, checkpoints, handoffs, activity, settings, diagnostics, onboarding, auth help, and keyboard help; responsive render tests | Event-driven background refresh and richer model picker |
 | Domain model | COMPLETE | Agent, ModelProvider, Model, Profile, Workspace, Session, Checkpoint, Handoff, GitSnapshot, and UsageEvent are distinct | Persistence APIs for richer model metadata |
 | Adapter architecture | COMPLETE | Compile-time `AgentAdapter`, graded capabilities, five adapters, and dynamic model/session hooks | Signed/sandboxed external adapter design is future work |
@@ -29,7 +29,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Local activity | COMPLETE | SQLite events and separate CLI/TUI section | Duration tracking |
 | Diagnostics | COMPLETE | Config, DB, Git, all five adapters, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
 | Security controls | COMPLETE | Fixed argv, bounded probes, redaction, terminal sanitization, containment, symlink defense, and transactional switching | Fuzzing and external security review |
-| Open-source readiness | PARTIAL | README, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, and CI matrix | Final rename, release artifact workflow validation, and signing/notarization |
+| Open-source readiness | PARTIAL | ContextWake rename with compatibility migration, README, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, CI matrix, and tag-gated artifact workflow | Hosted CI run and signing/notarization |
 
 ## Latest validation evidence
 
@@ -45,6 +45,6 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 - Cross-agent target-model comprehension QA requires deliberately authorized disposable profiles; artifact preservation is verified.
 - Windows Authenticode signing and Apple signing/notarization identities are unavailable.
 - macOS CI is configured but cannot be claimed until a GitHub-hosted run completes.
-- The provider-neutral final-name migration and final post-change validation remain in progress.
+- Final post-change Windows/WSL execution, packaging, and artifact validation remain in progress.
 
 These limits are reflected in the [compatibility matrix](docs/providers/compatibility.md); no UI value claims otherwise.

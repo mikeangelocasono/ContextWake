@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentdeck.invalid/schemas/awhf-1.2.0.schema.json",
+  "$id": "https://contextwake.invalid/schemas/awhf-1.2.0.schema.json",
   "title": "Agent Workspace Handoff Format 1.2.0",
   "type": "object",
   "additionalProperties": false,

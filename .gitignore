@@ -1,6 +1,8 @@
 /target/
 /tmp/
+/.contextwake/
 /.agentdeck/
+/dist/
 /AI_CLI_Workspace_Manager_PRD_v1.0.pdf
 /.idea/
 /.vscode/

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
-pub enum AgentDeckError {
+pub enum ContextWakeError {
     #[error("configuration error: {0}")]
     Configuration(String),
     #[error("state store error: {0}")]
@@ -40,7 +40,7 @@ pub enum AgentDeckError {
     Cancelled,
 }
 
-pub type Result<T> = std::result::Result<T, AgentDeckError>;
+pub type Result<T> = std::result::Result<T, ContextWakeError>;
 
 pub trait IoContext<T> {
     fn at(self, path: impl Into<PathBuf>) -> Result<T>;
@@ -49,6 +49,6 @@ pub trait IoContext<T> {
 impl<T> IoContext<T> for std::io::Result<T> {
     fn at(self, path: impl Into<PathBuf>) -> Result<T> {
         let path = path.into();
-        self.map_err(|source| AgentDeckError::Io { path, source })
+        self.map_err(|source| ContextWakeError::Io { path, source })
     }
 }

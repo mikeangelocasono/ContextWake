@@ -6,7 +6,7 @@ mod opencode;
 
 use std::path::Path;
 
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AgentModel, AuthState, DiscoveredAgentSession, ModelProvider,
 };
@@ -71,7 +71,7 @@ pub trait AgentAdapter: Send + Sync {
         _workspace: &Path,
         _max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
-        Err(AgentDeckError::CapabilityUnavailable(format!(
+        Err(ContextWakeError::CapabilityUnavailable(format!(
             "{} does not expose a supported session-listing interface",
             self.display_name()
         )))
@@ -82,7 +82,7 @@ pub trait AgentAdapter: Send + Sync {
         _workspace: Option<&Path>,
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
-        Err(AgentDeckError::CapabilityUnavailable(format!(
+        Err(ContextWakeError::CapabilityUnavailable(format!(
             "{} does not expose a supported model catalog",
             self.display_name()
         )))
@@ -125,8 +125,8 @@ impl AgentRegistry {
             "gemini" | "gemini-cli" => Ok(&self.gemini),
             "kiro" | "kiro-cli" => Ok(&self.kiro),
             "opencode" => Ok(&self.opencode),
-            _ => Err(AgentDeckError::CapabilityUnavailable(format!(
-                "agent {id} has no implemented adapter; run 'adeck agent list'"
+            _ => Err(ContextWakeError::CapabilityUnavailable(format!(
+                "agent {id} has no implemented adapter; run 'ctxwake agent list'"
             ))),
         }
     }

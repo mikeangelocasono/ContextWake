@@ -5,7 +5,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AgentModel, AuthState, Capability, CapabilityMaturity,
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
@@ -51,8 +51,9 @@ struct KiroModel {
 
 impl KiroAdapter {
     pub fn discover() -> Self {
-        let executable =
-            std::env::var_os("AGENTDECK_KIRO_BIN").map_or_else(default_executable, PathBuf::from);
+        let executable = std::env::var_os("CONTEXTWAKE_KIRO_BIN")
+            .or_else(|| std::env::var_os("AGENTDECK_KIRO_BIN"))
+            .map_or_else(default_executable, PathBuf::from);
         Self { executable }
     }
 
@@ -101,12 +102,12 @@ fn default_executable() -> PathBuf {
         if let Some(path) = discover_windows_native_executable() {
             return path;
         }
-        PathBuf::from(r"C:\__agentdeck_missing__\kiro-cli.exe")
+        PathBuf::from(r"C:\__contextwake_missing__\kiro-cli.exe")
     }
     #[cfg(not(windows))]
     {
         super::find_safe_on_path("kiro-cli")
-            .unwrap_or_else(|| PathBuf::from("/__agentdeck_missing__/kiro-cli"))
+            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/kiro-cli"))
     }
 }
 
@@ -128,7 +129,7 @@ fn discover_windows_native_executable() -> Option<PathBuf> {
 
 fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgentSession>> {
     let envelopes: Vec<KiroSessionEnvelope> = serde_json::from_slice(stdout).map_err(|error| {
-        AgentDeckError::Provider(format!("Kiro CLI returned invalid session JSON: {error}"))
+        ContextWakeError::Provider(format!("Kiro CLI returned invalid session JSON: {error}"))
     })?;
     let limit = max_count.min(PROVIDER_RESULT_LIMIT);
     let mut sessions = Vec::new();
@@ -151,7 +152,7 @@ fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgent
 
 fn parse_models(stdout: &[u8]) -> Result<Vec<AgentModel>> {
     let response: KiroModelEnvelope = serde_json::from_slice(stdout).map_err(|error| {
-        AgentDeckError::Provider(format!("Kiro CLI returned invalid model JSON: {error}"))
+        ContextWakeError::Provider(format!("Kiro CLI returned invalid model JSON: {error}"))
     })?;
     response
         .models
@@ -272,7 +273,7 @@ impl AgentAdapter for KiroAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: format!(
-                    "Kiro CLI could not be found ({error}). Install Kiro CLI or set AGENTDECK_KIRO_BIN."
+                    "Kiro CLI could not be found ({error}). Install Kiro CLI or set CONTEXTWAKE_KIRO_BIN."
                 ),
             }),
         }
@@ -282,7 +283,7 @@ impl AgentAdapter for KiroAdapter {
         let mut command = self.base_command(Some(agent_home));
         command.args(["whoami", "--format", "json"]);
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not query Kiro CLI authentication: {error}"))
+            ContextWakeError::Provider(format!("could not query Kiro CLI authentication: {error}"))
         })?;
         if output.timed_out {
             return Ok(AuthState::Unknown);
@@ -291,7 +292,7 @@ impl AgentAdapter for KiroAdapter {
             return Ok(AuthState::SignedOut);
         }
         serde_json::from_slice::<serde_json::Value>(&output.stdout).map_err(|error| {
-            AgentDeckError::Provider(format!("Kiro CLI returned invalid auth JSON: {error}"))
+            ContextWakeError::Provider(format!("Kiro CLI returned invalid auth JSON: {error}"))
         })?;
         Ok(AuthState::SignedIn)
     }
@@ -300,7 +301,7 @@ impl AgentAdapter for KiroAdapter {
         std::fs::create_dir_all(agent_home).at(agent_home)?;
         let metadata = std::fs::symlink_metadata(agent_home).at(agent_home)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "Kiro profile directory must be a real directory: {}",
                 agent_home.display()
             )));
@@ -316,7 +317,7 @@ impl AgentAdapter for KiroAdapter {
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
         if device_auth {
-            return Err(AgentDeckError::CapabilityUnavailable(
+            return Err(ContextWakeError::CapabilityUnavailable(
                 "Kiro CLI has no verified Codex-compatible --device-auth flag".into(),
             ));
         }
@@ -328,19 +329,19 @@ impl AgentAdapter for KiroAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Kiro CLI login: {error}"))
+                ContextWakeError::Provider(format!("could not start Kiro CLI login: {error}"))
             })?;
         if status.success() {
             self.auth_status(agent_home)
         } else {
-            Err(AgentDeckError::Provider(format!(
-                "Kiro CLI login exited with status {status}; the previous AgentDeck profile remains unchanged"
+            Err(ContextWakeError::Provider(format!(
+                "Kiro CLI login exited with status {status}; the previous ContextWake profile remains unchanged"
             )))
         }
     }
 
     fn logout(&self, _agent_home: &Path) -> Result<()> {
-        Err(AgentDeckError::CapabilityUnavailable(
+        Err(ContextWakeError::CapabilityUnavailable(
             "Kiro logout is not isolated by KIRO_HOME. Run `kiro-cli logout` explicitly if you intend to invalidate the shared Kiro credential."
                 .into(),
         ))
@@ -357,10 +358,10 @@ impl AgentAdapter for KiroAdapter {
             .current_dir(workspace)
             .args(["chat", "--list-sessions", "--format", "json"]);
         let output = run_probe(command, DISCOVERY_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not list Kiro CLI sessions: {error}"))
+            ContextWakeError::Provider(format!("could not list Kiro CLI sessions: {error}"))
         })?;
         if !output.success {
-            return Err(AgentDeckError::Provider(format!(
+            return Err(ContextWakeError::Provider(format!(
                 "Kiro CLI session listing failed: {}",
                 safe_probe_diagnostic(&output)
             )));
@@ -380,10 +381,10 @@ impl AgentAdapter for KiroAdapter {
         }
         command.args(["chat", "--list-models", "--format", "json"]);
         let output = run_probe(command, DISCOVERY_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not list Kiro CLI models: {error}"))
+            ContextWakeError::Provider(format!("could not list Kiro CLI models: {error}"))
         })?;
         if !output.success {
-            return Err(AgentDeckError::Provider(format!(
+            return Err(ContextWakeError::Provider(format!(
                 "Kiro CLI model listing failed: {}",
                 safe_probe_diagnostic(&output)
             )));
@@ -403,12 +404,12 @@ impl AgentAdapter for KiroAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Kiro CLI resume: {error}"))
+                ContextWakeError::Provider(format!("could not start Kiro CLI resume: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Kiro CLI could not natively resume this session (status {status}). Create a workspace handoff instead."
             )))
         }
@@ -424,7 +425,7 @@ impl AgentAdapter for KiroAdapter {
     ) -> Result<()> {
         let context_path = handoff_directory.join("context.md");
         if !context_path.is_file() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context.md is unavailable".into(),
             ));
         }
@@ -449,12 +450,12 @@ impl AgentAdapter for KiroAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Kiro CLI: {error}"))
+                ContextWakeError::Provider(format!("could not start Kiro CLI: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Kiro CLI new-session launch exited with status {status}; no native resume was claimed"
             )))
         }
@@ -524,7 +525,7 @@ mod tests {
 
     #[test]
     fn missing_executable_is_reported_without_crashing() {
-        let health = KiroAdapter::with_executable("agentdeck-test-missing-kiro")
+        let health = KiroAdapter::with_executable("contextwake-test-missing-kiro")
             .detect(None)
             .expect("health result");
         assert!(!health.installed);

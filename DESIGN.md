@@ -2,7 +2,7 @@
 
 ## Direction
 
-AgentDeck is a compact continuity console, not a branded splash screen. The
+ContextWake is a compact continuity console, not a branded splash screen. The
 dominant hierarchy is active identity, current workspace/Git evidence, and the
 continuity action. Dense tables support browsing; warning dialogs slow down
 identity changes without making routine inspection cumbersome.

@@ -192,7 +192,7 @@ pub struct Session {
 
 /// Provider-owned session metadata discovered through a supported coding-agent
 /// interface. This is deliberately smaller than [`Session`]: discovery must not
-/// imply that `AgentDeck` owns or can mutate the provider's transcript.
+/// imply that `ContextWake` owns or can mutate the provider's transcript.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct DiscoveredAgentSession {
     pub provider_session_id: String,

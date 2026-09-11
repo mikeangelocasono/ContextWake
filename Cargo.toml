@@ -1,12 +1,12 @@
 [package]
-name = "agentdeck"
+name = "contextwake"
 version = "0.1.0-alpha.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Terminal-native workspace, identity, session, and context continuity manager for AI coding CLIs"
 license = "Apache-2.0"
 readme = "README.md"
-keywords = ["cli", "tui", "codex", "developer-tools", "handoff"]
+keywords = ["cli", "tui", "ai", "developer-tools", "handoff"]
 categories = ["command-line-utilities", "development-tools"]
 include = [
     "/src/**",
@@ -27,7 +27,7 @@ include = [
 ]
 
 [[bin]]
-name = "adeck"
+name = "ctxwake"
 path = "src/main.rs"
 
 [dependencies]

@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 use std::time::Duration;
 
-use agentdeck::git::GitClient;
+use contextwake::git::GitClient;
 
 fn git(root: &std::path::Path, args: &[&str]) {
     let status = Command::new("git")
@@ -19,7 +19,7 @@ fn captures_clean_and_dirty_repository_state() {
     let root = directory.path();
     git(root, &["init", "-b", "main"]);
     git(root, &["config", "user.email", "tests@example.invalid"]);
-    git(root, &["config", "user.name", "AgentDeck Tests"]);
+    git(root, &["config", "user.name", "ContextWake Tests"]);
 
     fs::write(root.join("staged.txt"), "initial\n").expect("seed staged");
     fs::write(root.join("unstaged.txt"), "initial\n").expect("seed unstaged");

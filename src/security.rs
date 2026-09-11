@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RedactionReport {
@@ -59,12 +59,12 @@ pub fn sanitize_terminal(input: &str) -> String {
 pub fn validate_local_name(value: &str) -> Result<String> {
     let sanitized = sanitize_terminal(value).trim().to_string();
     if sanitized.is_empty() || sanitized.chars().count() > 64 {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "names must contain between 1 and 64 visible characters".into(),
         ));
     }
     if sanitized.contains(['/', '\\']) || sanitized == "." || sanitized == ".." {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "names cannot contain path separators".into(),
         ));
     }
@@ -80,7 +80,7 @@ pub fn profile_slug(value: &str) -> Result<String> {
         .collect::<String>();
     let slug = slug.trim_matches('-').to_string();
     if slug.is_empty() {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "profile name must contain at least one letter or number".into(),
         ));
     }
@@ -94,7 +94,7 @@ pub fn validate_external_reference(value: &str) -> Result<String> {
         || value.starts_with('-')
         || value.contains(['\n', '\r', '\t'])
     {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "external references must be 1-160 single-line characters and cannot begin with '-'"
                 .into(),
         ));
@@ -124,7 +124,7 @@ pub fn ensure_relative_payload_path(path: &Path) -> Result<()> {
             )
         })
     {
-        return Err(AgentDeckError::UnsafePath(path.display().to_string()));
+        return Err(ContextWakeError::UnsafePath(path.display().to_string()));
     }
     Ok(())
 }

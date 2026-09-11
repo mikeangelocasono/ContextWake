@@ -68,7 +68,7 @@ pub fn run_doctor(
             name: "Configuration".into(),
             status: CheckStatus::Fail,
             summary: sanitize_terminal(&error.to_string()),
-            action: Some("Run 'adeck config validate' after correcting config.toml.".into()),
+            action: Some("Run 'ctxwake config validate' after correcting config.toml.".into()),
         },
     });
 
@@ -83,7 +83,7 @@ pub fn run_doctor(
             name: "State database".into(),
             status: CheckStatus::Fail,
             summary: sanitize_terminal(&value),
-            action: Some("Back up the AgentDeck data directory before recovery.".into()),
+            action: Some("Back up the ContextWake data directory before recovery.".into()),
         },
         Err(error) => DoctorCheck {
             name: "State database".into(),
@@ -140,7 +140,7 @@ pub fn run_doctor(
                 status: CheckStatus::Warning,
                 summary: health.message,
                 action: Some(format!(
-                    "Install {} or configure its AGENTDECK_*_BIN override.",
+                    "Install {} or configure its CONTEXTWAKE_*_BIN override.",
                     adapter.display_name()
                 )),
             },
@@ -168,21 +168,21 @@ pub fn run_doctor(
                 },
                 summary: format!("{}: {}", profile.display_name, auth.as_str()),
                 action: (auth != AuthState::SignedIn)
-                    .then(|| format!("Run 'adeck profile login {}'.", profile.name)),
+                    .then(|| format!("Run 'ctxwake profile login {}'.", profile.name)),
             }
         }
         None => DoctorCheck {
             name: "Authentication".into(),
             status: CheckStatus::Warning,
-            summary: "no active AgentDeck profile".into(),
-            action: Some("Run 'adeck profile add Personal'.".into()),
+            summary: "no active ContextWake profile".into(),
+            action: Some("Run 'ctxwake profile add Personal'.".into()),
         },
     });
 
     checks.push(DoctorCheck {
         name: "Credential boundary".into(),
         status: CheckStatus::Pass,
-        summary: "AgentDeck stores profile metadata only; each coding agent owns credentials in an isolated configuration root"
+        summary: "ContextWake stores profile metadata only; each coding agent owns credentials in an isolated configuration root"
             .into(),
         action: None,
     });
@@ -197,7 +197,7 @@ pub fn run_doctor(
         summary: if std::io::stdout().is_terminal() {
             "interactive terminal detected".into()
         } else {
-            "non-interactive output; use CLI commands or run 'adeck' in a terminal".into()
+            "non-interactive output; use CLI commands or run 'ctxwake' in a terminal".into()
         },
         action: None,
     });

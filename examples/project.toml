@@ -1,4 +1,4 @@
-# Copy to <workspace>/.agentdeck/project.toml and review before trusting.
+# Copy to <workspace>/.contextwake/project.toml and review before trusting.
 schema_version = 1
 name = "Example Workspace"
 preferred_agent = "codex"

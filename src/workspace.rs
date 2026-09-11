@@ -4,7 +4,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
 use crate::model::{TrustState, Workspace};
 use crate::security::{sanitize_terminal, validate_local_name};
@@ -49,7 +49,7 @@ impl Default for ProjectConfig {
 pub fn detect_workspace(path: &Path, git: &GitClient, trust: TrustState) -> Result<Workspace> {
     let canonical = path.canonicalize().at(path)?;
     if !canonical.is_dir() {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "{} is not a directory",
             canonical.display()
         )));
@@ -80,12 +80,17 @@ pub fn detect_workspace(path: &Path, git: &GitClient, trust: TrustState) -> Resu
 }
 
 pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig>> {
-    let path = workspace.path.join(".agentdeck").join("project.toml");
-    if !path.exists() {
+    let current_path = workspace.path.join(".contextwake").join("project.toml");
+    let legacy_path = workspace.path.join(".agentdeck").join("project.toml");
+    let path = if current_path.exists() {
+        current_path
+    } else if legacy_path.exists() {
+        legacy_path
+    } else {
         return Ok(None);
-    }
+    };
     if workspace.trust_state != TrustState::Trusted {
-        return Err(AgentDeckError::UntrustedConfiguration(format!(
+        return Err(ContextWakeError::UntrustedConfiguration(format!(
             "{} exists, but the workspace is not trusted; no commands were loaded",
             path.display()
         )));
@@ -98,16 +103,16 @@ pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig
             .file_type()
             .is_symlink()
     {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "project configuration escapes the workspace or is a symlink: {}",
             path.display()
         )));
     }
     let content = std::fs::read_to_string(&path).at(&path)?;
     let mut config: ProjectConfig = toml::from_str(&content)
-        .map_err(|error| AgentDeckError::Configuration(format!("{}: {error}", path.display())))?;
+        .map_err(|error| ContextWakeError::Configuration(format!("{}: {error}", path.display())))?;
     if config.schema_version != 1 {
-        return Err(AgentDeckError::Configuration(format!(
+        return Err(ContextWakeError::Configuration(format!(
             "unsupported project config schema {}",
             config.schema_version
         )));
@@ -121,18 +126,18 @@ pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig
                 .components()
                 .any(|part| matches!(part, std::path::Component::ParentDir)))
     {
-        return Err(AgentDeckError::UnsafePath(
+        return Err(ContextWakeError::UnsafePath(
             instructions.display().to_string(),
         ));
     }
     if config.validation.len() > 32 {
-        return Err(AgentDeckError::Configuration(
+        return Err(ContextWakeError::Configuration(
             "at most 32 validation commands are allowed".into(),
         ));
     }
     for command in &config.validation {
         if command.executable.trim().is_empty() {
-            return Err(AgentDeckError::Configuration(
+            return Err(ContextWakeError::Configuration(
                 "validation command executable cannot be empty".into(),
             ));
         }
@@ -144,7 +149,7 @@ pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig
                 .iter()
                 .any(|arg| arg.contains(['\0']) || arg.len() > 16_384)
         {
-            return Err(AgentDeckError::Configuration(
+            return Err(ContextWakeError::Configuration(
                 "validation commands contain control characters".into(),
             ));
         }
@@ -165,13 +170,13 @@ pub fn load_project_instructions(workspace: &Workspace) -> Result<Option<String>
     let path = workspace.path.join(relative);
     let metadata = std::fs::symlink_metadata(&path).at(&path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "project instructions must be a regular file, not a symlink: {}",
             path.display()
         )));
     }
     if metadata.len() > 65_536 {
-        return Err(AgentDeckError::InvalidData(format!(
+        return Err(ContextWakeError::InvalidData(format!(
             "project instructions exceed the 64 KiB capture limit: {}",
             path.display()
         )));
@@ -179,7 +184,7 @@ pub fn load_project_instructions(workspace: &Workspace) -> Result<Option<String>
     let canonical_workspace = workspace.path.canonicalize().at(&workspace.path)?;
     let canonical_path = path.canonicalize().at(&path)?;
     if !canonical_path.starts_with(&canonical_workspace) {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "project instructions escape the workspace: {}",
             path.display()
         )));
@@ -207,9 +212,9 @@ mod tests {
     #[test]
     fn captures_bounded_trusted_project_instructions() {
         let root = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir(root.path().join(".agentdeck")).expect("config directory");
+        std::fs::create_dir(root.path().join(".contextwake")).expect("config directory");
         std::fs::write(
-            root.path().join(".agentdeck/project.toml"),
+            root.path().join(".contextwake/project.toml"),
             "schema_version = 1\ninstructions_file = \"AGENTS.md\"\n",
         )
         .expect("config");
@@ -222,5 +227,50 @@ mod tests {
             load_project_instructions(&workspace).expect("instructions"),
             Some("Keep changes local.\n".into())
         );
+    }
+
+    #[test]
+    fn legacy_project_config_remains_readable_after_rename() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(root.path().join(".agentdeck")).expect("legacy config directory");
+        std::fs::write(
+            root.path().join(".agentdeck/project.toml"),
+            "schema_version = 1\nname = \"Legacy workspace\"\n",
+        )
+        .expect("legacy config");
+        let git = GitClient::new(std::time::Duration::from_secs(1));
+        let workspace =
+            detect_workspace(root.path(), &git, TrustState::Trusted).expect("workspace");
+
+        let config = load_project_config(&workspace)
+            .expect("legacy config")
+            .expect("present");
+        assert_eq!(config.name.as_deref(), Some("Legacy workspace"));
+    }
+
+    #[test]
+    fn current_project_config_wins_over_legacy_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        for directory in [".agentdeck", ".contextwake"] {
+            std::fs::create_dir(root.path().join(directory)).expect("config directory");
+        }
+        std::fs::write(
+            root.path().join(".agentdeck/project.toml"),
+            "schema_version = 1\nname = \"Legacy\"\n",
+        )
+        .expect("legacy config");
+        std::fs::write(
+            root.path().join(".contextwake/project.toml"),
+            "schema_version = 1\nname = \"Current\"\n",
+        )
+        .expect("current config");
+        let git = GitClient::new(std::time::Duration::from_secs(1));
+        let workspace =
+            detect_workspace(root.path(), &git, TrustState::Trusted).expect("workspace");
+
+        let config = load_project_config(&workspace)
+            .expect("current config")
+            .expect("present");
+        assert_eq!(config.name.as_deref(), Some("Current"));
     }
 }

@@ -29,4 +29,4 @@ Tests use temporary application roots and repositories. CI must never require pe
 - `security.rs`: terminal sanitization, path rules, redaction
 - `tui/`: terminal application and responsive rendering
 
-Integration tests create disposable Git repositories and isolated `AGENTDECK_HOME` roots. Versioned checkpoint and AWHF manifests are published in `schemas/`. Handoff fixtures must contain synthetic values only. Live authentication tests are deliberately excluded from public CI.
+Integration tests create disposable Git repositories and isolated `CONTEXTWAKE_HOME` roots. Versioned checkpoint and AWHF manifests are published in `schemas/`. Handoff fixtures must contain synthetic values only. Live authentication tests are deliberately excluded from public CI.

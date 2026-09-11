@@ -19,6 +19,6 @@ pub mod tui;
 pub mod validation;
 pub mod workspace;
 
-pub const PRODUCT_NAME: &str = "AgentDeck";
-pub const BINARY_NAME: &str = "adeck";
+pub const PRODUCT_NAME: &str = "ContextWake";
+pub const BINARY_NAME: &str = "ctxwake";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

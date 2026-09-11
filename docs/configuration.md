@@ -1,7 +1,7 @@
 # Configuration
 
-Run `adeck config path` to see the platform-specific global file. Set `AGENTDECK_HOME` to an isolated root for tests or portable development.
-Use `adeck config set --ascii true` (and the other documented flags) for atomic,
+Run `ctxwake config path` to see the platform-specific global file. Set `CONTEXTWAKE_HOME` to an isolated root for tests or portable development.
+Use `ctxwake config set --ascii true` (and the other documented flags) for atomic,
 validated changes without opening an editor. The command exposes no credential
 or provider-home settings.
 
@@ -20,7 +20,7 @@ validation_timeout_ms = 120000
 codex_app_server = false
 ```
 
-Optional repository metadata lives at `.agentdeck/project.toml`:
+Optional repository metadata lives at `.contextwake/project.toml`:
 
 ```toml
 schema_version = 1
@@ -40,20 +40,21 @@ Project configuration is ignored until the workspace is explicitly trusted. Vali
 For a trusted workspace, `instructions_file` must remain inside the workspace,
 must be a regular non-symlink UTF-8 file, and is limited to 64 KiB. Its
 secret-redacted, terminal-safe contents are captured in new checkpoints.
-Run `adeck workspace validate` to execute them explicitly, or pass `--validate`
-to `adeck checkpoint create` to execute them and capture redacted status-only
+Run `ctxwake workspace validate` to execute them explicitly, or pass `--validate`
+to `ctxwake checkpoint create` to execute them and capture redacted status-only
 results. Standard input and output are disconnected, and each command has the
-configured timeout. AgentDeck does not invoke a shell or persist command output.
+configured timeout. ContextWake does not invoke a shell or persist command output.
 
 Precedence is CLI flags, environment overrides, trusted project configuration, selected profile metadata, global configuration, and built-in defaults. Project configuration may not control provider credential paths, telemetry, or update channels.
 
 Agent executable overrides are process-local and must point to trusted binaries:
 
 ```text
-AGENTDECK_CODEX_BIN=/absolute/path/to/codex
-AGENTDECK_CLAUDE_BIN=/absolute/path/to/claude
-AGENTDECK_GEMINI_BIN=/absolute/path/to/gemini
-AGENTDECK_OPENCODE_BIN=/absolute/path/to/opencode
+CONTEXTWAKE_CODEX_BIN=/absolute/path/to/codex
+CONTEXTWAKE_CLAUDE_BIN=/absolute/path/to/claude
+CONTEXTWAKE_GEMINI_BIN=/absolute/path/to/gemini
+CONTEXTWAKE_OPENCODE_BIN=/absolute/path/to/opencode
+CONTEXTWAKE_KIRO_BIN=/absolute/path/to/kiro-cli
 ```
 
-AgentDeck never discovers an executable from a repository-local path by itself. Legacy project key `preferred_provider` and global table `[provider_experimental]` remain readable, but new files serialize `preferred_agent` and `[agent_experimental]`.
+ContextWake never discovers an executable from a repository-local path by itself. During the pre-release rename, `AGENTDECK_HOME`, `AGENTDECK_<AGENT>_BIN`, and `.agentdeck/project.toml` remain readable at lower precedence. Default legacy OS state directories are moved only when the corresponding ContextWake destination does not exist; existing destinations are never overwritten. Legacy project key `preferred_provider` and global table `[provider_experimental]` also remain readable, while new files serialize `preferred_agent` and `[agent_experimental]`.

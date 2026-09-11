@@ -26,3 +26,14 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Real Windows Gemini CLI 0.59.0 detection and unauthenticated-boundary QA.
 - Kiro CLI 2.21.3 JSON authentication/session/model integration and real same-identity session synchronization/resume QA.
 - Three directed Codex/Claude/OpenCode portable artifact flows preserving narrative, Git, validation, and project-instruction state.
+
+### Changed
+
+- Renamed the project, crate, binary, configuration directory, diagnostics, and schemas from the conflicting AgentDeck identity to provider-neutral ContextWake/`ctxwake`.
+- Retained lower-precedence legacy environment variables and `.agentdeck/project.toml`, plus safe one-time default state-directory migration without overwriting an existing ContextWake destination.
+
+### Security
+
+- Kiro multiple-profile support is disabled because real Windows QA showed that `KIRO_HOME` does not isolate its OS credential.
+- Database startup rejects duplicate or unsupported schema metadata and migration rollback/idempotence are regression-tested.
+- Release archives contain an explicit file set and receive SHA-256 manifests; Windows and macOS binaries remain truthfully unsigned/unnotarized.

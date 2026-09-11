@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 use wait_timeout::ChildExt;
 
-use crate::error::{AgentDeckError, Result};
+use crate::error::{ContextWakeError, Result};
 use crate::model::{TrustState, ValidationResult, ValidationStatus, Workspace};
 use crate::security::{SecretScanner, sanitize_terminal};
 use crate::workspace::CommandSpec;
@@ -25,20 +25,20 @@ impl ValidationRunner {
         commands: &[CommandSpec],
     ) -> Result<Vec<ValidationResult>> {
         if workspace.trust_state != TrustState::Trusted {
-            return Err(AgentDeckError::UntrustedConfiguration(
+            return Err(ContextWakeError::UntrustedConfiguration(
                 "validation requires a trusted workspace and an explicit validate action".into(),
             ));
         }
         if commands.is_empty() {
-            return Err(AgentDeckError::Configuration(
-                "no validation commands are declared in .agentdeck/project.toml".into(),
+            return Err(ContextWakeError::Configuration(
+                "no validation commands are declared in .contextwake/project.toml".into(),
             ));
         }
         let working_directory =
             workspace
                 .path
                 .canonicalize()
-                .map_err(|source| AgentDeckError::Io {
+                .map_err(|source| ContextWakeError::Io {
                     path: workspace.path.clone(),
                     source,
                 })?;
@@ -78,7 +78,7 @@ impl ValidationRunner {
             }
         };
         let status = child.wait_timeout(self.timeout).map_err(|error| {
-            AgentDeckError::InvalidData(format!("could not wait for validation command: {error}"))
+            ContextWakeError::InvalidData(format!("could not wait for validation command: {error}"))
         })?;
         let (status, summary) = match status {
             Some(status) if status.success() => (ValidationStatus::Passed, "exit status 0".into()),
@@ -144,7 +144,7 @@ mod tests {
         );
         assert!(matches!(
             result,
-            Err(AgentDeckError::UntrustedConfiguration(_))
+            Err(ContextWakeError::UntrustedConfiguration(_))
         ));
     }
 
@@ -156,7 +156,7 @@ mod tests {
             .run(
                 &workspace(root.path(), TrustState::Trusted),
                 &[CommandSpec {
-                    executable: "agentdeck-validation-command-that-does-not-exist".into(),
+                    executable: "contextwake-validation-command-that-does-not-exist".into(),
                     args: vec!["sk-abcdefghijklmnopqrstuvwxyz".into()],
                 }],
             )

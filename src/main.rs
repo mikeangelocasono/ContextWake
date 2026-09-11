@@ -1,9 +1,9 @@
 use std::process::ExitCode;
 
-use agentdeck::app::Application;
-use agentdeck::cli::Cli;
-use agentdeck::security::{SecretScanner, sanitize_terminal};
 use clap::Parser;
+use contextwake::app::Application;
+use contextwake::cli::Cli;
+use contextwake::security::{SecretScanner, sanitize_terminal};
 use serde_json::json;
 
 fn main() -> ExitCode {
@@ -23,29 +23,32 @@ fn main() -> ExitCode {
                     eprintln!("{encoded}");
                 }
             } else {
-                eprintln!("AgentDeck could not complete the request.\n\n{}", safe.text);
-                eprintln!("\nRun 'adeck doctor' for privacy-safe diagnostics.");
+                eprintln!(
+                    "ContextWake could not complete the request.\n\n{}",
+                    safe.text
+                );
+                eprintln!("\nRun 'ctxwake doctor' for privacy-safe diagnostics.");
             }
             ExitCode::FAILURE
         }
     }
 }
 
-fn error_code(error: &agentdeck::error::AgentDeckError) -> &'static str {
-    use agentdeck::error::AgentDeckError;
+fn error_code(error: &contextwake::error::ContextWakeError) -> &'static str {
+    use contextwake::error::ContextWakeError;
     match error {
-        AgentDeckError::CapabilityUnavailable(_) => "ADK-AGENT-CAPABILITY-UNAVAILABLE",
-        AgentDeckError::ProfileNotFound(_) => "ADK-PROFILE-NOT-FOUND",
-        AgentDeckError::WorkspaceNotFound(_) => "ADK-WORKSPACE-NOT-FOUND",
-        AgentDeckError::SessionNotFound(_) => "ADK-SESSION-NOT-FOUND",
-        AgentDeckError::CheckpointNotFound(_) => "ADK-CHECKPOINT-NOT-FOUND",
-        AgentDeckError::HandoffNotFound(_) => "ADK-HANDOFF-NOT-FOUND",
-        AgentDeckError::UnsafePath(_) | AgentDeckError::UntrustedConfiguration(_) => {
-            "ADK-SECURITY-BOUNDARY"
+        ContextWakeError::CapabilityUnavailable(_) => "CWK-AGENT-CAPABILITY-UNAVAILABLE",
+        ContextWakeError::ProfileNotFound(_) => "CWK-PROFILE-NOT-FOUND",
+        ContextWakeError::WorkspaceNotFound(_) => "CWK-WORKSPACE-NOT-FOUND",
+        ContextWakeError::SessionNotFound(_) => "CWK-SESSION-NOT-FOUND",
+        ContextWakeError::CheckpointNotFound(_) => "CWK-CHECKPOINT-NOT-FOUND",
+        ContextWakeError::HandoffNotFound(_) => "CWK-HANDOFF-NOT-FOUND",
+        ContextWakeError::UnsafePath(_) | ContextWakeError::UntrustedConfiguration(_) => {
+            "CWK-SECURITY-BOUNDARY"
         }
-        AgentDeckError::Provider(_) => "ADK-AGENT-ERROR",
-        AgentDeckError::Git(_) => "ADK-GIT-ERROR",
-        AgentDeckError::Cancelled => "ADK-CANCELLED",
-        _ => "ADK-ERROR",
+        ContextWakeError::Provider(_) => "CWK-AGENT-ERROR",
+        ContextWakeError::Git(_) => "CWK-GIT-ERROR",
+        ContextWakeError::Cancelled => "CWK-CANCELLED",
+        _ => "CWK-ERROR",
     }
 }

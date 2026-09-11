@@ -7,7 +7,7 @@ use uuid::Uuid;
 
 use crate::VERSION;
 use crate::checkpoint::{CheckpointService, atomic_write};
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     Checkpoint, ContentFile, HandoffDestination, HandoffManifest, HandoffRecord, HandoffSource,
     HandoffWorkspace, Profile, Workspace,
@@ -46,7 +46,7 @@ impl HandoffService {
         destination: Option<&Profile>,
     ) -> Result<HandoffRecord> {
         if checkpoint.workspace_id != workspace.id {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "checkpoint belongs to a different workspace".into(),
             ));
         }
@@ -56,11 +56,11 @@ impl HandoffService {
         let was_redacted = scan.redacted();
         let context = scan.text;
         let git_json = serde_json::to_vec_pretty(&checkpoint.git).map_err(|error| {
-            AgentDeckError::InvalidData(format!("could not serialize Git summary: {error}"))
+            ContextWakeError::InvalidData(format!("could not serialize Git summary: {error}"))
         })?;
         let validation_json =
             serde_json::to_vec_pretty(&checkpoint.validation_results).map_err(|error| {
-                AgentDeckError::InvalidData(format!("could not serialize validation: {error}"))
+                ContextWakeError::InvalidData(format!("could not serialize validation: {error}"))
             })?;
         let content_files = vec![
             ContentFile {
@@ -87,7 +87,7 @@ impl HandoffService {
             schema_version: HANDOFF_SCHEMA.into(),
             handoff_id,
             created_at: Utc::now(),
-            source_tool: format!("agentdeck/{VERSION}"),
+            source_tool: format!("contextwake/{VERSION}"),
             source: checkpoint.agent_id.as_ref().map(|agent_id| HandoffSource {
                 agent_id: agent_id.clone(),
                 model_provider_id: checkpoint.model_provider_id.clone(),
@@ -120,7 +120,7 @@ impl HandoffService {
             extensions: BTreeMap::new(),
         };
         let manifest_json = serde_json::to_vec_pretty(&manifest).map_err(|error| {
-            AgentDeckError::InvalidData(format!("could not serialize handoff manifest: {error}"))
+            ContextWakeError::InvalidData(format!("could not serialize handoff manifest: {error}"))
         })?;
 
         let temporary = tempfile::Builder::new()
@@ -171,17 +171,17 @@ impl HandoffService {
         let path = self.managed_payload_path(&record, "manifest.json")?;
         let bytes = std::fs::read(&path).at(&path)?;
         if sha256_bytes(&bytes) != record.sha256 {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "handoff {reference} manifest integrity check failed"
             )));
         }
         let manifest: HandoffManifest = serde_json::from_slice(&bytes).map_err(|error| {
-            AgentDeckError::InvalidData(format!("invalid handoff manifest: {error}"))
+            ContextWakeError::InvalidData(format!("invalid handoff manifest: {error}"))
         })?;
         if !is_supported_handoff_schema(&manifest.schema_version)
             || manifest.handoff_id != record.id
         {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff manifest schema or identity mismatch".into(),
             ));
         }
@@ -199,12 +199,12 @@ impl HandoffService {
             total_bytes =
                 total_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
             if total_bytes > MAX_HANDOFF_BYTES {
-                return Err(AgentDeckError::InvalidData(
+                return Err(ContextWakeError::InvalidData(
                     "managed handoff exceeds the 4 MiB validation limit".into(),
                 ));
             }
             if sha256_bytes(&bytes) != content.sha256 {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "handoff content integrity check failed for {}",
                     content.path
                 )));
@@ -220,11 +220,11 @@ impl HandoffService {
             .content_files
             .iter()
             .find(|entry| entry.path == "context.md")
-            .ok_or_else(|| AgentDeckError::InvalidData("handoff has no context.md".into()))?;
+            .ok_or_else(|| ContextWakeError::InvalidData("handoff has no context.md".into()))?;
         let path = self.managed_payload_path(&record, &content.path)?;
         let bytes = std::fs::read(&path).at(&path)?;
         if sha256_bytes(&bytes) != content.sha256 {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context integrity check failed".into(),
             ));
         }
@@ -240,19 +240,19 @@ impl HandoffService {
                 .file_type()
                 .is_symlink()
             {
-                return Err(AgentDeckError::UnsafePath(format!(
+                return Err(ContextWakeError::UnsafePath(format!(
                     "export destination is a symlink: {}",
                     destination.display()
                 )));
             }
             if !destination.is_dir() {
-                return Err(AgentDeckError::UnsafePath(format!(
+                return Err(ContextWakeError::UnsafePath(format!(
                     "{} is not a directory",
                     destination.display()
                 )));
             }
             if !overwrite {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "{} already exists; pass --force to write into it",
                     destination.display()
                 )));
@@ -280,7 +280,7 @@ impl HandoffService {
     pub fn import_directory(&self, source: &Path) -> Result<HandoffRecord> {
         let source_metadata = std::fs::symlink_metadata(source).at(source)?;
         if !source_metadata.is_dir() || source_metadata.file_type().is_symlink() {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "{} must be a real directory, not a symlink",
                 source.display()
             )));
@@ -289,27 +289,27 @@ impl HandoffService {
         let manifest_bytes = read_bounded_file(&manifest_path, MAX_CONTENT_FILE_BYTES)?;
         let manifest: HandoffManifest =
             serde_json::from_slice(&manifest_bytes).map_err(|error| {
-                AgentDeckError::InvalidData(format!(
+                ContextWakeError::InvalidData(format!(
                     "invalid handoff manifest {}: {error}",
                     manifest_path.display()
                 ))
             })?;
         if !is_supported_handoff_schema(&manifest.schema_version) {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "unsupported handoff schema {}",
                 manifest.schema_version
             )));
         }
         validate_manifest_strings(&manifest)?;
         let manifest_text = String::from_utf8(manifest_bytes.clone())
-            .map_err(|_| AgentDeckError::InvalidData("manifest is not valid UTF-8".into()))?;
+            .map_err(|_| ContextWakeError::InvalidData("manifest is not valid UTF-8".into()))?;
         if SecretScanner::new().redact(&manifest_text).redacted() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "manifest contains possible secret material; redact it before import".into(),
             ));
         }
         if manifest.content_files.len() > MAX_CONTENT_FILES {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "handoff contains more than {MAX_CONTENT_FILES} content files"
             )));
         }
@@ -318,7 +318,7 @@ impl HandoffService {
             .iter()
             .any(|flag| flag == "commands_are_untrusted_notes_only")
         {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff does not declare commands as untrusted notes".into(),
             ));
         }
@@ -330,13 +330,13 @@ impl HandoffService {
             let relative = Path::new(&content.path);
             ensure_relative_payload_path(relative)?;
             if relative.components().count() != 1 {
-                return Err(AgentDeckError::UnsafePath(format!(
+                return Err(ContextWakeError::UnsafePath(format!(
                     "handoff content must use a top-level filename: {}",
                     content.path
                 )));
             }
             if !seen.insert(content.path.clone()) {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "duplicate handoff content path {}",
                     content.path
                 )));
@@ -345,7 +345,7 @@ impl HandoffService {
                 content.media_type.as_str(),
                 "text/markdown" | "application/json"
             ) {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "unsupported handoff media type {}",
                     content.media_type
                 )));
@@ -353,16 +353,16 @@ impl HandoffService {
             let content_path = source.join(relative);
             let bytes = read_bounded_file(&content_path, MAX_CONTENT_FILE_BYTES)?;
             if sha256_bytes(&bytes) != content.sha256 {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "handoff content integrity check failed for {}",
                     content.path
                 )));
             }
             let text = String::from_utf8(bytes.clone()).map_err(|_| {
-                AgentDeckError::InvalidData(format!("{} is not valid UTF-8", content.path))
+                ContextWakeError::InvalidData(format!("{} is not valid UTF-8", content.path))
             })?;
             if SecretScanner::new().redact(&text).redacted() {
-                return Err(AgentDeckError::InvalidData(format!(
+                return Err(ContextWakeError::InvalidData(format!(
                     "{} contains possible secret material; redact it before import",
                     content.path
                 )));
@@ -370,14 +370,14 @@ impl HandoffService {
             total_bytes =
                 total_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
             if total_bytes > MAX_HANDOFF_BYTES {
-                return Err(AgentDeckError::InvalidData(
+                return Err(ContextWakeError::InvalidData(
                     "handoff exceeds the 4 MiB import limit".into(),
                 ));
             }
             payloads.push((content.path.clone(), bytes));
         }
         if !seen.contains("context.md") {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff manifest must include context.md".into(),
             ));
         }
@@ -387,7 +387,7 @@ impl HandoffService {
             .handoffs_dir()
             .join(manifest.handoff_id.to_string());
         if storage_path.exists() {
-            return Err(AgentDeckError::InvalidData(format!(
+            return Err(ContextWakeError::InvalidData(format!(
                 "handoff {} is already present",
                 manifest.handoff_id
             )));
@@ -441,7 +441,7 @@ impl HandoffService {
                 .file_type()
                 .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(
+            return Err(ContextWakeError::UnsafePath(
                 record.storage_path.display().to_string(),
             ));
         }
@@ -455,13 +455,13 @@ impl HandoffService {
                     .file_type()
                     .is_symlink()
                 {
-                    return Err(AgentDeckError::UnsafePath(cursor.display().to_string()));
+                    return Err(ContextWakeError::UnsafePath(cursor.display().to_string()));
                 }
             }
         }
         let canonical_path = path.canonicalize().at(&path)?;
         if !canonical_path.starts_with(&canonical_record) {
-            return Err(AgentDeckError::UnsafePath(path.display().to_string()));
+            return Err(ContextWakeError::UnsafePath(path.display().to_string()));
         }
         Ok(canonical_path)
     }
@@ -470,13 +470,13 @@ impl HandoffService {
 fn read_bounded_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let metadata = std::fs::symlink_metadata(path).at(path)?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(AgentDeckError::UnsafePath(format!(
+        return Err(ContextWakeError::UnsafePath(format!(
             "{} must be a real file, not a symlink",
             path.display()
         )));
     }
     if metadata.len() > maximum {
-        return Err(AgentDeckError::InvalidData(format!(
+        return Err(ContextWakeError::InvalidData(format!(
             "{} exceeds the {maximum} byte limit",
             path.display()
         )));
@@ -486,14 +486,14 @@ fn read_bounded_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
 
 fn validate_manifest_strings(manifest: &HandoffManifest) -> Result<()> {
     if matches!(manifest.schema_version.as_str(), "1.1.0" | "1.2.0") && manifest.source.is_none() {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "AWHF 1.1 and newer require structured source agent metadata".into(),
         ));
     }
     if manifest.schema_version == "1.2.0"
         && manifest.continuity_mode.as_deref() != Some("portable_handoff")
     {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "AWHF 1.2 requires continuity_mode=portable_handoff".into(),
         ));
     }
@@ -546,7 +546,7 @@ fn validate_manifest_strings(manifest: &HandoffManifest) -> Result<()> {
         .into_iter()
         .any(|value| sanitize_terminal(value) != value)
     {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "handoff manifest contains terminal control data".into(),
         ));
     }
@@ -606,7 +606,7 @@ fn render_context(checkpoint: &Checkpoint, workspace: &Workspace) -> String {
     }
     output.push_str("## Validation\n");
     if checkpoint.validation_results.is_empty() {
-        output.push_str("No validation commands were run by AgentDeck.\n\n");
+        output.push_str("No validation commands were run by ContextWake.\n\n");
     } else {
         for result in &checkpoint.validation_results {
             let _ = writeln!(
@@ -650,7 +650,7 @@ pub fn create_from_checkpoint_reference(
 ) -> Result<HandoffRecord> {
     let checkpoint = checkpoints.read(checkpoint_reference)?;
     if checkpoint.workspace_id != workspace.id {
-        return Err(AgentDeckError::InvalidData(
+        return Err(ContextWakeError::InvalidData(
             "checkpoint belongs to a different workspace".into(),
         ));
     }

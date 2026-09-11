@@ -37,7 +37,7 @@ pub fn switch_profile(
 
     let handoff = if create_handoff {
         let workspace = workspace.ok_or_else(|| {
-            crate::error::AgentDeckError::InvalidData(
+            crate::error::ContextWakeError::InvalidData(
                 "a workspace is required to create a switch handoff".into(),
             )
         })?;

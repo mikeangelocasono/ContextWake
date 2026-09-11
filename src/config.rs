@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::paths::AppPaths;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -54,14 +54,14 @@ impl AppConfig {
             .file_type()
             .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "configuration file is a symlink: {}",
                 path.display()
             )));
         }
         let content = std::fs::read_to_string(&path).at(&path)?;
         let config: Self = toml::from_str(&content).map_err(|error| {
-            AgentDeckError::Configuration(format!("{}: {error}", path.display()))
+            ContextWakeError::Configuration(format!("{}: {error}", path.display()))
         })?;
         config.validate()?;
         Ok(config)
@@ -74,7 +74,7 @@ impl AppConfig {
         }
         let raw = std::fs::read_to_string(&path).at(&path)?;
         let config: Self = toml::from_str(&raw)
-            .map_err(|error| AgentDeckError::Configuration(error.to_string()))?;
+            .map_err(|error| ContextWakeError::Configuration(error.to_string()))?;
         config.validate()?;
         Ok(config)
     }
@@ -89,22 +89,22 @@ impl AppConfig {
                 .file_type()
                 .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "refusing to replace configuration symlink {}",
                 path.display()
             )));
         }
         let parent = path.parent().ok_or_else(|| {
-            AgentDeckError::Configuration("configuration path has no parent".into())
+            ContextWakeError::Configuration("configuration path has no parent".into())
         })?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent).at(parent)?;
         let raw = toml::to_string_pretty(self)
-            .map_err(|error| AgentDeckError::Configuration(error.to_string()))?;
+            .map_err(|error| ContextWakeError::Configuration(error.to_string()))?;
         temporary.write_all(raw.as_bytes()).at(&path)?;
         temporary.as_file_mut().sync_all().at(&path)?;
         temporary
             .persist(&path)
-            .map_err(|error| AgentDeckError::Io {
+            .map_err(|error| ContextWakeError::Io {
                 path: path.clone(),
                 source: error.error,
             })?;
@@ -113,23 +113,23 @@ impl AppConfig {
 
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
-            return Err(AgentDeckError::Configuration(format!(
+            return Err(ContextWakeError::Configuration(format!(
                 "unsupported config schema {}",
                 self.schema_version
             )));
         }
         if self.retention_days == 0 || self.retention_days > 3_650 {
-            return Err(AgentDeckError::Configuration(
+            return Err(ContextWakeError::Configuration(
                 "retention_days must be between 1 and 3650".into(),
             ));
         }
         if !(100..=30_000).contains(&self.git_timeout_ms) {
-            return Err(AgentDeckError::Configuration(
+            return Err(ContextWakeError::Configuration(
                 "git_timeout_ms must be between 100 and 30000".into(),
             ));
         }
         if !(1_000..=1_800_000).contains(&self.validation_timeout_ms) {
-            return Err(AgentDeckError::Configuration(
+            return Err(ContextWakeError::Configuration(
                 "validation_timeout_ms must be between 1000 and 1800000".into(),
             ));
         }
@@ -174,7 +174,7 @@ mod tests {
         };
         assert!(matches!(
             config.validate(),
-            Err(AgentDeckError::Configuration(_))
+            Err(ContextWakeError::Configuration(_))
         ));
     }
 }

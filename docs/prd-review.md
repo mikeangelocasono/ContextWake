@@ -4,12 +4,12 @@ Reviewed in full on 10 September 2026. The terminal-native core, local state mod
 
 ## Binding product corrections
 
-- AgentDeck has no web application, dashboard, hosted control plane, SaaS portal, or browser account switcher. A coding agent may open its own browser authentication flow.
+- ContextWake has no web application, dashboard, hosted control plane, SaaS portal, or browser account switcher. A coding agent may open its own browser authentication flow.
 - A Coding Agent and a Model Provider are distinct. Codex, Claude Code, Gemini CLI, OpenCode, and Kiro are agents; OpenAI, Anthropic, Google, Bedrock, Vertex, Ollama, and similar systems are model backends.
-- “Profile” is AgentDeck’s identity/configuration boundary. A Codex `--profile` only layers configuration and is not an account boundary.
+- “Profile” is ContextWake’s identity/configuration boundary. A Codex `--profile` only layers configuration and is not an account boundary.
 - Native resume and new-session restoration from a handoff are separate, user-visible outcomes.
 - No quota routing, limit-triggered identity rotation, auth bypass, fabricated usage, or fake context percentage is in scope.
-- AgentDeck/`adeck` remain provisional. No trademark or package availability is claimed.
+- ContextWake/`ctxwake` are selected following the practical collision audit in ADR 0004. Formal trademark clearance is not claimed.
 
 ## Provider-dependent feasibility
 
@@ -36,7 +36,7 @@ The detailed evidence is in the [compatibility matrix](providers/compatibility.m
 
 Rust was retained because the repository already had a sound passing foundation and the product benefits from one native binary, typed security boundaries, predictable subprocess construction, and Ratatui’s testable terminal buffers. The accepted decisions are recorded in [`docs/adr`](adr/0001-language-and-tui-stack.md).
 
-SQLite schema v4 stores normalized agent/model-provider/model metadata, provider session titles, and transactional relationships. Checkpoint and handoff bodies remain inspectable files. Provider credentials are neither an AgentDeck data entity nor a database field.
+SQLite schema v4 stores normalized agent/model-provider/model metadata, provider session titles, and transactional relationships. Checkpoint and handoff bodies remain inspectable files. Provider credentials are neither a ContextWake data entity nor a database field.
 
 ## Consistency findings
 
@@ -49,4 +49,4 @@ SQLite schema v4 stores normalized agent/model-provider/model metadata, provider
 
 ## Remaining feasibility work
 
-Disposable authenticated native-resume QA for Codex, Claude, OpenCode, and Gemini; target-model comprehension QA; macOS Keychain isolation; Windows signing; event-driven TUI refresh; property fuzzing; signed packaging; and final naming migration remain explicit follow-up work. None is presented as working functionality.
+Disposable authenticated native-resume QA for Codex, Claude, OpenCode, and Gemini; target-model comprehension QA; macOS Keychain isolation; Windows signing; event-driven TUI refresh; property fuzzing; and signed packaging remain explicit follow-up work. None is presented as working functionality.

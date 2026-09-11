@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agentdeck.invalid/schemas/checkpoint-v2.schema.json",
-  "title": "AgentDeck Checkpoint v2",
+  "$id": "https://contextwake.invalid/schemas/checkpoint-v2.schema.json",
+  "title": "ContextWake Checkpoint v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "id", "workspace_id", "session_id", "agent_id", "model_provider_id", "model", "profile_id", "objective", "active_task", "completed", "decisions", "pending_tasks", "known_issues", "user_notes", "project_instructions", "files_changed", "git", "validation_results", "created_at", "redaction_status"],

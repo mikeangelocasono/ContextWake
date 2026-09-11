@@ -5,7 +5,7 @@
 
 ## Decision
 
-Use Rust 2024 (MSRV 1.88), Clap, Ratatui, Crossterm, Serde, Rusqlite, and typed errors. Ship one native `adeck` binary.
+Use Rust 2024 (MSRV 1.88), Clap, Ratatui, Crossterm, Serde, Rusqlite, and typed errors. Ship one native `ctxwake` binary.
 
 ## Rationale
 

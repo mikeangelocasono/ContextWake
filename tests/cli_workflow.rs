@@ -3,11 +3,11 @@ use std::path::Path;
 use serde_json::Value;
 
 fn command(home: &Path) -> assert_cmd::Command {
-    let mut command = assert_cmd::cargo::cargo_bin_cmd!("adeck");
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("ctxwake");
     command
-        .env("AGENTDECK_HOME", home)
-        .env("AGENTDECK_CODEX_BIN", "agentdeck-test-missing-codex")
-        .env("AGENTDECK_CLAUDE_BIN", "agentdeck-test-missing-claude");
+        .env("CONTEXTWAKE_HOME", home)
+        .env("CONTEXTWAKE_CODEX_BIN", "contextwake-test-missing-codex")
+        .env("CONTEXTWAKE_CLAUDE_BIN", "contextwake-test-missing-claude");
     command
 }
 
@@ -16,7 +16,7 @@ fn json_output(home: &Path, args: &[&str]) -> Value {
         .arg("--json")
         .args(args)
         .output()
-        .expect("run adeck");
+        .expect("run ctxwake");
     assert!(
         output.status.success(),
         "command failed: {}",
@@ -26,14 +26,30 @@ fn json_output(home: &Path, args: &[&str]) -> Value {
 }
 
 #[test]
+fn legacy_home_override_remains_compatible_after_rename() {
+    let root = tempfile::tempdir().expect("root");
+    let legacy_home = root.path().join("legacy-home");
+    let output = assert_cmd::cargo::cargo_bin_cmd!("ctxwake")
+        .env_remove("CONTEXTWAKE_HOME")
+        .env("AGENTDECK_HOME", &legacy_home)
+        .args(["config", "path"])
+        .output()
+        .expect("run ctxwake with legacy home");
+    assert!(output.status.success());
+    let reported = String::from_utf8(output.stdout).expect("UTF-8 path");
+    assert!(reported.contains(&legacy_home.to_string_lossy().to_string()));
+    assert!(legacy_home.join("data/state.sqlite3").is_file());
+}
+
+#[test]
 fn profile_workspace_checkpoint_and_handoff_survive_restart() {
     let root = tempfile::tempdir().expect("root");
     let home = root.path().join("home");
     let workspace = root.path().join("ordinary workspace");
     std::fs::create_dir_all(&workspace).expect("workspace");
-    std::fs::create_dir_all(workspace.join(".agentdeck")).expect("project config directory");
+    std::fs::create_dir_all(workspace.join(".contextwake")).expect("project config directory");
     std::fs::write(
-        workspace.join(".agentdeck/project.toml"),
+        workspace.join(".contextwake/project.toml"),
         r#"schema_version = 1
 instructions_file = "AGENTS.md"
 [[validation]]
@@ -201,7 +217,7 @@ fn errors_are_structured_and_do_not_echo_terminal_control_sequences() {
         .arg("--json")
         .args(["profile", "show", "\u{1b}[31mmissing"])
         .output()
-        .expect("run adeck");
+        .expect("run ctxwake");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains('\u{1b}'));
@@ -212,7 +228,7 @@ fn errors_are_structured_and_do_not_echo_terminal_control_sequences() {
             .expect("message")
             .contains("missing")
     );
-    assert_eq!(error["code"], "ADK-PROFILE-NOT-FOUND");
+    assert_eq!(error["code"], "CWK-PROFILE-NOT-FOUND");
 }
 
 #[test]

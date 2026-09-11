@@ -1,14 +1,14 @@
 use std::time::Duration;
 
-use agentdeck::app::Application;
-use agentdeck::config::AppConfig;
-use agentdeck::error::AgentDeckError;
-use agentdeck::git::GitClient;
-use agentdeck::model::{ContinuityKind, ResumeCapability, Session, TrustState, Workspace};
-use agentdeck::paths::AppPaths;
-use agentdeck::provider::AgentRegistry;
-use agentdeck::store::Store;
 use chrono::Utc;
+use contextwake::app::Application;
+use contextwake::config::AppConfig;
+use contextwake::error::ContextWakeError;
+use contextwake::git::GitClient;
+use contextwake::model::{ContinuityKind, ResumeCapability, Session, TrustState, Workspace};
+use contextwake::paths::AppPaths;
+use contextwake::provider::AgentRegistry;
+use contextwake::store::Store;
 use uuid::Uuid;
 
 #[test]
@@ -17,7 +17,8 @@ fn handoff_only_local_session_is_never_sent_to_native_resume() {
     let paths = AppPaths::from_root(root.path().join("home"));
     paths.ensure().expect("paths");
     let store = Store::open(paths.state_db()).expect("store");
-    let git = GitClient::with_executable("agentdeck-test-missing-git", Duration::from_millis(100));
+    let git =
+        GitClient::with_executable("contextwake-test-missing-git", Duration::from_millis(100));
     let app = Application {
         paths,
         config: AppConfig::default(),
@@ -67,6 +68,6 @@ fn handoff_only_local_session_is_never_sent_to_native_resume() {
     let result = app.resume_session(&session.id.to_string());
     assert!(matches!(
         result,
-        Err(AgentDeckError::CapabilityUnavailable(_))
+        Err(ContextWakeError::CapabilityUnavailable(_))
     ));
 }

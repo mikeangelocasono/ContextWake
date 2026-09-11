@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use wait_timeout::ChildExt;
 
-use crate::error::{AgentDeckError, IoContext, Result};
+use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
     AgentCapabilities, AgentHealth, AuthState, Capability, CapabilityMaturity, CapabilitySupport,
     ModelProvider,
@@ -32,8 +32,9 @@ pub(crate) struct ProbeOutput {
 
 impl CodexAdapter {
     pub fn discover() -> Self {
-        let executable =
-            std::env::var_os("AGENTDECK_CODEX_BIN").map_or_else(default_executable, PathBuf::from);
+        let executable = std::env::var_os("CONTEXTWAKE_CODEX_BIN")
+            .or_else(|| std::env::var_os("AGENTDECK_CODEX_BIN"))
+            .map_or_else(default_executable, PathBuf::from);
         Self { executable }
     }
 
@@ -76,12 +77,12 @@ fn default_executable() -> PathBuf {
         }
         // Batch wrappers have command-line parsing semantics that are unsuitable
         // for handoff prompts. Require a native executable or an explicit override.
-        PathBuf::from(r"C:\__agentdeck_missing__\codex.exe")
+        PathBuf::from(r"C:\__contextwake_missing__\codex.exe")
     }
     #[cfg(not(windows))]
     {
         super::find_safe_on_path("codex")
-            .unwrap_or_else(|| PathBuf::from("/__agentdeck_missing__/codex"))
+            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/codex"))
     }
 }
 
@@ -248,7 +249,7 @@ impl AgentAdapter for CodexAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: format!(
-                    "Codex CLI could not be found ({error}). Install Codex CLI or set AGENTDECK_CODEX_BIN."
+                    "Codex CLI could not be found ({error}). Install Codex CLI or set CONTEXTWAKE_CODEX_BIN."
                 ),
             }),
         }
@@ -258,7 +259,7 @@ impl AgentAdapter for CodexAdapter {
         let mut command = self.base_command(Some(agent_home));
         command.args(["login", "status"]);
         let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            AgentDeckError::Provider(format!("could not query Codex auth: {error}"))
+            ContextWakeError::Provider(format!("could not query Codex auth: {error}"))
         })?;
         Ok(if output.timed_out {
             AuthState::Unknown
@@ -273,7 +274,7 @@ impl AgentAdapter for CodexAdapter {
         std::fs::create_dir_all(agent_home).at(agent_home)?;
         let metadata = std::fs::symlink_metadata(agent_home).at(agent_home)?;
         if !metadata.is_dir() || metadata.file_type().is_symlink() {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "provider home must be a real directory: {}",
                 agent_home.display()
             )));
@@ -285,7 +286,7 @@ impl AgentAdapter for CodexAdapter {
                 .file_type()
                 .is_symlink()
         {
-            return Err(AgentDeckError::UnsafePath(format!(
+            return Err(ContextWakeError::UnsafePath(format!(
                 "provider config is a symlink: {}",
                 config.display()
             )));
@@ -294,8 +295,8 @@ impl AgentAdapter for CodexAdapter {
             std::fs::write(
                 &config,
                 concat!(
-                    "# Managed profile boundary created by AgentDeck. No secrets are stored here.\n",
-                    "# File storage is scoped by CODEX_HOME; AgentDeck never reads auth.json.\n",
+                    "# Managed profile boundary created by ContextWake. No secrets are stored here.\n",
+                    "# File storage is scoped by CODEX_HOME; ContextWake never reads auth.json.\n",
                     "cli_auth_credentials_store = \"file\"\n"
                 ),
             )
@@ -324,13 +325,13 @@ impl AgentAdapter for CodexAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Codex login: {error}"))
+                ContextWakeError::Provider(format!("could not start Codex login: {error}"))
             })?;
         if status.success() {
             Ok(AuthState::SignedIn)
         } else {
-            Err(AgentDeckError::Provider(format!(
-                "Codex login exited with status {status}; the previous AgentDeck profile remains unchanged"
+            Err(ContextWakeError::Provider(format!(
+                "Codex login exited with status {status}; the previous ContextWake profile remains unchanged"
             )))
         }
     }
@@ -344,12 +345,12 @@ impl AgentAdapter for CodexAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Codex logout: {error}"))
+                ContextWakeError::Provider(format!("could not start Codex logout: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Codex logout exited with status {status}"
             )))
         }
@@ -368,12 +369,12 @@ impl AgentAdapter for CodexAdapter {
             .stderr(Stdio::inherit())
             .status()
             .map_err(|error| {
-                AgentDeckError::Provider(format!("could not start Codex resume: {error}"))
+                ContextWakeError::Provider(format!("could not start Codex resume: {error}"))
             })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Codex could not natively resume this session (status {status}). Create a workspace handoff instead."
             )))
         }
@@ -389,7 +390,7 @@ impl AgentAdapter for CodexAdapter {
     ) -> Result<()> {
         let context_path = handoff_directory.join("context.md");
         if !context_path.is_file() {
-            return Err(AgentDeckError::InvalidData(
+            return Err(ContextWakeError::InvalidData(
                 "handoff context.md is unavailable".into(),
             ));
         }
@@ -412,11 +413,13 @@ impl AgentAdapter for CodexAdapter {
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .status()
-            .map_err(|error| AgentDeckError::Provider(format!("could not start Codex: {error}")))?;
+            .map_err(|error| {
+                ContextWakeError::Provider(format!("could not start Codex: {error}"))
+            })?;
         if status.success() {
             Ok(())
         } else {
-            Err(AgentDeckError::Provider(format!(
+            Err(ContextWakeError::Provider(format!(
                 "Codex new-session launch exited with status {status}; no native resume was claimed"
             )))
         }
