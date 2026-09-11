@@ -24,6 +24,21 @@ pub struct CheckpointInput {
     pub validation_results: Vec<ValidationResult>,
 }
 
+impl CheckpointInput {
+    pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
+        Self {
+            objective: checkpoint.objective.clone(),
+            active_task: checkpoint.active_task.clone(),
+            completed: checkpoint.completed.clone(),
+            decisions: checkpoint.decisions.clone(),
+            pending_tasks: checkpoint.pending_tasks.clone(),
+            known_issues: checkpoint.known_issues.clone(),
+            user_notes: checkpoint.user_notes.clone(),
+            validation_results: checkpoint.validation_results.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CheckpointService {
     store: Store,

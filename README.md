@@ -23,7 +23,7 @@ The current milestone includes:
 - local Context Guardian indicators and local activity separated from unavailable provider quota data;
 - `adeck doctor`, JSON output, strict errors, migrations, tests, and cross-platform CI.
 
-Gemini CLI is registered from verified official interfaces but lacks installed-binary QA on this host. Kiro CLI is researched but is **not** registered. OpenCode session/model commands are integrated; its profile isolation remains experimental pending cross-platform credential QA. See the [verified compatibility matrix](docs/providers/compatibility.md) and [implementation status](IMPLEMENTATION_STATUS.md).
+Gemini CLI 0.59.0 detection was validated on Windows without authenticating. Kiro CLI 2.21.3 is registered and its JSON sessions/models plus same-identity native resume were live-tested; its Windows OS credential is shared, so Kiro multiple-profile isolation is explicitly unsupported. OpenCode session/model commands are integrated; its profile isolation remains experimental pending cross-platform credential QA. See the [verified compatibility matrix](docs/providers/compatibility.md) and [implementation status](IMPLEMENTATION_STATUS.md).
 
 ## Build
 

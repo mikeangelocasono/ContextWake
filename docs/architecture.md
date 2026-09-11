@@ -40,7 +40,7 @@ An agent can expose several model providers. A provider is never assumed to be a
 
 `src/provider` is the only module that constructs coding-agent commands or sets agent-specific environment variables. `AgentAdapter` requires explicit capability reporting and uses fixed argument arrays. The registry is compile-time in V1; arbitrary downloaded plugins are intentionally excluded until signing, compatibility, and sandboxing have a design.
 
-Codex, Claude Code, Gemini CLI, and OpenCode are implemented adapters. OpenCode additionally exercises dynamic model catalogs and provider-owned JSON session discovery. Gemini is deliberately partial where no machine-readable auth/session surface exists and still needs installed-binary QA. Kiro CLI is documented but cannot be selected until a real adapter and contract tests exist.
+Codex, Claude Code, Gemini CLI, OpenCode, and Kiro CLI are implemented adapters. OpenCode and Kiro exercise dynamic model catalogs and provider-owned JSON session discovery. Gemini remains deliberately partial where no machine-readable auth/session surface exists. Kiro's Windows credential is explicitly treated as shared even though `KIRO_HOME` isolates settings and sessions.
 
 ## Continuity transaction
 
@@ -60,7 +60,7 @@ If target validation or artifact creation fails, active-profile state is unchang
 
 ## Storage
 
-SQLite schema v4 stores queryable relationships, normalized agent/model-provider/model fields, and provider session titles. Migrations preserve legacy v1/v2/v3 records. Checkpoint v2 and AWHF 1.1 bodies are inspectable JSON/Markdown files. AWHF 1.0 and checkpoint v1 remain readable.
+SQLite schema v4 stores queryable relationships, normalized agent/model-provider/model fields, and provider session titles. Migrations preserve legacy v1/v2/v3 records. Checkpoint v2 and AWHF 1.2 bodies are inspectable JSON/Markdown files. AWHF 1.0/1.1 and checkpoint v1 remain readable.
 
 Agent-owned authentication stays inside profile-specific `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `GEMINI_CLI_HOME`, or OpenCode XDG/config roots. AgentDeck does not parse, copy, export, or put credentials in SQLite.
 

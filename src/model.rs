@@ -202,6 +202,14 @@ pub struct DiscoveredAgentSession {
     pub updated_at: Option<DateTime<Utc>>,
 }
 
+impl DiscoveredAgentSession {
+    pub fn normalized_times(&self, observed_at: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
+        let started_at = self.created_at.or(self.updated_at).unwrap_or(observed_at);
+        let last_seen_at = self.updated_at.unwrap_or(started_at).max(started_at);
+        (started_at, last_seen_at)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ContinuityKind {
@@ -329,6 +337,13 @@ pub struct HandoffManifest {
     /// AWHF 1.0 compatibility field. New writers leave this absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_provider: Option<String>,
+    /// Intended target for switch-generated handoffs. Manual exports can remain
+    /// destination-neutral.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<HandoffDestination>,
+    /// Explicitly distinguishes portable project restoration from native resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuity_mode: Option<String>,
     pub checkpoint_id: Uuid,
     pub workspace: HandoffWorkspace,
     pub objective: String,
@@ -347,6 +362,15 @@ pub struct HandoffSource {
     pub model: Option<String>,
     pub profile_id: Option<Uuid>,
     pub session_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffDestination {
+    pub agent_id: String,
+    pub model_provider_id: Option<String>,
+    pub model: Option<String>,
+    pub profile_id: Option<Uuid>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -490,4 +514,44 @@ pub struct UsageSummary {
     pub local_checkpoint_count: u64,
     pub local_handoff_count: u64,
     pub local_profile_switch_count: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovered_session_without_created_time_starts_at_update_time() {
+        let observed_at = Utc::now();
+        let updated_at = observed_at - chrono::Duration::seconds(5);
+        let discovered = DiscoveredAgentSession {
+            provider_session_id: "provider-session".into(),
+            title: None,
+            workspace_path: None,
+            created_at: None,
+            updated_at: Some(updated_at),
+        };
+
+        assert_eq!(
+            discovered.normalized_times(observed_at),
+            (updated_at, updated_at)
+        );
+    }
+
+    #[test]
+    fn inconsistent_provider_timestamps_are_kept_chronological() {
+        let started_at = Utc::now();
+        let discovered = DiscoveredAgentSession {
+            provider_session_id: "provider-session".into(),
+            title: None,
+            workspace_path: None,
+            created_at: Some(started_at),
+            updated_at: Some(started_at - chrono::Duration::seconds(1)),
+        };
+
+        assert_eq!(
+            discovered.normalized_times(started_at),
+            (started_at, started_at)
+        );
+    }
 }

@@ -849,6 +849,7 @@ impl Application {
                     }
                     matched += 1;
                     let now = Utc::now();
+                    let (started_at, last_seen_at) = item.normalized_times(now);
                     let session = Session {
                         id: Uuid::new_v4(),
                         provider_session_id: Some(item.provider_session_id),
@@ -861,8 +862,8 @@ impl Application {
                         agent_id: profile.agent_id.clone(),
                         model_provider_id: profile.model_provider_id.clone(),
                         model: profile.model_preference.clone(),
-                        started_at: item.created_at.unwrap_or(now),
-                        last_seen_at: item.updated_at.unwrap_or(now),
+                        started_at,
+                        last_seen_at,
                         resume_capability: ResumeCapability::Native,
                         archived: false,
                         continuity: ContinuityKind::Unknown,
@@ -1130,7 +1131,7 @@ impl Application {
                     serde_json::json!({"id":"claude","name":"Claude Code","adapter":"implemented"}),
                     serde_json::json!({"id":"gemini","name":"Gemini CLI","adapter":"implemented_partial"}),
                     serde_json::json!({"id":"opencode","name":"OpenCode","adapter":"implemented"}),
-                    serde_json::json!({"id":"kiro","name":"Kiro CLI","adapter":"researched_not_implemented"}),
+                    serde_json::json!({"id":"kiro","name":"Kiro CLI","adapter":"implemented_partial"}),
                 ];
                 if json {
                     print_json(&agents);

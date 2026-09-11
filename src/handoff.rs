@@ -9,8 +9,8 @@ use crate::VERSION;
 use crate::checkpoint::{CheckpointService, atomic_write};
 use crate::error::{AgentDeckError, IoContext, Result};
 use crate::model::{
-    Checkpoint, ContentFile, HandoffManifest, HandoffRecord, HandoffSource, HandoffWorkspace,
-    Workspace,
+    Checkpoint, ContentFile, HandoffDestination, HandoffManifest, HandoffRecord, HandoffSource,
+    HandoffWorkspace, Profile, Workspace,
 };
 use crate::paths::AppPaths;
 use crate::security::{
@@ -19,7 +19,7 @@ use crate::security::{
 };
 use crate::store::Store;
 
-const HANDOFF_SCHEMA: &str = "1.1.0";
+const HANDOFF_SCHEMA: &str = "1.2.0";
 const MAX_CONTENT_FILES: usize = 16;
 const MAX_CONTENT_FILE_BYTES: u64 = 1024 * 1024;
 const MAX_HANDOFF_BYTES: u64 = 4 * 1024 * 1024;
@@ -36,6 +36,15 @@ impl HandoffService {
     }
 
     pub fn create(&self, checkpoint: &Checkpoint, workspace: &Workspace) -> Result<HandoffRecord> {
+        self.create_for_destination(checkpoint, workspace, None)
+    }
+
+    pub fn create_for_destination(
+        &self,
+        checkpoint: &Checkpoint,
+        workspace: &Workspace,
+        destination: Option<&Profile>,
+    ) -> Result<HandoffRecord> {
         if checkpoint.workspace_id != workspace.id {
             return Err(AgentDeckError::InvalidData(
                 "checkpoint belongs to a different workspace".into(),
@@ -87,6 +96,13 @@ impl HandoffService {
                 session_id: checkpoint.session_id.map(|id| id.to_string()),
             }),
             source_provider: None,
+            destination: destination.map(|profile| HandoffDestination {
+                agent_id: profile.agent_id.clone(),
+                model_provider_id: profile.model_provider_id.clone(),
+                model: profile.model_preference.clone(),
+                profile_id: Some(profile.id),
+            }),
+            continuity_mode: Some("portable_handoff".into()),
             checkpoint_id: checkpoint.id,
             workspace: HandoffWorkspace {
                 display_name: sanitize_terminal(&workspace.display_name),
@@ -469,9 +485,16 @@ fn read_bounded_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
 }
 
 fn validate_manifest_strings(manifest: &HandoffManifest) -> Result<()> {
-    if manifest.schema_version == "1.1.0" && manifest.source.is_none() {
+    if matches!(manifest.schema_version.as_str(), "1.1.0" | "1.2.0") && manifest.source.is_none() {
         return Err(AgentDeckError::InvalidData(
-            "AWHF 1.1 requires structured source agent metadata".into(),
+            "AWHF 1.1 and newer require structured source agent metadata".into(),
+        ));
+    }
+    if manifest.schema_version == "1.2.0"
+        && manifest.continuity_mode.as_deref() != Some("portable_handoff")
+    {
+        return Err(AgentDeckError::InvalidData(
+            "AWHF 1.2 requires continuity_mode=portable_handoff".into(),
         ));
     }
     let mut values = vec![
@@ -496,6 +519,19 @@ fn validate_manifest_strings(manifest: &HandoffManifest) -> Result<()> {
         values.extend(source.model.as_deref());
         values.extend(source.session_id.as_deref());
     }
+    if let Some(destination) = &manifest.destination {
+        validate_external_reference(&destination.agent_id)?;
+        if let Some(value) = &destination.model_provider_id {
+            validate_external_reference(value)?;
+        }
+        if let Some(value) = &destination.model {
+            validate_external_reference(value)?;
+        }
+        values.push(destination.agent_id.as_str());
+        values.extend(destination.model_provider_id.as_deref());
+        values.extend(destination.model.as_deref());
+    }
+    values.extend(manifest.continuity_mode.as_deref());
     if let Some(value) = &manifest.source_provider {
         validate_external_reference(value)?;
     }
@@ -518,7 +554,7 @@ fn validate_manifest_strings(manifest: &HandoffManifest) -> Result<()> {
 }
 
 fn is_supported_handoff_schema(value: &str) -> bool {
-    matches!(value, "1.0.0" | "1.1.0")
+    matches!(value, "1.0.0" | "1.1.0" | "1.2.0")
 }
 
 fn render_context(checkpoint: &Checkpoint, workspace: &Workspace) -> String {

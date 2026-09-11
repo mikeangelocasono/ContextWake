@@ -22,12 +22,12 @@ Reviewed in full on 10 September 2026. The terminal-native core, local state mod
 | Claude executable/version/auth | CONFIRMED | Implemented with bounded commands |
 | Claude `CLAUDE_CONFIG_DIR` isolation | PARTIALLY CONFIRMED | Implemented; macOS Keychain behavior still needs platform QA |
 | Claude same-profile resume/model flag | CONFIRMED | Implemented |
-| Gemini profile/auth/model/session behavior | PARTIALLY CONFIRMED IN DOCS/SOURCE | `GEMINI_CLI_HOME`, model selection, resume, and AWHF launch implemented; auth status and machine session listing unavailable; live binary QA pending |
+| Gemini profile/auth/model/session behavior | PARTIALLY CONFIRMED / LIVE DETECTION VERIFIED | Gemini CLI 0.59.0 installed and detected; `GEMINI_CLI_HOME`, model selection, resume, and AWHF launch implemented; auth status and machine session listing unavailable; authenticated QA pending |
 | OpenCode sessions/models/providers | CONFIRMED IN DOCS, SOURCE, AND LOCAL HELP | Adapter implemented with JSON session sync, dynamic model validation, native resume command, and AWHF launch; authenticated resume QA pending |
-| Kiro auth/sessions/models/`KIRO_HOME` | CONFIRMED IN DOCS | Adapter not implemented; only Kiro IDE was installed locally |
+| Kiro auth/sessions/models/`KIRO_HOME` | PARTIALLY CONFIRMED / LIVE VERIFIED | Kiro CLI 2.21.3 detection, JSON auth/session/model discovery, real session sync, and same-identity native resume verified. `KIRO_HOME` does not isolate the tested Windows credential, so multiple identities are unsupported |
 | Stable provider context utilization | PARTIAL OR UNAVAILABLE | Never estimated; local continuity indicators are labeled |
 | Provider quota balances | UNSUPPORTED BY CURRENT ADAPTERS | Hidden; local activity is separate |
-| Portable checkpoint/handoff | PROPOSED / IMPLEMENTED | Checkpoint v2 and provider-neutral AWHF 1.1 |
+| Portable checkpoint/handoff | PROPOSED / IMPLEMENTED / ARTIFACT-QA VERIFIED | Checkpoint v2 and provider-neutral AWHF 1.2; three directed cross-agent artifact flows preserved controlled project state |
 | Repository validation | PROPOSED / IMPLEMENTED SAFELY | Trusted-workspace, fixed-argv, explicit-only, timeout bounded |
 
 The detailed evidence is in the [compatibility matrix](providers/compatibility.md) and provider documents.
@@ -49,4 +49,4 @@ SQLite schema v4 stores normalized agent/model-provider/model metadata, provider
 
 ## Remaining feasibility work
 
-Disposable authenticated native-resume QA, Gemini installed-binary QA, macOS Keychain isolation, Windows signed release testing, event-driven TUI refresh, property fuzzing, signed packaging, the Kiro adapter, and final naming clearance remain explicit follow-up work. None is presented as working functionality.
+Disposable authenticated native-resume QA for Codex, Claude, OpenCode, and Gemini; target-model comprehension QA; macOS Keychain isolation; Windows signing; event-driven TUI refresh; property fuzzing; signed packaging; and final naming migration remain explicit follow-up work. None is presented as working functionality.

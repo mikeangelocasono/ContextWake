@@ -1,6 +1,7 @@
 mod claude;
 mod codex;
 mod gemini;
+mod kiro;
 mod opencode;
 
 use std::path::Path;
@@ -37,6 +38,7 @@ fn safe_executable_candidate(candidate: &Path, current_workspace: &Path) -> bool
 }
 pub use codex::CodexAdapter;
 pub use gemini::GeminiAdapter;
+pub use kiro::KiroAdapter;
 pub use opencode::OpenCodeAdapter;
 
 /// Stable, compile-time interface for an AI coding CLI. Model backends are
@@ -101,6 +103,7 @@ pub struct AgentRegistry {
     codex: CodexAdapter,
     claude: ClaudeAdapter,
     gemini: GeminiAdapter,
+    kiro: KiroAdapter,
     opencode: OpenCodeAdapter,
 }
 
@@ -110,6 +113,7 @@ impl AgentRegistry {
             codex: CodexAdapter::discover(),
             claude: ClaudeAdapter::discover(),
             gemini: GeminiAdapter::discover(),
+            kiro: KiroAdapter::discover(),
             opencode: OpenCodeAdapter::discover(),
         }
     }
@@ -119,6 +123,7 @@ impl AgentRegistry {
             "codex" => Ok(&self.codex),
             "claude" | "claude-code" => Ok(&self.claude),
             "gemini" | "gemini-cli" => Ok(&self.gemini),
+            "kiro" | "kiro-cli" => Ok(&self.kiro),
             "opencode" => Ok(&self.opencode),
             _ => Err(AgentDeckError::CapabilityUnavailable(format!(
                 "agent {id} has no implemented adapter; run 'adeck agent list'"
@@ -126,8 +131,14 @@ impl AgentRegistry {
         }
     }
 
-    pub fn implemented(&self) -> [&dyn AgentAdapter; 4] {
-        [&self.codex, &self.claude, &self.gemini, &self.opencode]
+    pub fn implemented(&self) -> [&dyn AgentAdapter; 5] {
+        [
+            &self.codex,
+            &self.claude,
+            &self.gemini,
+            &self.kiro,
+            &self.opencode,
+        ]
     }
 }
 

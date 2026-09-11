@@ -1,13 +1,23 @@
 # Verified agent compatibility
 
-Reviewed 11 September 2026. “Documented” is research evidence, not an implemented adapter. “Local” usage means activity observed by the agent/tool; it is not subscription quota.
+Reviewed 11 September 2026. Allowed values are `VERIFIED`, `PARTIAL`, `UNSUPPORTED`, `UNKNOWN`, and `NOT TESTED`. A documented command is not considered verified until its relevant behavior is exercised. Provider usage means provider-reported quota, never locally observed activity.
 
-| Agent | Detection | Auth status | Session listing | Native resume | Models/backends | Usage | AWHF launch |
-|---|---|---|---|---|---|---|---|
-| Codex | IMPLEMENTED | IMPLEMENTED | Stable listing unavailable | IMPLEMENTED, same profile | Selection implemented; OpenAI/custom/local documented | Provider quota unavailable | IMPLEMENTED |
-| Claude Code | IMPLEMENTED | IMPLEMENTED | Native picker documented; parser deferred | IMPLEMENTED, same profile | Selection implemented; four hosted modes declared | Provider quota unavailable | IMPLEMENTED |
-| OpenCode | IMPLEMENTED; 1.18.25 locally tested | PARTIAL credential-presence status | IMPLEMENTED from official JSON | IMPLEMENTED, same profile; live auth QA pending | Dynamic catalog/custom/local backends IMPLEMENTED | Local stats documented; not integrated | IMPLEMENTED |
-| Gemini CLI | IMPLEMENTED; live binary QA pending | Status unavailable; interactive flow implemented | Human listing not parsed | IMPLEMENTED, same profile; live QA pending | Selection implemented; catalog unavailable | Provider quota unavailable | IMPLEMENTED by contract test |
-| Kiro CLI | NOT IMPLEMENTED; CLI absent locally | JSON command documented | Command documented | Command documented | JSON command documented | Not integrated | NOT IMPLEMENTED |
+| Capability | Codex | Claude Code | OpenCode | Gemini CLI | Kiro CLI |
+|---|---|---|---|---|---|
+| Detection | VERIFIED 0.154.0 (Windows) | VERIFIED 2.1.267 (Windows) | VERIFIED 1.18.25 (Windows) | VERIFIED 0.59.0 (Windows) | VERIFIED 2.21.3 (Windows) |
+| Version | VERIFIED | VERIFIED | VERIFIED | VERIFIED | VERIFIED |
+| Auth status | VERIFIED globally; isolated QA signed out | VERIFIED globally; isolated QA signed out | PARTIAL credential-presence check | UNSUPPORTED non-interactively | VERIFIED JSON |
+| Isolated profiles | PARTIAL; `CODEX_HOME` | PARTIAL; config directory, keychain QA pending | PARTIAL; XDG roots, credential QA pending | PARTIAL; OAuth/keychain QA pending | UNSUPPORTED on tested Windows credential store |
+| Session listing | UNSUPPORTED stable interface | PARTIAL native picker; no parser | VERIFIED JSON | PARTIAL human output; no parser | VERIFIED JSON |
+| Native resume | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | VERIFIED same identity |
+| Cross-profile native resume | UNSUPPORTED/UNKNOWN; never attempted as bypass | UNSUPPORTED/UNKNOWN | UNSUPPORTED/UNKNOWN | UNSUPPORTED/UNKNOWN | UNSUPPORTED (shared credential) |
+| Model detection | PARTIAL selection; no account catalog | PARTIAL declared hosted modes | VERIFIED dynamic catalog | UNSUPPORTED catalog | VERIFIED dynamic catalog |
+| Model selection | VERIFIED by contract | VERIFIED by contract | VERIFIED live | VERIFIED by contract | VERIFIED live |
+| Context reporting | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
+| Provider usage reporting | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
+| Portable handoff | VERIFIED by contract and artifact flow | VERIFIED by contract and artifact flow | VERIFIED by contract and artifact flow | VERIFIED by contract | VERIFIED by contract |
+| Windows QA | VERIFIED core/detection | VERIFIED core/detection | VERIFIED core/discovery | VERIFIED detection/unauthenticated boundary | VERIFIED auth/session/model/resume |
+| Linux QA | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests |
+| macOS CI | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED | NOT TESTED |
 
-The provider-specific evidence and limits are recorded in the adjacent documents. All five can use the provider-neutral checkpoint/AWHF file formats; only a registered adapter can start or resume that agent through AgentDeck.
+The provider documents adjacent to this matrix contain commands, official sources, and the precise limitations. Cross-agent Codex to Claude, Claude to OpenCode, and OpenCode to Codex portable artifacts were exercised against a controlled dirty repository; target-model comprehension remains pending disposable authenticated profiles.

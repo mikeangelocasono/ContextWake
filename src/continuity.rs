@@ -41,29 +41,35 @@ pub fn switch_profile(
                 "a workspace is required to create a switch handoff".into(),
             )
         })?;
-        let objective = objective
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| format!("Continue work in {}", workspace.display_name));
-        let checkpoint = checkpoints.create(
-            workspace,
-            previous.as_ref(),
-            None,
-            CheckpointInput {
-                objective,
-                active_task: Some(format!(
-                    "Continue from profile {} using an explicit workspace handoff",
-                    previous
-                        .as_ref()
-                        .map_or("unknown", |profile| profile.display_name.as_str())
-                )),
-                pending_tasks: vec![format!(
-                    "Review this handoff after activating profile {}",
-                    target.display_name
-                )],
-                ..CheckpointInput::default()
-            },
-        )?;
-        Some(handoffs.create(&checkpoint, workspace)?)
+        let previous_checkpoint = checkpoints.latest_for_workspace(workspace.id)?;
+        let mut input = previous_checkpoint
+            .as_ref()
+            .map_or_else(CheckpointInput::default, CheckpointInput::from_checkpoint);
+        if let Some(objective) = objective.filter(|value| !value.trim().is_empty()) {
+            input.objective = objective;
+        } else if input.objective.trim().is_empty() {
+            input.objective = format!("Continue work in {}", workspace.display_name);
+        }
+        if input.active_task.is_none() {
+            input.active_task = Some(format!(
+                "Continue from profile {} using an explicit workspace handoff",
+                previous
+                    .as_ref()
+                    .map_or("unknown", |profile| profile.display_name.as_str())
+            ));
+        }
+        input
+            .pending_tasks
+            .retain(|task| !task.starts_with("Review this handoff after activating profile "));
+        let review_task = format!(
+            "Review this handoff after activating profile {}",
+            target.display_name
+        );
+        if !input.pending_tasks.contains(&review_task) {
+            input.pending_tasks.push(review_task);
+        }
+        let checkpoint = checkpoints.create(workspace, previous.as_ref(), None, input)?;
+        Some(handoffs.create_for_destination(&checkpoint, workspace, Some(&target))?)
     } else {
         None
     };

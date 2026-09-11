@@ -9,7 +9,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Rust CLI and responsive terminal dashboard.
 - Local profile, workspace, session, checkpoint, handoff, and activity state.
 - Provider-neutral Agent/ModelProvider/Model domain types and SQLite v4 migrations.
-- Codex, Claude Code, Gemini CLI, and OpenCode detection, isolated agent homes, auth orchestration, model preferences, guarded native resume, and handoff launch.
+- Codex, Claude Code, Gemini CLI, OpenCode, and Kiro CLI detection, profile-scoped agent homes where supported, auth orchestration, model preferences, guarded native resume, and handoff launch.
 - Conservative Gemini adapter with `GEMINI_CLI_HOME`, unknown auth status, extensions disabled, default approvals, native resume, and interactive AWHF launch.
 - OpenCode JSON session synchronization, dynamic provider/model catalog validation, custom/local backend support, and qualified model normalization.
 - Git snapshots, deterministic handoffs, integrity hashes, secret redaction, and diagnostics.
@@ -22,4 +22,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Atomic non-secret global configuration mutation and bounded provider health probes with single-line, redacted failure summaries.
 - Cross-platform CI and contributor/security documentation.
 - Deterministic Cargo source-package allowlist and Linux package verification, excluding the PRD and local build/QA artifacts.
-- Agent Workspace Handoff Format 1.1, checkpoint v2, ADRs, and verified five-agent capability documentation.
+- Agent Workspace Handoff Format 1.2 with explicit destination and portable-continuity semantics, checkpoint v2, ADRs, and verified five-agent capability documentation.
+- Real Windows Gemini CLI 0.59.0 detection and unauthenticated-boundary QA.
+- Kiro CLI 2.21.3 JSON authentication/session/model integration and real same-identity session synchronization/resume QA.
+- Three directed Codex/Claude/OpenCode portable artifact flows preserving narrative, Git, validation, and project-instruction state.

@@ -129,7 +129,8 @@ args = ["--version"]
     let handoff = json_output(&home, &["handoff", "create", checkpoint_id]);
     let handoff_id = handoff["id"].as_str().expect("handoff id");
     let manifest = json_output(&home, &["handoff", "show", handoff_id]);
-    assert_eq!(manifest["schema_version"], "1.1.0");
+    assert_eq!(manifest["schema_version"], "1.2.0");
+    assert_eq!(manifest["continuity_mode"], "portable_handoff");
     assert_eq!(manifest["source"]["agent_id"], "codex");
     assert!(manifest["source"]["model_provider_id"].is_null());
     assert_eq!(manifest["workspace"]["display_name"], "ordinary workspace");

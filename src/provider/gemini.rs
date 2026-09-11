@@ -123,17 +123,25 @@ fn discover_windows_launcher() -> Option<(PathBuf, Option<PathBuf>)> {
         if !directory.is_absolute() {
             continue;
         }
-        let script = directory
-            .join("node_modules")
-            .join("@google")
-            .join("gemini-cli")
-            .join("dist")
-            .join("index.js");
-        if super::safe_executable_candidate(&script, &current) {
-            return Some((node, Some(script)));
+        for script in gemini_script_candidates(&directory) {
+            if super::safe_executable_candidate(&script, &current) {
+                return Some((node.clone(), Some(script)));
+            }
         }
     }
     None
+}
+
+#[cfg(windows)]
+fn gemini_script_candidates(path_directory: &Path) -> [PathBuf; 2] {
+    let package = path_directory
+        .join("node_modules")
+        .join("@google")
+        .join("gemini-cli");
+    [
+        package.join("bundle").join("gemini.js"),
+        package.join("dist").join("index.js"),
+    ]
 }
 
 impl AgentAdapter for GeminiAdapter {
@@ -446,6 +454,20 @@ mod tests {
         assert!(!health.installed);
         assert_eq!(health.auth_state, AuthState::Unknown);
         assert!(health.message.contains("could not be found"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_bundle_and_legacy_script_layouts_are_supported() {
+        let candidates = gemini_script_candidates(Path::new(r"C:\npm"));
+        assert_eq!(
+            candidates[0],
+            PathBuf::from(r"C:\npm\node_modules\@google\gemini-cli\bundle\gemini.js")
+        );
+        assert_eq!(
+            candidates[1],
+            PathBuf::from(r"C:\npm\node_modules\@google\gemini-cli\dist\index.js")
+        );
     }
 
     #[cfg(unix)]
