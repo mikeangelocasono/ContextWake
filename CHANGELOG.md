@@ -52,6 +52,6 @@ No unreleased changes.
 
 ### Known limitations
 
-- No signed binary or macOS physical-device QA exists yet; the public prerelease is intentionally gated on the final tagged workflow.
+- Public alpha binaries remain unsigned, macOS is not notarized, and no macOS physical-device QA has been performed.
 - Provider context utilization and quota balances are not exposed by current adapters.
 - Cross-agent artifact fidelity is verified; target-model comprehension still requires deliberately authorized disposable provider profiles.

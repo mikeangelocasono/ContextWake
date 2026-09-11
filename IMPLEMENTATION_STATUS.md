@@ -29,7 +29,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Local activity | COMPLETE | SQLite events and separate CLI/TUI section | Duration tracking |
 | Diagnostics | COMPLETE | Config, DB, Git, all five adapters, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
 | Security controls | COMPLETE | Fixed argv, bounded probes, redaction, terminal sanitization, containment, symlink defense, and transactional switching | Fuzzing and external security review |
-| Open-source readiness | PARTIAL | Public ContextWake repository, compatibility migration, README and real TUI image, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, green three-platform CI, and tag-gated artifact workflow | Prerelease publication; optional signing/notarization |
+| Open-source readiness | COMPLETE | Public ContextWake repository and `v0.1.0-alpha.1` prerelease, compatibility migration, README and real TUI image, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, green three-platform CI, and verified release artifacts | Optional signing/notarization and future package registries |
 
 ## Latest validation evidence
 
@@ -41,10 +41,10 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 - A controlled dirty repository exercised Codex to Claude, Claude to OpenCode, and OpenCode to Codex AWHF 1.2 artifact flows. Every hop retained objective/task/completed/decisions/pending/issues, branch and HEAD, staged/unstaged/untracked counts, diff summary, validation results, project instructions, source/destination, timestamps, and `portable_handoff`; secret and absolute-path checks passed.
 - Public CI run `34576605189` passed RustSec plus format, strict Clippy, tests, and release builds on Ubuntu, Windows, and macOS. The macOS job passed 87 tests; this is automated CI evidence, not physical-device TUI QA.
 - Manual release-workflow run `34576636745` built and packaged Windows x86_64, Linux x86_64, and macOS arm64 using the current official Node 24 artifact actions. All three archives contain only the native binary, README, and LICENSE; downloaded checksums verified. Downloaded Windows and Linux binaries ran from isolated non-repository directories, and the macOS payload was verified as a mode-`0755` Mach-O arm64 executable.
+- Tagged CI run `34577840714` passed all Ubuntu, Windows, macOS, and RustSec jobs on commit `b67143d`. Tagged release run `34577840582` validated the Cargo version, rebuilt all three targets, generated checksums, and published the verified GitHub prerelease at `v0.1.0-alpha.1`.
 
-## Remaining release constraints
+## Known alpha limitations
 
-- **Internal:** the `v0.1.0-alpha.1` tag and prerelease have not yet been published. All enforced local, CI, security, packaging, and artifact gates are green.
-- **External/non-blocking for this alpha:** disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini; cross-agent target-model comprehension requires deliberately authorized disposable profiles; Windows Authenticode and Apple signing/notarization identities are unavailable; macOS has automated CI and artifact evidence but no interactive physical-device QA.
+- Disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini; cross-agent target-model comprehension requires deliberately authorized disposable profiles; Windows Authenticode and Apple signing/notarization identities are unavailable; macOS has automated CI and artifact evidence but no interactive physical-device QA.
 
 These limits are reflected in the [compatibility matrix](docs/providers/compatibility.md); no UI value claims otherwise.
