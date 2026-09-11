@@ -56,7 +56,6 @@ wait-timeout = "0.2"
 
 [dev-dependencies]
 assert_cmd = "2.0"
-predicates = "3.1"
 
 [profile.release]
 lto = "thin"

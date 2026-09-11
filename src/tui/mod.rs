@@ -4,7 +4,7 @@ OWN-WORLD: graphite terminal surfaces, cyan focus, amber warnings, square single
 STORY: inspect real local/agent state, choose a profile deliberately, preserve project context, then continue with the selected coding agent.
 FIRST VIEWPORT: compact title/status rail, profile lane, workspace/Git evidence, continuity panel, and keyboard action bar.
 FORM: dense operator console benchmarked against Lazygit and GitHub CLI, with ContextWake's continuity decision as the center.
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, and DESIGN.md
+FINISH: unreviewed and undocumented is unfinished; this build ends with a reviewed, documented terminal workflow.
 */
 
 use std::io;

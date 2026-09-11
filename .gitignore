@@ -11,5 +11,12 @@
 !.env.example
 *.log
 *.profraw
+*.tmp
+*.bak
+*.swp
+*.swo
+coverage/
+test-output/
 .DS_Store
 Thumbs.db
+desktop.ini

@@ -71,6 +71,16 @@ Git and non-interactive agent probes are bounded subprocesses. Repository valida
 
 The current TUI performs synchronous refreshes, so background event-driven refresh remains P1. Interactive provider processes start only after ContextWake restores the ordinary terminal.
 
+## TUI interaction contract
+
+The interface is an operator console rather than a splash screen: active
+identity, workspace/Git evidence, and the next continuity action have priority.
+Graphite surfaces use one restrained cyan accent and amber warnings; every
+status also has explicit text so color is never the only signal. Mnemonic keys
+open the primary screens, identity changes and destructive actions require
+confirmation, and narrow or tiny terminals collapse to an essential one-column
+view with a clear size warning.
+
 See the [language/TUI](adr/0001-language-and-tui-stack.md), [storage](adr/0002-storage.md), and [adapter](adr/0003-provider-adapter-model.md) decisions.
 
 Field-level persistence rules are in the [data classification](data-classification.md).
