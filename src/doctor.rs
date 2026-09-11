@@ -182,7 +182,7 @@ pub fn run_doctor(
     checks.push(DoctorCheck {
         name: "Credential boundary".into(),
         status: CheckStatus::Pass,
-        summary: "ContextWake stores profile metadata only; each coding agent owns credentials in an isolated configuration root"
+        summary: "ContextWake stores profile metadata only; coding agents own credentials, and configuration/credential isolation is reported per adapter rather than assumed"
             .into(),
         action: None,
     });

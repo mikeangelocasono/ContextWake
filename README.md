@@ -25,6 +25,23 @@ The current milestone includes:
 
 Gemini CLI 0.59.0 detection was validated on Windows without authenticating. Kiro CLI 2.21.3 is registered and its JSON sessions/models plus same-identity native resume were live-tested; its Windows OS credential is shared, so Kiro multiple-profile isolation is explicitly unsupported. OpenCode session/model commands are integrated; its profile isolation remains experimental pending cross-platform credential QA. See the [verified compatibility matrix](docs/providers/compatibility.md) and [implementation status](IMPLEMENTATION_STATUS.md).
 
+## Installation
+
+No public binary has been uploaded yet. Until the prepared prerelease is deliberately published, build from a reviewed checkout with Rust 1.88 or newer:
+
+```text
+cargo install --path . --locked
+ctxwake --version
+```
+
+Prepared release archives use these names:
+
+- Windows x86_64: `contextwake-v0.1.0-alpha.1-windows-x86_64.zip`
+- Linux x86_64 GNU: `contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz`
+- macOS Apple Silicon: `contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz`
+
+Compare every download with `SHA256SUMS`. Alpha binaries are currently unsigned; do not disable Defender, Gatekeeper, or another platform protection to run them. macOS CI compilation is not signing, notarization, or physical-device QA. See the [release process](docs/release.md).
+
 ## Build
 
 Prerequisites are Rust 1.88+, Git, and optionally Codex CLI, Claude Code, Gemini CLI, OpenCode, or Kiro CLI. Windows builds need Visual Studio C++ Build Tools.
@@ -41,7 +58,7 @@ cargo build --release
 ./target/release/ctxwake --version
 ```
 
-Prebuilt/signed release packages and automatic updates are not published yet.
+Prebuilt release packages and automatic updates are not published yet.
 
 ## Quick start
 

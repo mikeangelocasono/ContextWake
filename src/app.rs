@@ -1011,7 +1011,7 @@ impl Application {
                 )?;
                 output_value(&checkpoint, json, || {
                     format!(
-                        "Created checkpoint {} ({})",
+                        "Created checkpoint {} (redaction: {})",
                         checkpoint.id,
                         checkpoint.redaction_status.as_str()
                     )

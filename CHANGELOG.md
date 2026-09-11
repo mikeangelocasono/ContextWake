@@ -4,6 +4,10 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+No unreleased changes.
+
+## [0.1.0-alpha.1] - 2026-09-11
+
 ### Added
 
 - Rust CLI and responsive terminal dashboard.
@@ -37,3 +41,15 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Kiro multiple-profile support is disabled because real Windows QA showed that `KIRO_HOME` does not isolate its OS credential.
 - Database startup rejects duplicate or unsupported schema metadata and migration rollback/idempotence are regression-tested.
 - Release archives contain an explicit file set and receive SHA-256 manifests; Windows and macOS binaries remain truthfully unsigned/unnotarized.
+
+### Provider support
+
+- Kiro CLI session/model discovery and same-identity native resume are the only authenticated native-session behaviors verified end to end in this milestone.
+- Codex, Claude Code, OpenCode, and Gemini CLI native commands remain partial pending disposable authenticated-profile QA.
+- Cross-agent continuity uses portable handoffs and never claims native transcript transfer.
+
+### Known limitations
+
+- No public release, signed binary, macOS physical-device QA, or completed hosted CI run exists yet.
+- Provider context utilization and quota balances are not exposed by current adapters.
+- Cross-agent artifact fidelity is verified; target-model comprehension still requires deliberately authorized disposable provider profiles.

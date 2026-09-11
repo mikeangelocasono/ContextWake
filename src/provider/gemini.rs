@@ -11,7 +11,18 @@ use crate::provider::AgentAdapter;
 use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
 use crate::security::validate_external_reference;
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn parse_version_output(stdout: &[u8]) -> String {
+    let output = String::from_utf8_lossy(stdout);
+    output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(
+            || "version unavailable".into(),
+            |line| safe_agent_text(line.trim()),
+        )
+}
 
 #[derive(Clone, Debug)]
 pub struct GeminiAdapter {
@@ -230,9 +241,7 @@ impl AgentAdapter for GeminiAdapter {
                 agent_id: self.id().into(),
                 installed: true,
                 executable: Some(self.reported_executable()),
-                version: Some(safe_agent_text(
-                    String::from_utf8_lossy(&output.stdout).trim(),
-                )),
+                version: Some(parse_version_output(&output.stdout)),
                 auth_state: AuthState::Unknown,
                 message: "Gemini CLI detected; authentication status is not externally exposed"
                     .into(),
@@ -244,7 +253,7 @@ impl AgentAdapter for GeminiAdapter {
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if output.timed_out {
-                    "Gemini CLI version probe timed out after 5 seconds".into()
+                    "Gemini CLI version probe timed out after 10 seconds".into()
                 } else {
                     safe_probe_diagnostic(&output)
                 },
@@ -472,6 +481,14 @@ mod tests {
         assert_eq!(
             candidates[1],
             PathBuf::from(r"C:\npm\node_modules\@google\gemini-cli\dist\index.js")
+        );
+    }
+
+    #[test]
+    fn version_parser_ignores_npm_maintenance_noise() {
+        assert_eq!(
+            parse_version_output(b"0.59.0\nRename failed with EPERM, retrying\n"),
+            "0.59.0"
         );
     }
 
