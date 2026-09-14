@@ -59,15 +59,15 @@ Support is deliberately capability-specific. "Partial" often means command const
 |---|---|---|---|---|---|---|
 | OpenAI Codex CLI | Verified 0.154.0 on Windows | Verified | Authenticated resume pending | Selection | Verified | Partial |
 | Claude Code | Verified 2.1.270 on Windows | Verified | Authenticated resume pending | Hosted modes | Verified | Partial |
-| GitHub Copilot CLI | Contract tested; not locally installed | Unknown without spending a request | Session metadata contract; resume pending auth | Selection | Contract tested | Partial |
-| Cursor CLI | Verified 2026.07.23 on Windows | Verified | Interactive listing unsupported; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
-| OpenCode | Verified 1.18.25 on Windows | Partial | JSON listing; resume pending auth | Dynamic/local catalog verified | Verified | Partial |
+| GitHub Copilot CLI | Verified 1.0.83 on Windows | Authenticated request verified | Named-session resume verified | Selection | Live 5/7 input; 7/7 output | Partial |
+| Cursor CLI | Verified 2026.09.10 on Windows | Verified | Known-state resume verified | Dynamic catalog verified | Live 7/7 input/output | Partial |
+| OpenCode | Verified 1.18.25 on Windows | Authenticated request verified | JSON listing; resume not tested | Dynamic/local catalog verified | Live 7/7 input | Partial |
 | Gemini CLI | Verified 0.59.0 on Windows | Unknown non-interactively | Resume pending auth | Selection | Contract tested | Partial |
 | Kiro CLI | Verified 2.21.3 in prior Windows QA | Verified in prior QA | Same-identity resume verified | Dynamic catalog verified | Contract tested | Partial; isolated Windows identities unsupported |
-| Kimi Code CLI | Contract tested; not locally installed | Unknown | Session metadata contract; resume pending auth | Selection | Partial | Partial |
-| Grok Build | Verified 0.2.114 on Windows | Signed-out boundary verified | Session metadata contract; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
+| Kimi Code CLI | Verified 0.42.0 on Windows | Pending provider login | Empty JSON listing verified; resume pending auth | Selection pending auth | Contract tested | Partial |
+| Grok Build | Verified 1.0.30 on Windows | Signed-out boundary verified | Session metadata contract; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
 
-See the [full compatibility matrix](docs/providers/compatibility.md) and provider guides for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [GitHub Copilot](docs/providers/github-copilot.md), [Cursor](docs/providers/cursor.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), [Kiro](docs/providers/kiro.md), [Kimi Code](docs/providers/kimi.md), and [Grok Build](docs/providers/grok.md).
+See the [full compatibility matrix](docs/providers/compatibility.md), [alpha.2 release QA matrix](docs/qa/release-provider-matrix.md), and provider guides for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [GitHub Copilot](docs/providers/github-copilot.md), [Cursor](docs/providers/cursor.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), [Kiro](docs/providers/kiro.md), [Kimi Code](docs/providers/kimi.md), and [Grok Build](docs/providers/grok.md).
 
 A coding agent is not a model provider. For example, Cursor or GitHub Copilot can offer models from several vendors, while OpenCode can target local runtimes. ContextWake registers the agent once and stores provider/model selection separately.
 
@@ -89,15 +89,20 @@ The provider resumes its own session. ContextWake only offers this path when the
 ### Portable Handoff
 
 ```text
-Codex / Personal
+GitHub Copilot
        |
-       | switch to Claude / Work
+       | ContextWake checkpoint
        v
-   Checkpoint  -->  AWHF handoff  -->  new Claude Code session
-                                                |
-                                                v
-                                  Restored from Handoff
+Portable AWHF handoff  -->  new Cursor session
+                                     |
+                                     v
+                         Restored from Handoff
 ```
+
+That flow was exercised with authenticated CLIs against the deterministic CSV
+fixture: Cursor reconstructed all seven scored project fields plus the exact
+branch, HEAD, and staged/unstaged/untracked counts. Other pairings remain
+capability-specific and are reported in the QA matrix rather than implied here.
 
 A handoff can contain objective, current task, completed work, decisions, constraints, changed files, Git summary, validation results, known issues, pending work, and trusted project instructions. It excludes credentials, hidden reasoning, chain-of-thought, and inaccessible provider state.
 
@@ -105,36 +110,36 @@ A handoff can contain objective, current task, completed work, decisions, constr
 
 ### Windows x86_64
 
-Download `contextwake-v0.1.0-alpha.1-windows-x86_64.zip` and `SHA256SUMS` from the [v0.1.0-alpha.1 prerelease](https://github.com/mikeangelocasono/ContextWake/releases/tag/v0.1.0-alpha.1), verify the archive, extract it, and run:
+Download `contextwake-v0.1.0-alpha.2-windows-x86_64.zip` and `SHA256SUMS` from the [v0.1.0-alpha.2 prerelease](https://github.com/mikeangelocasono/ContextWake/releases/tag/v0.1.0-alpha.2), verify the archive, extract it, and run:
 
 ```powershell
-Get-FileHash .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -Algorithm SHA256
-Expand-Archive .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -DestinationPath .
-.\contextwake-v0.1.0-alpha.1-windows-x86_64\ctxwake.exe doctor
+Get-FileHash .\contextwake-v0.1.0-alpha.2-windows-x86_64.zip -Algorithm SHA256
+Expand-Archive .\contextwake-v0.1.0-alpha.2-windows-x86_64.zip -DestinationPath .
+.\contextwake-v0.1.0-alpha.2-windows-x86_64\ctx.exe doctor
 ```
 
 The alpha executable is unsigned. Do not disable Defender or other platform protection; compare its hash with `SHA256SUMS`.
 
-The immutable `v0.1.0-alpha.1` archive predates the short command and contains `ctxwake.exe`; the next alpha archives contain both `ctx.exe` and the compatibility `ctxwake.exe`.
+The archive contains `ctx.exe` and the temporary compatibility alias `ctxwake.exe`.
 
 ### Linux x86_64
 
-Download `contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the prerelease, then:
+Download `contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz` and `SHA256SUMS` from the prerelease, then:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz
-./contextwake-v0.1.0-alpha.1-linux-x86_64/ctxwake doctor
+tar -xzf contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz
+./contextwake-v0.1.0-alpha.2-linux-x86_64/ctx doctor
 ```
 
 ### macOS
 
-Download `contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz` and `SHA256SUMS` from the prerelease, then:
+Download `contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz` and `SHA256SUMS` from the prerelease, then:
 
 ```sh
-shasum -a 256 contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
-tar -xzf contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
-./contextwake-v0.1.0-alpha.1-macos-aarch64/ctxwake doctor
+shasum -a 256 contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz
+tar -xzf contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz
+./contextwake-v0.1.0-alpha.2-macos-aarch64/ctx doctor
 ```
 
 The Apple Silicon artifact is GitHub Actions-built but unsigned and not notarized. Keep Gatekeeper enabled, verify the checksum, and use macOS's normal explicit approval flow if you choose to run this alpha. Automated CI is not physical-device TUI validation.
@@ -278,16 +283,16 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 
 | Platform | Current evidence |
 |---|---|
-| Windows 11 x86_64 | Native format/check/strict Clippy and 114 tests; nine-agent bounded detection with live Cursor and Grok Build probes |
-| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 118 tests, optimized build, RustSec audit, and clean-tree package verification passed |
-| macOS Apple Silicon | GitHub-hosted format/strict Clippy, 118 tests, release build, binary smoke tests, and PATH-collision check passed; no physical-device TUI QA |
+| Windows 11 x86_64 | Native format/check/strict Clippy and 119 tests; live Copilot/Cursor resume plus Cursor/OpenCode comprehension QA |
+| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 120 tests, optimized build, RustSec audit, and package verification passed |
+| macOS Apple Silicon | GitHub-hosted format/strict Clippy, tests, release build, binary smoke tests, and PATH-collision check required; no physical-device TUI QA |
 
 ## Current limitations
 
-- Authenticated native resume remains pending for every adapter except the prior verified Kiro same-identity path.
+- Authenticated native resume is verified for Copilot and the prior Kiro same-identity path; it remains pending for the other adapters.
 - Kiro same-identity resume is verified, but its Windows OS credential is shared across `KIRO_HOME` roots; ContextWake does not advertise isolated Kiro profiles.
-- Cursor settings can be scoped, but local QA proved its authenticated identity remains global; Copilot, Kimi, and Grok multi-identity isolation awaits authenticated QA.
-- Cross-agent artifact fidelity is verified; authenticated destination-agent comprehension still needs deliberately authorized disposable profiles.
+- Cursor settings can be scoped, but Windows QA showed that the provider-owned identity remains available across `CURSOR_CONFIG_DIR` roots; ContextWake does not claim isolated Cursor identities. Copilot, Kimi, and Grok multi-identity isolation awaits authenticated QA.
+- Cross-agent artifact fidelity is verified. Live comprehension passed at 7/7 for Copilot -> Cursor and Cursor -> OpenCode, was partial at 5/7 for Codex -> Copilot, and remains untested for other pairs.
 - Current adapters do not expose reliable provider quota balances or context percentages.
 - Windows artifacts are unsigned; macOS signing, notarization, and physical-device QA remain pending.
 

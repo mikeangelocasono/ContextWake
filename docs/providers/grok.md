@@ -1,6 +1,6 @@
 # Grok Build
 
-Reviewed and locally probed on Windows 14 September 2026. The tested Grok Build version was `0.2.114 (0c78503879) [stable]`.
+Reviewed and locally probed on Windows 14 September 2026. Grok Build updated during the release pass; final detection used `1.0.30 (04b7ffed98c6) [stable]`.
 
 | Area | Status | ContextWake behavior and evidence |
 |---|---|---|

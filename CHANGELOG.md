@@ -13,6 +13,7 @@ All notable changes will be documented here. The project follows Semantic Versio
 - Bounded provider session-metadata readers for Copilot, Kimi, and Grok, plus live Cursor and Grok model discovery.
 - Deterministic seven-hop cross-agent CSV continuity fixture and nine-adapter portable-handoff contract coverage.
 - Provider candidate review, individual provider guides, and contributor instructions for adding adapters safely.
+- Release QA matrix and reproducible seven-field destination comprehension scoring.
 
 ### Changed
 
@@ -24,16 +25,21 @@ All notable changes will be documented here. The project follows Semantic Versio
   include the shared-implementation `ctxwake` compatibility executable.
 - Existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite
   state remain compatible. The immutable `v0.1.0-alpha.1` release is unchanged.
+- Live validation now covers GitHub Copilot named-session resume, Copilot-to-Cursor and Cursor-to-OpenCode 7/7 handoffs, and an evidence-preserving partial Codex-to-Copilot handoff.
 
 ### Security
 
 - Generic executable names require vendor-specific signatures and repository-local candidates are rejected.
 - Provider output and metadata are bounded and sanitized; provider credentials remain provider-owned and are never copied into SQLite.
 - Copilot remote session/export flags and Cursor cloud workers are disabled in ContextWake launch paths.
+- Provider-native session references reject path separators before a coding-agent process starts.
 
 ### Fixed
 
 - Clarified the Windows archive extraction destination in the public installation instructions.
+- Detect the official GitHub Copilot and Kimi Code npm distributions safely on Windows without executing npm command shims through a shell.
+- Bound Copilot version reporting to the version line instead of retaining updater guidance.
+- Normalize Windows verbatim workspace paths at the Cursor CLI boundary so provider-native resume can load persisted chats correctly.
 
 ## [0.1.0-alpha.1] - 2026-09-11
 
