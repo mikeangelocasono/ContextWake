@@ -21,14 +21,17 @@ use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, Wrap,
+};
 
 use crate::app::{Application, StatusView};
 use crate::checkpoint::CheckpointInput;
 use crate::doctor::{DoctorReport, run_doctor};
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
-    Capability, Checkpoint, CodingAgent, HandoffRecord, Profile, Session, UsageSummary, Workspace,
+    AuthState, Capability, Checkpoint, CodingAgent, HandoffRecord, Profile, Session, UsageSummary,
+    Workspace,
 };
 use crate::{PRODUCT_NAME, VERSION};
 
@@ -92,6 +95,48 @@ impl Screen {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AgentFilter {
+    #[default]
+    All,
+    Installed,
+    Authenticated,
+    NativeResume,
+    Acp,
+}
+
+impl AgentFilter {
+    const fn next(self) -> Self {
+        match self {
+            Self::All => Self::Installed,
+            Self::Installed => Self::Authenticated,
+            Self::Authenticated => Self::NativeResume,
+            Self::NativeResume => Self::Acp,
+            Self::Acp => Self::All,
+        }
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Installed => "Installed",
+            Self::Authenticated => "Authenticated",
+            Self::NativeResume => "Supports resume",
+            Self::Acp => "Supports ACP",
+        }
+    }
+
+    fn includes(self, agent: &CodingAgent) -> bool {
+        match self {
+            Self::All => true,
+            Self::Installed => agent.detected_version.is_some(),
+            Self::Authenticated => agent.auth_state == AuthState::SignedIn,
+            Self::NativeResume => agent.capabilities.native_resume.is_available(),
+            Self::Acp => agent.capabilities.acp.is_available(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 enum InputMode {
     Normal,
@@ -121,6 +166,7 @@ struct UiState {
     usage: UsageSummary,
     doctor: DoctorReport,
     selected: usize,
+    agent_filter: AgentFilter,
     input: InputMode,
     message: Option<String>,
     launch_action: Option<LaunchAction>,
@@ -160,6 +206,7 @@ impl UiState {
                 false,
             ),
             selected: 0,
+            agent_filter: AgentFilter::All,
             input: InputMode::Normal,
             message: None,
             launch_action: None,
@@ -195,7 +242,11 @@ impl UiState {
     fn current_len(&self) -> usize {
         match self.screen {
             Screen::Profiles => self.profiles.len(),
-            Screen::AgentCapabilities => self.agents.len(),
+            Screen::AgentCapabilities => self
+                .agents
+                .iter()
+                .filter(|agent| self.agent_filter.includes(agent))
+                .count(),
             Screen::Workspaces => self.workspaces.len(),
             Screen::Sessions | Screen::SessionDetail => self.sessions.len(),
             Screen::Checkpoints | Screen::CheckpointDetail => self.checkpoints.len(),
@@ -248,38 +299,25 @@ impl UiState {
 
 fn load_agents(app: &Application) -> Result<Vec<CodingAgent>> {
     let active = app.store.active_profile()?;
-    std::thread::scope(|scope| {
-        let handles = app
-            .agents
-            .implemented()
-            .into_iter()
-            .map(|adapter| {
-                let home = active
-                    .as_ref()
-                    .filter(|profile| profile.agent_id == adapter.id())
-                    .map(|profile| profile.agent_home.clone());
-                scope.spawn(move || {
-                    let health = adapter.detect(home.as_deref())?;
-                    Ok(CodingAgent {
-                        id: adapter.id().into(),
-                        display_name: adapter.display_name().into(),
-                        adapter_version: VERSION.into(),
-                        detected_version: health.version,
-                        executable: health.executable,
-                        capabilities: adapter.capabilities(),
-                    })
-                })
+    let active = active
+        .as_ref()
+        .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+    app.agents
+        .implemented()
+        .zip(app.agents.detect_all(active))
+        .map(|(adapter, health)| {
+            let health = health?;
+            Ok(CodingAgent {
+                id: adapter.id().into(),
+                display_name: adapter.display_name().into(),
+                adapter_version: VERSION.into(),
+                detected_version: health.version,
+                executable: health.executable,
+                auth_state: health.auth_state,
+                capabilities: adapter.capabilities(),
             })
-            .collect::<Vec<_>>();
-        handles
-            .into_iter()
-            .map(|handle| {
-                handle.join().map_err(|_| {
-                    ContextWakeError::InvalidData("coding-agent probe worker panicked".into())
-                })?
-            })
-            .collect()
-    })
+        })
+        .collect()
 }
 
 fn first_detected_agent(state: &UiState) -> usize {
@@ -546,6 +584,11 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
         KeyCode::Char('r' | 'R') => {
             state.refresh(app)?;
             state.message = Some("Refreshed local and provider state.".into());
+        }
+        KeyCode::Char('f' | 'F') if state.screen == Screen::AgentCapabilities => {
+            state.agent_filter = state.agent_filter.next();
+            state.selected = 0;
+            state.message = Some(format!("Agent filter: {}.", state.agent_filter.label()));
         }
         KeyCode::Esc => {
             if matches!(
@@ -1012,53 +1055,116 @@ fn render_agent_capabilities(frame: &mut ratatui::Frame<'_>, state: &UiState, ar
         })
         .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
         .split(area);
-    let items = state
+    let visible_agents = state
         .agents
         .iter()
-        .enumerate()
-        .map(|(index, agent)| {
-            let marker = if index == state.selected { ">" } else { " " };
-            ListItem::new(format!(
-                "{marker} {}\n  {}",
-                agent.display_name,
-                agent.detected_version.as_deref().unwrap_or("not installed")
-            ))
-            .style(if index == state.selected {
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        .filter(|agent| state.agent_filter.includes(agent))
+        .collect::<Vec<_>>();
+    let items = visible_agents
+        .iter()
+        .map(|agent| {
+            let install = if agent.detected_version.is_some() {
+                "Installed"
             } else {
-                Style::default()
-            })
+                "Not installed"
+            };
+            ListItem::new(format!(
+                "{}\n  {} · {}",
+                agent.display_name,
+                install,
+                agent.auth_state.as_str()
+            ))
         })
         .collect::<Vec<_>>();
-    frame.render_widget(
-        List::new(items).block(Block::default().title(" AGENTS ").borders(Borders::ALL)),
+    let mut list_state = ListState::default().with_selected(Some(state.selected));
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(
+                Block::default()
+                    .title(format!(
+                        " AI CODING AGENTS · {} · F filter ",
+                        state.agent_filter.label()
+                    ))
+                    .borders(Borders::ALL),
+            )
+            .highlight_symbol("> ")
+            .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
         sections[0],
+        &mut list_state,
     );
-    let Some(agent) = state.agents.get(state.selected) else {
+    let Some(agent) = visible_agents.get(state.selected).copied() else {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "No agents match the '{}' filter. Press F to change it.",
+                state.agent_filter.label()
+            ))
+            .block(
+                Block::default()
+                    .title(" PROVIDER DETAILS ")
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: true }),
+            sections[1],
+        );
         return;
     };
     let capabilities = &agent.capabilities;
-    let lines = vec![
-        capability_line("Installation", &capabilities.installation_detection),
-        capability_line("Version", &capabilities.version_detection),
-        capability_line("Authentication", &capabilities.auth_status),
-        capability_line("Multiple profiles", &capabilities.multiple_profiles),
+    let active_profile = state
+        .status
+        .active_profile
+        .as_ref()
+        .filter(|profile| profile.agent_id == agent.id);
+    let mut lines = vec![
+        Line::from(format!("Agent              {}", agent.display_name)),
+        Line::from(format!(
+            "Installed          {}",
+            if agent.detected_version.is_some() {
+                "Yes"
+            } else {
+                "No"
+            }
+        )),
+        Line::from(format!(
+            "Version            {}",
+            agent.detected_version.as_deref().unwrap_or("Unavailable")
+        )),
+        Line::from(format!("Authentication     {}", agent.auth_state.as_str())),
+        Line::from(format!(
+            "Current profile    {}",
+            active_profile.map_or("None", |profile| profile.display_name.as_str())
+        )),
+        Line::from(format!(
+            "Current model      {}",
+            active_profile
+                .and_then(|profile| profile.model_preference.as_deref())
+                .unwrap_or("Not selected")
+        )),
+        Line::from(""),
+        capability_line("Profile isolation", &capabilities.profile_isolation),
         capability_line("Session listing", &capabilities.session_listing),
         capability_line("Native resume", &capabilities.native_resume),
-        capability_line("Named sessions", &capabilities.named_sessions),
+        capability_line("Portable handoff", &capabilities.portable_handoff),
         capability_line("Model selection", &capabilities.model_selection),
         capability_line("Model catalog", &capabilities.available_models),
-        capability_line("Multiple backends", &capabilities.multiple_model_providers),
-        capability_line("Local models", &capabilities.local_models),
+        capability_line("Structured output", &capabilities.structured_output),
+        capability_line("Non-interactive", &capabilities.non_interactive_mode),
+        capability_line("ACP", &capabilities.acp),
+        capability_line("MCP", &capabilities.mcp),
         capability_line("Context reporting", &capabilities.context_reporting),
         capability_line("Usage reporting", &capabilities.usage_reporting),
-        capability_line("Programmatic API", &capabilities.programmatic_interface),
+        capability_line("Cloud handoff", &capabilities.cloud_handoff),
     ];
+    if let Some(executable) = &agent.executable {
+        lines.insert(
+            3,
+            Line::from(format!("Executable         {}", executable.display())),
+        );
+    }
     frame.render_widget(
         Paragraph::new(lines)
             .block(
                 Block::default()
-                    .title(" VERIFIED CAPABILITY CONTRACT ")
+                    .title(" PROVIDER DETAILS · VERIFIED / PARTIAL / UNKNOWN ")
                     .borders(Borders::ALL),
             )
             .wrap(Wrap { trim: true }),
@@ -1594,6 +1700,17 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
 
 fn render_authentication(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     let profile = state.profiles.get(state.selected);
+    let login_detail = profile
+        .and_then(|profile| {
+            state
+                .agents
+                .iter()
+                .find(|agent| agent.id == profile.agent_id)
+        })
+        .map_or(
+            "Use the selected coding agent's provider-owned login flow.",
+            |agent| agent.capabilities.login.detail.as_str(),
+        );
     let command = profile.map_or_else(
         || "ctx profile add Personal".into(),
         |profile| format!("ctx profile login {}", profile.name),
@@ -1610,11 +1727,7 @@ fn render_authentication(frame: &mut ratatui::Frame<'_>, state: &UiState, area: 
             Line::from(""),
             Line::from(Span::styled(command, Style::default().fg(Color::Green))),
             Line::from(""),
-            Line::from(if profile.is_some_and(|value| value.agent_id == "codex") {
-                "For headless Codex login, add --device-auth."
-            } else {
-                "Use the selected coding agent's provider-owned login flow."
-            }),
+            Line::from(login_detail),
             Line::from("[Esc] Back"),
         ])
         .block(
@@ -1993,6 +2106,7 @@ mod tests {
                 adapter_version: VERSION.into(),
                 detected_version: Some("codex-cli 0.154.0".into()),
                 executable: Some(PathBuf::from("codex")),
+                auth_state: crate::model::AuthState::SignedIn,
                 capabilities: CodexAdapter::with_executable("codex").capabilities(),
             }],
             workspaces: vec![workspace],
@@ -2040,6 +2154,7 @@ mod tests {
                 }],
             },
             selected: 0,
+            agent_filter: AgentFilter::All,
             input: InputMode::Normal,
             message: None,
             launch_action: None,
@@ -2107,6 +2222,25 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Native resume"));
         assert!(rendered.contains("OpenAI Codex CLI"));
+    }
+
+    #[test]
+    fn agent_filters_use_install_auth_resume_and_acp_capabilities() {
+        let mut state = fixture();
+        let installed = &state.agents[0];
+        assert!(AgentFilter::Installed.includes(installed));
+        assert!(AgentFilter::Authenticated.includes(installed));
+        assert!(AgentFilter::NativeResume.includes(installed));
+        assert!(!AgentFilter::Acp.includes(installed));
+
+        let mut absent = installed.clone();
+        absent.detected_version = None;
+        absent.auth_state = AuthState::Unknown;
+        state.agents.push(absent);
+        state.agent_filter = AgentFilter::Installed;
+        state.screen = Screen::AgentCapabilities;
+        assert_eq!(state.current_len(), 1);
+        assert_eq!(AgentFilter::Acp.next(), AgentFilter::All);
     }
 
     #[test]

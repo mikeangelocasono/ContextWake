@@ -11,7 +11,7 @@ use crate::model::{
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
 use crate::security::validate_external_reference;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -73,7 +73,7 @@ impl KiroAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -176,6 +176,10 @@ impl AgentAdapter for KiroAdapter {
         "kiro"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["kiro-cli"]
+    }
+
     fn display_name(&self) -> &'static str {
         "Kiro CLI"
     }
@@ -223,6 +227,16 @@ impl AgentAdapter for KiroAdapter {
             ),
             programmatic_interface: Self::stable(
                 "headless stream-json output exposes versioned ACP events",
+            ),
+            non_interactive_mode: Self::stable("headless chat mode"),
+            structured_output: Self::stable("stream-JSON headless output"),
+            acp: Self::partial(
+                "the headless event stream uses ACP events; no standalone ACP server is exposed",
+            ),
+            mcp: Self::stable("Kiro CLI supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate remote Kiro tasks from the local adapter",
             ),
             local_models: Self::unavailable(
                 "no supported local-model backend was found in the verified Kiro CLI interface",

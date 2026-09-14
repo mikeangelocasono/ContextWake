@@ -412,7 +412,7 @@ pub enum CapabilityMaturity {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilitySupport {
-    Supported,
+    Verified,
     Partial,
     Unsupported,
     Unknown,
@@ -430,7 +430,7 @@ impl Capability {
     pub const fn is_available(&self) -> bool {
         matches!(
             self.support,
-            CapabilitySupport::Supported
+            CapabilitySupport::Verified
                 | CapabilitySupport::Partial
                 | CapabilitySupport::Experimental
         )
@@ -455,6 +455,12 @@ pub struct AgentCapabilities {
     pub available_models: Capability,
     pub multiple_model_providers: Capability,
     pub programmatic_interface: Capability,
+    pub non_interactive_mode: Capability,
+    pub structured_output: Capability,
+    pub acp: Capability,
+    pub mcp: Capability,
+    pub portable_handoff: Capability,
+    pub cloud_handoff: Capability,
     pub local_models: Capability,
     pub profile_isolation: Capability,
 }
@@ -476,6 +482,7 @@ pub struct CodingAgent {
     pub adapter_version: String,
     pub detected_version: Option<String>,
     pub executable: Option<PathBuf>,
+    pub auth_state: AuthState,
     pub capabilities: AgentCapabilities,
 }
 

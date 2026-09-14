@@ -109,43 +109,48 @@ pub fn run_doctor(
     });
 
     let active_profile = store.active_profile().ok().flatten();
-    for adapter in agents.implemented() {
-        let home = active_profile
-            .as_ref()
-            .filter(|profile| profile.agent_id == adapter.id())
-            .map(|profile| profile.agent_home.as_path());
-        let agent_health = adapter.detect(home);
+    let active_agent = active_profile
+        .as_ref()
+        .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+    for (adapter, agent_health) in agents.implemented().zip(agents.detect_all(active_agent)) {
+        let display_name = adapter.display_name();
         checks.push(match agent_health {
             Ok(health) if health.installed => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Pass,
                 summary: if verbose {
                     format!(
-                        "{} ({})",
+                        "{} · {} ({})",
                         health.version.as_deref().unwrap_or("version unavailable"),
+                        health.auth_state.as_str(),
                         health.executable.as_ref().map_or_else(
                             || "path unavailable".into(),
                             |path| { sanitize_terminal(&path.display().to_string()) }
                         )
                     )
                 } else {
-                    health
-                        .version
-                        .unwrap_or_else(|| "version unavailable".into())
+                    format!(
+                        "{} · {}",
+                        health.version.as_deref().unwrap_or("version unavailable"),
+                        health.auth_state.as_str()
+                    )
                 },
                 action: None,
             },
             Ok(health) => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Warning,
-                summary: health.message,
+                summary: if health.executable.is_none() {
+                    "Not installed".into()
+                } else {
+                    health.message
+                },
                 action: Some(format!(
-                    "Install {} or configure its CONTEXTWAKE_*_BIN override.",
-                    adapter.display_name()
+                    "Install {display_name} or configure its CONTEXTWAKE_*_BIN override."
                 )),
             },
             Err(error) => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Warning,
                 summary: sanitize_terminal(&error.to_string()),
                 action: Some("Run the agent's own doctor command for deeper diagnostics.".into()),

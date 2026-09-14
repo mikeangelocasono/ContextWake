@@ -8,7 +8,7 @@ use crate::model::{
     ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
 use crate::security::validate_external_reference;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -42,7 +42,7 @@ impl ClaudeAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -110,6 +110,10 @@ impl AgentAdapter for ClaudeAdapter {
         "claude"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["claude-code"]
+    }
+
     fn display_name(&self) -> &'static str {
         "Claude Code"
     }
@@ -171,6 +175,14 @@ impl AgentAdapter for ClaudeAdapter {
                 "Anthropic, Bedrock, Vertex AI, and Foundry modes are documented",
             ),
             programmatic_interface: Self::stable("print mode and JSON output are documented"),
+            non_interactive_mode: Self::stable("`claude --print`"),
+            structured_output: Self::stable("JSON and stream-JSON print output"),
+            acp: Self::unavailable("no native Claude Code ACP server is used"),
+            mcp: Self::stable("Claude Code supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate remote Claude tasks from the local adapter",
+            ),
             local_models: Self::unavailable("no supported local-model backend is documented"),
             profile_isolation: Self::partial(
                 "CLAUDE_CONFIG_DIR isolates settings, credentials, sessions, and plugins; macOS keychain behavior still requires platform QA",

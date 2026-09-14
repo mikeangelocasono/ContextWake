@@ -819,9 +819,8 @@ impl Application {
                 })?;
                 let workspace = self.resolve_workspace(workspace.as_deref())?;
                 let adapter = self.agents.get(&profile.agent_id)?;
-                if adapter.capabilities().session_listing.support
-                    != crate::model::CapabilitySupport::Supported
-                {
+                let capabilities = adapter.capabilities();
+                if !capabilities.session_listing.is_available() {
                     return Err(ContextWakeError::CapabilityUnavailable(format!(
                         "{} does not expose a supported session list",
                         adapter.display_name()
@@ -864,7 +863,15 @@ impl Application {
                         model: profile.model_preference.clone(),
                         started_at,
                         last_seen_at,
-                        resume_capability: ResumeCapability::Native,
+                        resume_capability: match capabilities.native_resume.support {
+                            crate::model::CapabilitySupport::Verified => ResumeCapability::Native,
+                            crate::model::CapabilitySupport::Unsupported => {
+                                ResumeCapability::HandoffOnly
+                            }
+                            crate::model::CapabilitySupport::Partial
+                            | crate::model::CapabilitySupport::Experimental
+                            | crate::model::CapabilitySupport::Unknown => ResumeCapability::Unknown,
+                        },
                         archived: false,
                         continuity: ContinuityKind::Unknown,
                     };
@@ -1131,7 +1138,6 @@ impl Application {
                 let agents = self
                     .agents
                     .implemented()
-                    .into_iter()
                     .map(|adapter| {
                         serde_json::json!({
                             "id": adapter.id(),
@@ -1146,7 +1152,7 @@ impl Application {
                 } else {
                     for agent in agents {
                         println!(
-                            "{:<10} {:<24} {}",
+                            "{:<18} {:<24} {}",
                             agent["id"].as_str().unwrap_or("unknown"),
                             agent["name"].as_str().unwrap_or("unknown"),
                             agent["adapter"].as_str().unwrap_or("unknown")
@@ -1156,20 +1162,20 @@ impl Application {
             }
             AgentCommand::Detect => {
                 let active = self.store.active_profile()?;
-                let mut health = Vec::new();
-                for adapter in self.agents.implemented() {
-                    let home = active
-                        .as_ref()
-                        .filter(|profile| profile.agent_id == adapter.id())
-                        .map(|profile| profile.agent_home.as_path());
-                    health.push(adapter.detect(home)?);
-                }
+                let active = active
+                    .as_ref()
+                    .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+                let health = self
+                    .agents
+                    .detect_all(active)
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?;
                 if json {
                     print_json(&health);
                 } else {
                     for item in health {
                         println!(
-                            "{:<10} {:<12} {}",
+                            "{:<18} {:<12} {}",
                             item.agent_id,
                             if item.installed {
                                 "available"
@@ -1195,6 +1201,7 @@ impl Application {
                     adapter_version: VERSION.into(),
                     detected_version: health.version,
                     executable: health.executable,
+                    auth_state: health.auth_state,
                     capabilities: adapter.capabilities(),
                 };
                 output_value(&view, json, || format!("{view:#?}"));
@@ -1215,7 +1222,7 @@ impl Application {
                 let providers = adapter.model_providers();
                 let workspace = self.store.active_workspace()?;
                 let models = if adapter.capabilities().available_models.support
-                    == crate::model::CapabilitySupport::Supported
+                    == crate::model::CapabilitySupport::Verified
                 {
                     Some(adapter.available_models(
                         &profile.agent_home,
@@ -1302,7 +1309,7 @@ impl Application {
                 let (provider, model) =
                     adapter.normalize_model_selection(provider.as_deref(), &model)?;
                 if adapter.capabilities().available_models.support
-                    == crate::model::CapabilitySupport::Supported
+                    == crate::model::CapabilitySupport::Verified
                 {
                     let workspace = self.store.active_workspace()?;
                     let models = adapter.available_models(

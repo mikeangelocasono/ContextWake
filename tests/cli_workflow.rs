@@ -330,7 +330,20 @@ fn agent_and_model_are_distinct_and_persisted() {
 
     let agents = json_output(&home, &["agent", "list"]);
     let agents = agents.as_array().expect("agent list");
-    assert_eq!(agents.len(), 5);
+    assert_eq!(agents.len(), 9);
+    for expected in [
+        "codex",
+        "claude",
+        "github-copilot",
+        "cursor",
+        "opencode",
+        "gemini",
+        "kiro",
+        "kimi",
+        "grok",
+    ] {
+        assert!(agents.iter().any(|agent| agent["id"] == expected));
+    }
     assert!(
         agents.iter().all(|agent| {
             agent["adapter"] == "implemented" && agent["capabilities"].is_object()
