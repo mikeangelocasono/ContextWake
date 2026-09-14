@@ -12,7 +12,7 @@ use crate::model::{
 };
 use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
 use crate::provider::{AcpTransport, AgentAdapter};
-use crate::security::{sanitize_terminal, validate_external_reference};
+use crate::security::{sanitize_terminal, validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_LIMIT_MAX: usize = 500;
@@ -46,7 +46,7 @@ fn parse_session_output(stdout: &[u8]) -> Result<Vec<DiscoveredAgentSession>> {
         .into_iter()
         .map(|session| {
             Ok(DiscoveredAgentSession {
-                provider_session_id: validate_external_reference(&session.id)?,
+                provider_session_id: validate_session_reference(&session.id)?,
                 title: Some(safe_agent_text(&session.title)),
                 workspace_path: Some(session.directory),
                 created_at: DateTime::<Utc>::from_timestamp_millis(session.created),
@@ -525,7 +525,7 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)

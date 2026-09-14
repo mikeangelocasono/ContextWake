@@ -14,7 +14,7 @@ use crate::provider::common::{
     ensure_profile_directory, read_file_bounded, run_probe, safe_agent_text, safe_probe_diagnostic,
 };
 use crate::provider::{AcpTransport, AgentAdapter};
-use crate::security::validate_external_reference;
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SUMMARY_LIMIT: usize = 262_144;
@@ -149,7 +149,7 @@ fn parse_models(stdout: &[u8]) -> Result<Vec<AgentModel>> {
         .filter_map(|line| line.split_whitespace().next())
         .take(PROVIDER_RESULT_LIMIT)
         .map(|id| {
-            let id = validate_external_reference(id)?;
+            let id = validate_session_reference(id)?;
             Ok(AgentModel {
                 display_name: id.clone(),
                 id,
@@ -175,7 +175,7 @@ fn parse_summary(bytes: &[u8]) -> Result<DiscoveredAgentSession> {
         })
         .map(|title| safe_agent_text(&title));
     Ok(DiscoveredAgentSession {
-        provider_session_id: validate_external_reference(&summary.info.id)?,
+        provider_session_id: validate_session_reference(&summary.info.id)?,
         title,
         workspace_path: Some(summary.info.cwd),
         created_at: summary.created_at,
@@ -470,7 +470,7 @@ impl AgentAdapter for GrokAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .arg("--cwd")

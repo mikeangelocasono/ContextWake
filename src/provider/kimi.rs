@@ -16,7 +16,7 @@ use crate::provider::common::{
     safe_agent_text, safe_probe_diagnostic,
 };
 use crate::provider::{AcpTransport, AgentAdapter};
-use crate::security::validate_external_reference;
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_INDEX_LIMIT: usize = 8 * 1024 * 1024;
@@ -25,7 +25,8 @@ const PROVIDER_RESULT_LIMIT: usize = 500;
 
 #[derive(Clone, Debug)]
 pub struct KimiAdapter {
-    executable: PathBuf,
+    launcher: PathBuf,
+    script: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -38,23 +39,33 @@ struct KimiSessionIndex {
 
 impl KimiAdapter {
     pub fn discover() -> Self {
-        let executable =
-            std::env::var_os("CONTEXTWAKE_KIMI_BIN").map_or_else(default_executable, PathBuf::from);
-        Self { executable }
+        if let Some(executable) = std::env::var_os("CONTEXTWAKE_KIMI_BIN") {
+            return Self::with_executable(executable);
+        }
+        let (launcher, script) = default_launcher();
+        Self { launcher, script }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            executable: executable.into(),
+            launcher: executable.into(),
+            script: None,
         }
     }
 
     fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.executable);
+        let mut command = Command::new(&self.launcher);
+        if let Some(script) = &self.script {
+            command.arg(script);
+        }
         if let Some(home) = agent_home {
             command.env("KIMI_CODE_HOME", home);
         }
         command
+    }
+
+    fn reported_executable(&self) -> PathBuf {
+        self.script.clone().unwrap_or_else(|| self.launcher.clone())
     }
 
     fn partial(detail: &str) -> Capability {
@@ -82,27 +93,59 @@ impl KimiAdapter {
     }
 }
 
-fn default_executable() -> PathBuf {
+fn default_launcher() -> (PathBuf, Option<PathBuf>) {
     #[cfg(windows)]
     {
-        find_windows_executable("kimi.exe")
-            .unwrap_or_else(|| PathBuf::from(r"C:\__contextwake_missing__\kimi.exe"))
+        discover_windows_launcher()
+            .unwrap_or_else(|| (PathBuf::from(r"C:\__contextwake_missing__\kimi.exe"), None))
     }
     #[cfg(not(windows))]
     {
-        super::find_safe_on_path("kimi")
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/kimi"))
+        (
+            super::find_safe_on_path("kimi")
+                .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/kimi")),
+            None,
+        )
     }
 }
 
 #[cfg(windows)]
-fn find_windows_executable(name: &str) -> Option<PathBuf> {
+fn discover_windows_launcher() -> Option<(PathBuf, Option<PathBuf>)> {
     let path = std::env::var_os("PATH")?;
     let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    std::env::split_paths(&path)
+    let directories = std::env::split_paths(&path)
         .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(name))
-        .find(|candidate| super::safe_executable_candidate(candidate, &current))
+        .collect::<Vec<_>>();
+    for directory in &directories {
+        let direct = directory.join("kimi.exe");
+        if super::safe_executable_candidate(&direct, &current) {
+            return Some((direct, None));
+        }
+    }
+    let node = directories.iter().find_map(|directory| {
+        let candidate = directory.join("node.exe");
+        super::safe_executable_candidate(&candidate, &current).then_some(candidate)
+    })?;
+    for directory in directories {
+        let shim = directory.join("kimi.cmd");
+        let script = kimi_script_candidate(&directory);
+        if super::safe_executable_candidate(&shim, &current)
+            && super::safe_executable_candidate(&script, &current)
+        {
+            return Some((node.clone(), Some(script)));
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn kimi_script_candidate(directory: &Path) -> PathBuf {
+    directory
+        .join("node_modules")
+        .join("@moonshot-ai")
+        .join("kimi-code")
+        .join("dist")
+        .join("main.mjs")
 }
 
 fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
@@ -238,7 +281,11 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
-        let mut transport = AcpTransport::new(&self.executable).argument("acp");
+        let mut transport = AcpTransport::new(&self.launcher);
+        if let Some(script) = &self.script {
+            transport = transport.argument(script.as_os_str());
+        }
+        transport = transport.argument("acp");
         if let Some(home) = agent_home {
             transport = transport.environment("KIMI_CODE_HOME", home.as_os_str());
         }
@@ -263,7 +310,7 @@ impl AgentAdapter for KimiAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: Some(self.reported_executable()),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if version.timed_out {
@@ -284,7 +331,7 @@ impl AgentAdapter for KimiAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: Some(self.reported_executable()),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message:
@@ -299,7 +346,7 @@ impl AgentAdapter for KimiAdapter {
         Ok(AgentHealth {
             agent_id: self.id().into(),
             installed: true,
-            executable: Some(self.executable.clone()),
+            executable: Some(self.reported_executable()),
             version: Some(safe_agent_text(&version_text)),
             auth_state,
             message: "Kimi Code CLI detected; authentication remains provider-owned".into(),
@@ -358,7 +405,7 @@ impl AgentAdapter for KimiAdapter {
             let Ok(record) = serde_json::from_slice::<KimiSessionIndex>(line) else {
                 continue;
             };
-            let Ok(session_id) = validate_external_reference(&record.session_id) else {
+            let Ok(session_id) = validate_session_reference(&record.session_id) else {
                 continue;
             };
             if !seen.insert(session_id.clone()) {
@@ -390,7 +437,7 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)
@@ -545,5 +592,14 @@ mod tests {
             .detect(None)
             .expect("health");
         assert!(!health.installed);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_current_npm_script_layout_without_a_shell() {
+        assert_eq!(
+            kimi_script_candidate(Path::new(r"C:\npm")),
+            PathBuf::from(r"C:\npm\node_modules\@moonshot-ai\kimi-code\dist\main.mjs")
+        );
     }
 }

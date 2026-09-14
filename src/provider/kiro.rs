@@ -12,7 +12,7 @@ use crate::model::{
 };
 use crate::provider::AgentAdapter;
 use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
-use crate::security::validate_external_reference;
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -139,7 +139,7 @@ fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgent
                 return Ok(sessions);
             }
             sessions.push(DiscoveredAgentSession {
-                provider_session_id: validate_external_reference(&session.session_id)?,
+                provider_session_id: validate_session_reference(&session.session_id)?,
                 title: session.title.map(|title| safe_agent_text(&title)),
                 workspace_path: Some(envelope.cwd.clone()),
                 created_at: None,
@@ -407,7 +407,7 @@ impl AgentAdapter for KiroAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)

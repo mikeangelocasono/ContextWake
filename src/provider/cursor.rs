@@ -12,7 +12,7 @@ use crate::provider::common::{
     ensure_profile_directory, run_probe, safe_agent_text, safe_probe_diagnostic,
 };
 use crate::provider::{AcpTransport, AgentAdapter};
-use crate::security::validate_external_reference;
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_RESULT_LIMIT: usize = 500;
@@ -105,6 +105,42 @@ fn default_launcher() -> CursorLauncher {
             .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/cursor-agent"));
         CursorLauncher::direct(executable)
     }
+}
+
+/// Cursor's JavaScript CLI does not accept Windows verbatim (`\\?\`) paths in
+/// `--workspace`/`--add-dir`; it treats them as relative persistence paths.
+/// `ContextWake` keeps canonical paths internally and removes only that transport
+/// prefix at the provider boundary.
+#[cfg(windows)]
+fn cursor_cli_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const VERBATIM_UNC_PREFIX: &[u16] = &[
+        b'\\' as u16,
+        b'\\' as u16,
+        b'?' as u16,
+        b'\\' as u16,
+        b'U' as u16,
+        b'N' as u16,
+        b'C' as u16,
+        b'\\' as u16,
+    ];
+    let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if let Some(remainder) = encoded.strip_prefix(VERBATIM_UNC_PREFIX) {
+        let mut ordinary_unc = vec![u16::from(b'\\'), u16::from(b'\\')];
+        ordinary_unc.extend_from_slice(remainder);
+        return PathBuf::from(OsString::from_wide(&ordinary_unc));
+    }
+    if let Some(remainder) = encoded.strip_prefix(VERBATIM_PREFIX) {
+        return PathBuf::from(OsString::from_wide(remainder));
+    }
+    path.to_path_buf()
+}
+
+#[cfg(not(windows))]
+fn cursor_cli_path(path: &Path) -> PathBuf {
+    path.to_path_buf()
 }
 
 #[cfg(windows)]
@@ -206,7 +242,7 @@ fn parse_models(stdout: &[u8]) -> Result<Vec<AgentModel>> {
         .filter_map(|line| line.trim().split_once(" - "))
         .take(PROVIDER_RESULT_LIMIT)
         .map(|(id, display)| {
-            let id = validate_external_reference(id.trim())?;
+            let id = validate_session_reference(id.trim())?;
             let provider_id = model_provider(&id).to_string();
             Ok(AgentModel {
                 id,
@@ -270,8 +306,8 @@ impl AgentAdapter for CursorAdapter {
             multiple_profiles: Self::unavailable(
                 "local QA found CURSOR_CONFIG_DIR does not isolate the authenticated identity",
             ),
-            native_resume: Self::partial(
-                "`--resume <chat-id>` is documented; end-to-end continuity QA is pending",
+            native_resume: Self::stable(
+                "ContextWake resumed a real chat and a fresh question recalled four known facts",
             ),
             session_listing: Self::unavailable(
                 "`agent ls` is an interactive picker with no stable machine-readable listing",
@@ -289,17 +325,19 @@ impl AgentAdapter for CursorAdapter {
             multiple_model_providers: Self::stable(
                 "dynamic catalog contains multiple model families without duplicating agents",
             ),
-            programmatic_interface: Self::partial(
-                "live CLI exposes print modes and native ACP; request/response QA pending",
+            programmatic_interface: Self::stable(
+                "authenticated print-mode request/response was exercised in read-only modes",
             ),
-            non_interactive_mode: Self::partial("`agent --print`; no paid live prompt used"),
+            non_interactive_mode: Self::stable(
+                "authenticated `agent --print --mode ask --model auto` was exercised",
+            ),
             structured_output: Self::partial(
                 "JSON and stream-JSON interfaces; live output pending",
             ),
             acp: Self::partial("`agent acp` interface verified; protocol handshake pending"),
             mcp: Self::partial("`agent mcp` plus ACP MCP forwarding; server QA pending"),
-            portable_handoff: Self::partial(
-                "contract-tested launch with the handoff as an additional local workspace root",
+            portable_handoff: Self::stable(
+                "live input and output handoffs each reconstructed all seven scored fields",
             ),
             cloud_handoff: Self::unavailable(
                 "Cursor cloud workers are never started without a separate explicit feature",
@@ -465,11 +503,12 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
+        let workspace = cursor_cli_path(workspace);
         let status = self
             .base_command(Some(agent_home))
             .arg("--workspace")
-            .arg(workspace)
+            .arg(&workspace)
             .arg("--resume")
             .arg(session_id)
             .stdin(Stdio::inherit())
@@ -503,11 +542,13 @@ impl AgentAdapter for CursorAdapter {
             ));
         }
         let mut command = self.base_command(Some(agent_home));
+        let workspace = cursor_cli_path(workspace);
+        let handoff_directory = cursor_cli_path(handoff_directory);
         command
             .arg("--workspace")
-            .arg(workspace)
+            .arg(&workspace)
             .arg("--add-dir")
-            .arg(handoff_directory);
+            .arg(&handoff_directory);
         if let Some(model) = model {
             command
                 .arg("--model")
@@ -544,6 +585,23 @@ mod tests {
         assert!(!has_cursor_signature(
             "Usage: agent [options]\nRun the Grok Build coding agent\n--resume id"
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn provider_arguments_remove_only_windows_verbatim_prefixes() {
+        assert_eq!(
+            cursor_cli_path(Path::new(r"\\?\C:\work\repo")),
+            PathBuf::from(r"C:\work\repo")
+        );
+        assert_eq!(
+            cursor_cli_path(Path::new(r"\\?\UNC\server\share\repo")),
+            PathBuf::from(r"\\server\share\repo")
+        );
+        assert_eq!(
+            cursor_cli_path(Path::new(r"C:\work\repo")),
+            PathBuf::from(r"C:\work\repo")
+        );
     }
 
     #[test]

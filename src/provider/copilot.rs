@@ -14,7 +14,7 @@ use crate::provider::common::{
     ensure_profile_directory, read_file_prefix, run_probe, safe_agent_text, safe_probe_diagnostic,
 };
 use crate::provider::{AcpTransport, AgentAdapter};
-use crate::security::validate_external_reference;
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const EVENT_PREFIX_LIMIT: usize = 262_144;
@@ -74,6 +74,14 @@ impl GitHubCopilotAdapter {
         }
     }
 
+    fn stable(detail: &str) -> Capability {
+        Capability {
+            support: CapabilitySupport::Verified,
+            maturity: CapabilityMaturity::Stable,
+            detail: detail.into(),
+        }
+    }
+
     fn unavailable(detail: &str) -> Capability {
         Capability {
             support: CapabilitySupport::Unsupported,
@@ -86,7 +94,7 @@ impl GitHubCopilotAdapter {
 fn default_executable() -> PathBuf {
     #[cfg(windows)]
     {
-        find_windows_executable("copilot.exe")
+        discover_windows_native_executable()
             .unwrap_or_else(|| PathBuf::from(r"C:\__contextwake_missing__\copilot.exe"))
     }
     #[cfg(not(windows))]
@@ -97,13 +105,50 @@ fn default_executable() -> PathBuf {
 }
 
 #[cfg(windows)]
-fn find_windows_executable(name: &str) -> Option<PathBuf> {
+fn discover_windows_native_executable() -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    std::env::split_paths(&path)
-        .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(name))
-        .find(|candidate| super::safe_executable_candidate(candidate, &current))
+    for directory in std::env::split_paths(&path) {
+        if !directory.is_absolute() {
+            continue;
+        }
+        let direct = directory.join("copilot.exe");
+        if super::safe_executable_candidate(&direct, &current) {
+            return Some(direct);
+        }
+        let wrapper = directory.join("copilot.cmd");
+        if super::safe_executable_candidate(&wrapper, &current)
+            && let Some(native) = official_native_from_npm_directory(&directory, &current)
+        {
+            return Some(native);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn official_native_from_npm_directory(directory: &Path, current: &Path) -> Option<PathBuf> {
+    let platform_packages = directory
+        .join("node_modules")
+        .join("@github")
+        .join("copilot")
+        .join("node_modules")
+        .join("@github");
+    for package in std::fs::read_dir(platform_packages).ok()? {
+        let package = package.ok()?;
+        if !package
+            .file_name()
+            .to_string_lossy()
+            .starts_with("copilot-win32-")
+        {
+            continue;
+        }
+        let native = package.path().join("copilot.exe");
+        if super::safe_executable_candidate(&native, current) {
+            return Some(native);
+        }
+    }
+    None
 }
 
 fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
@@ -113,6 +158,14 @@ fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
     } else {
         stdout.into_owned()
     }
+}
+
+fn parse_version_text(stdout: &[u8], stderr: &[u8]) -> String {
+    let output = output_text(stdout, stderr);
+    output
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(|| "version unavailable".into(), safe_agent_text)
 }
 
 fn has_copilot_signature(version: &str, help: &str) -> bool {
@@ -148,7 +201,7 @@ fn parse_session_event(bytes: &[u8], fallback_id: &str) -> Result<DiscoveredAgen
             &data.session_id
         };
         return Ok(DiscoveredAgentSession {
-            provider_session_id: validate_external_reference(id)?,
+            provider_session_id: validate_session_reference(id)?,
             title: None,
             workspace_path: data.context.and_then(|context| context.cwd),
             created_at: data.start_time,
@@ -190,12 +243,14 @@ impl AgentAdapter for GitHubCopilotAdapter {
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
-            installation_detection: Self::partial(
-                "version plus GitHub Copilot help signature; contract-tested, live CLI pending",
+            installation_detection: Self::stable(
+                "version plus GitHub Copilot help signature; verified with official CLI 1.0.83",
             ),
-            version_detection: Self::partial("`copilot --version`; live CLI pending"),
+            version_detection: Self::stable(
+                "`copilot --version`; verified with official CLI 1.0.83",
+            ),
             auth_status: Self::partial(
-                "no dedicated status command; ContextWake does not validate credentials by spending a request",
+                "an authenticated request succeeded through provider-owned GitHub credentials, but no dedicated non-spending status command exists",
             ),
             login: Self::partial(
                 "provider-owned `copilot login` OAuth/device flow; live QA pending",
@@ -204,14 +259,14 @@ impl AgentAdapter for GitHubCopilotAdapter {
             multiple_profiles: Self::partial(
                 "COPILOT_HOME separates configuration and sessions; keyring identity isolation is not proven",
             ),
-            native_resume: Self::partial(
-                "`copilot --resume=<id>` is documented; authenticated continuity QA is pending",
+            native_resume: Self::stable(
+                "ContextWake resumed an authenticated named session and the agent recalled four known facts",
             ),
-            session_listing: Self::partial(
-                "contract-tested bounded read of documented COPILOT_HOME/session-state session.start metadata",
+            session_listing: Self::stable(
+                "verified bounded discovery of official COPILOT_HOME/session-state session.start metadata",
             ),
-            named_sessions: Self::partial(
-                "documented `--name` plus ID/name resume; live QA pending",
+            named_sessions: Self::stable(
+                "verified `--name` creation and exact-name resume through ContextWake",
             ),
             context_reporting: Self::partial("`/context` is interactive only"),
             usage_reporting: Self::unavailable("no supported external quota interface is used"),
@@ -225,12 +280,14 @@ impl AgentAdapter for GitHubCopilotAdapter {
             multiple_model_providers: Self::partial(
                 "managed models and BYOK providers are supported without equating the agent to one model",
             ),
-            programmatic_interface: Self::partial(
-                "prompt mode and native ACP are documented; live QA pending",
+            programmatic_interface: Self::stable(
+                "authenticated prompt mode and structured JSONL output were verified",
             ),
-            non_interactive_mode: Self::partial("`copilot -p <prompt>`; no paid live prompt used"),
-            structured_output: Self::partial(
-                "`--output-format=json` emits JSONL; live output pending",
+            non_interactive_mode: Self::stable(
+                "authenticated `copilot -p <prompt>` request verified with read-only tools",
+            ),
+            structured_output: Self::stable(
+                "verified JSONL event stream from `--output-format=json`",
             ),
             acp: Self::partial(
                 "native `copilot --acp`; current permission/auth/session-close limitations are documented",
@@ -290,7 +347,7 @@ impl AgentAdapter for GitHubCopilotAdapter {
                 },
             });
         }
-        let version_text = output_text(&version.stdout, &version.stderr);
+        let version_text = parse_version_text(&version.stdout, &version.stderr);
         let mut help_command = self.base_command(None);
         help_command.arg("help");
         let help = run_probe(help_command, PROBE_TIMEOUT);
@@ -408,7 +465,7 @@ impl AgentAdapter for GitHubCopilotAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .arg("-C")
@@ -495,6 +552,17 @@ mod tests {
     }
 
     #[test]
+    fn version_parser_uses_only_the_version_line() {
+        assert_eq!(
+            parse_version_text(
+                b"GitHub Copilot CLI 1.0.83.\nRun 'copilot update' to check for updates.\n",
+                b""
+            ),
+            "GitHub Copilot CLI 1.0.83."
+        );
+    }
+
+    #[test]
     fn parses_only_public_session_start_metadata() {
         let fixture = br#"{"type":"session.start","data":{"sessionId":"019abc","startTime":"2026-09-12T01:02:03Z","context":{"cwd":"C:/work/repo"}}}
 {"type":"user.message","data":{"content":"secret prompt is deliberately ignored"}}"#;
@@ -544,5 +612,27 @@ mod tests {
         .expect("health");
         assert!(!health.installed);
         assert_eq!(health.auth_state, AuthState::Unknown);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolves_official_npm_native_binary_without_a_shell() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let npm_bin = directory.path().join("npm-bin");
+        let native = npm_bin
+            .join("node_modules/@github/copilot/node_modules/@github/copilot-win32-x64")
+            .join("copilot.exe");
+        std::fs::create_dir_all(native.parent().expect("native parent")).expect("package layout");
+        std::fs::write(npm_bin.join("copilot.cmd"), b"official npm shim").expect("shim");
+        std::fs::write(&native, b"native fixture").expect("native executable");
+
+        let current = std::env::current_dir()
+            .expect("current directory")
+            .canonicalize()
+            .expect("canonical current directory");
+        assert_eq!(
+            official_native_from_npm_directory(&npm_bin, &current),
+            Some(native)
+        );
     }
 }
