@@ -279,7 +279,7 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 | Platform | Current evidence |
 |---|---|
 | Windows 11 x86_64 | Native format/check/strict Clippy and 110 tests; nine-agent bounded detection with live Cursor and Grok Build probes |
-| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 114 tests, optimized build, and RustSec audit passed; final clean-tree package verification follows commits |
+| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 114 tests, optimized build, RustSec audit, and clean-tree package verification passed |
 | macOS Apple Silicon | GitHub-hosted build/test/package automation; expanded nine-adapter run pending this branch's CI; no physical-device TUI QA |
 
 ## Current limitations
