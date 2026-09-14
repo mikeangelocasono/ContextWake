@@ -9,6 +9,8 @@ FINISH: unreviewed and undocumented is unfinished; this build ends with a review
 
 use std::io;
 use std::path::Path;
+use std::sync::mpsc::{self, TryRecvError};
+use std::thread;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
@@ -27,7 +29,7 @@ use ratatui::widgets::{
 
 use crate::app::{Application, StatusView};
 use crate::checkpoint::CheckpointInput;
-use crate::doctor::{DoctorReport, run_doctor};
+use crate::doctor::{DoctorReport, run_doctor_with_agent_results};
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
     AuthState, Capability, Checkpoint, CodingAgent, HandoffRecord, Profile, Session, UsageSummary,
@@ -170,6 +172,8 @@ struct UiState {
     input: InputMode,
     message: Option<String>,
     launch_action: Option<LaunchAction>,
+    refresh_requested: bool,
+    refreshing: bool,
     ascii: bool,
 }
 
@@ -179,7 +183,25 @@ impl UiState {
             .store
             .active_workspace()?
             .map_or_else(|| Path::new(".").to_path_buf(), |workspace| workspace.path);
-        let status = app.status(&path)?;
+        let active_profile = app.store.active_profile()?;
+        let active_agent = active_profile
+            .as_ref()
+            .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+        let agent_health = app.agents.detect_all(active_agent);
+        let agents = load_agents(app, &agent_health);
+        let status_health =
+            active_profile
+                .as_ref()
+                .map_or_else(unconfigured_agent_health, |profile| {
+                    app.agents
+                        .implemented()
+                        .zip(&agent_health)
+                        .find(|(adapter, _)| adapter.id() == profile.agent_id)
+                        .map_or_else(unconfigured_agent_health, |(adapter, health)| {
+                            health_for_adapter(adapter, health)
+                        })
+                });
+        let status = app.status_with_agent(&path, status_health)?;
         let profiles = app.store.list_profiles()?;
         let screen = if profiles.is_empty() {
             Screen::Onboarding
@@ -191,25 +213,28 @@ impl UiState {
             previous_screen: Screen::Home,
             status,
             profiles,
-            agents: load_agents(app)?,
+            agents,
             workspaces: app.store.list_workspaces()?,
             sessions: app.store.list_sessions(false)?,
             checkpoints: app.checkpoints().list()?,
             handoffs: app.handoffs().list()?,
             usage: app.store.usage_summary()?,
-            doctor: run_doctor(
+            doctor: run_doctor_with_agent_results(
                 &app.paths,
                 &app.config,
                 &app.store,
                 &app.git,
                 &app.agents,
                 false,
+                &agent_health,
             ),
             selected: 0,
             agent_filter: AgentFilter::All,
             input: InputMode::Normal,
             message: None,
             launch_action: None,
+            refresh_requested: false,
+            refreshing: false,
             ascii,
         })
     }
@@ -219,24 +244,53 @@ impl UiState {
             || self.status.workspace.path.clone(),
             |workspace| workspace.path,
         );
-        self.status = app.status(&path)?;
+        let active_profile = app.store.active_profile()?;
+        let status_health =
+            active_profile
+                .as_ref()
+                .map_or_else(unconfigured_agent_health, |profile| {
+                    self.agents
+                        .iter()
+                        .find(|agent| agent.id == profile.agent_id)
+                        .map_or_else(
+                            || crate::model::AgentHealth {
+                                agent_id: profile.agent_id.clone(),
+                                installed: false,
+                                executable: None,
+                                version: None,
+                                auth_state: AuthState::Unknown,
+                                message: "awaiting background provider refresh".into(),
+                            },
+                            coding_agent_health,
+                        )
+                });
+        self.status = app.status_with_agent(&path, status_health)?;
         self.profiles = app.store.list_profiles()?;
-        self.agents = load_agents(app)?;
         self.workspaces = app.store.list_workspaces()?;
         self.sessions = app.store.list_sessions(false)?;
         self.checkpoints = app.checkpoints().list()?;
         self.handoffs = app.handoffs().list()?;
         self.usage = app.store.usage_summary()?;
-        self.doctor = run_doctor(
-            &app.paths,
-            &app.config,
-            &app.store,
-            &app.git,
-            &app.agents,
-            false,
-        );
         self.selected = self.selected.min(self.current_len().saturating_sub(1));
+        self.refresh_requested = true;
         Ok(())
+    }
+
+    fn apply_background_refresh(&mut self, mut refreshed: Self) {
+        let message = self.message.clone();
+        refreshed.screen = self.screen;
+        refreshed.previous_screen = self.previous_screen;
+        refreshed.agent_filter = self.agent_filter;
+        refreshed.input = self.input.clone();
+        refreshed.launch_action.clone_from(&self.launch_action);
+        refreshed.selected = self.selected.min(refreshed.current_len().saturating_sub(1));
+        refreshed.refresh_requested = self.refresh_requested;
+        refreshed.refreshing = false;
+        refreshed.message = match message {
+            Some(message) if !message.starts_with("Checking local and provider") => Some(message),
+            _ => Some("Refreshed local and provider state.".into()),
+        };
+        *self = refreshed;
     }
 
     fn current_len(&self) -> usize {
@@ -297,17 +351,16 @@ impl UiState {
     }
 }
 
-fn load_agents(app: &Application) -> Result<Vec<CodingAgent>> {
-    let active = app.store.active_profile()?;
-    let active = active
-        .as_ref()
-        .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+fn load_agents(
+    app: &Application,
+    agent_health: &[crate::error::Result<crate::model::AgentHealth>],
+) -> Vec<CodingAgent> {
     app.agents
         .implemented()
-        .zip(app.agents.detect_all(active))
+        .zip(agent_health)
         .map(|(adapter, health)| {
-            let health = health?;
-            Ok(CodingAgent {
+            let health = health_for_adapter(adapter, health);
+            CodingAgent {
                 id: adapter.id().into(),
                 display_name: adapter.display_name().into(),
                 adapter_version: VERSION.into(),
@@ -315,9 +368,48 @@ fn load_agents(app: &Application) -> Result<Vec<CodingAgent>> {
                 executable: health.executable,
                 auth_state: health.auth_state,
                 capabilities: adapter.capabilities(),
-            })
+            }
         })
         .collect()
+}
+
+fn health_for_adapter(
+    adapter: &dyn crate::provider::AgentAdapter,
+    health: &crate::error::Result<crate::model::AgentHealth>,
+) -> crate::model::AgentHealth {
+    health
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|error| crate::model::AgentHealth {
+            agent_id: adapter.id().into(),
+            installed: false,
+            executable: None,
+            version: None,
+            auth_state: AuthState::Unknown,
+            message: format!("probe failed: {error}"),
+        })
+}
+
+fn unconfigured_agent_health() -> crate::model::AgentHealth {
+    crate::model::AgentHealth {
+        agent_id: "unconfigured".into(),
+        installed: false,
+        executable: None,
+        version: None,
+        auth_state: AuthState::Unknown,
+        message: "no active coding-agent profile".into(),
+    }
+}
+
+fn coding_agent_health(agent: &CodingAgent) -> crate::model::AgentHealth {
+    crate::model::AgentHealth {
+        agent_id: agent.id.clone(),
+        installed: agent.detected_version.is_some(),
+        executable: agent.executable.clone(),
+        version: agent.detected_version.clone(),
+        auth_state: agent.auth_state,
+        message: "cached TUI provider state".into(),
+    }
 }
 
 fn first_detected_agent(state: &UiState) -> usize {
@@ -358,11 +450,27 @@ fn run_loop<B: Backend>(
     app: &Application,
     ascii: bool,
 ) -> Result<Option<LaunchAction>> {
-    terminal
-        .draw(|frame| render_loading(frame, ascii))
-        .map_err(|error| ContextWakeError::InvalidData(format!("terminal draw failed: {error}")))?;
-    let mut state = UiState::load(app, ascii)?;
+    let Some(mut state) = load_state_responsively(terminal, app, ascii)? else {
+        return Ok(None);
+    };
+    let mut refresh_worker: Option<UiStateLoader> = None;
+    let mut exit_after_refresh = false;
     loop {
+        if let Some(loaded) = poll_state_loader(&mut refresh_worker)? {
+            state.refreshing = false;
+            if exit_after_refresh {
+                break;
+            }
+            match loaded {
+                Ok(refreshed) => state.apply_background_refresh(refreshed),
+                Err(error) => state.message = Some(format!("Refresh failed: {error}")),
+            }
+        }
+        if state.refresh_requested && refresh_worker.is_none() {
+            refresh_worker = Some(UiStateLoader::start(app, ascii)?);
+            state.refresh_requested = false;
+            state.refreshing = true;
+        }
         terminal
             .draw(|frame| render(frame, &state))
             .map_err(|error| {
@@ -375,13 +483,120 @@ fn run_loop<B: Backend>(
             && key.kind == event::KeyEventKind::Press
             && handle_key(app, &mut state, key)?
         {
-            break;
+            if refresh_worker.is_some() {
+                exit_after_refresh = true;
+                state.message = Some("Finishing bounded provider probes before exit…".into());
+            } else {
+                break;
+            }
         }
     }
     Ok(state.launch_action)
 }
 
-fn render_loading(frame: &mut ratatui::Frame<'_>, ascii: bool) {
+struct UiStateLoader {
+    receiver: mpsc::Receiver<Result<UiState>>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl UiStateLoader {
+    fn start(app: &Application, ascii: bool) -> Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let loader_app = app.clone();
+        let worker = thread::Builder::new()
+            .name("contextwake-tui-load".into())
+            .spawn(move || {
+                let _ = sender.send(UiState::load(&loader_app, ascii));
+            })
+            .map_err(|error| {
+                ContextWakeError::InvalidData(format!("could not start TUI state loader: {error}"))
+            })?;
+        Ok(Self {
+            receiver,
+            worker: Some(worker),
+        })
+    }
+
+    fn join(mut self) -> thread::Result<()> {
+        self.worker.take().expect("state loader worker").join()
+    }
+}
+
+impl Drop for UiStateLoader {
+    fn drop(&mut self) {
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn poll_state_loader(task: &mut Option<UiStateLoader>) -> Result<Option<Result<UiState>>> {
+    let Some(active) = task.as_ref() else {
+        return Ok(None);
+    };
+    match active.receiver.try_recv() {
+        Ok(result) => {
+            let completed = task.take().expect("active state loader");
+            completed.join().map_err(|_| {
+                ContextWakeError::InvalidData("TUI state loader worker panicked".into())
+            })?;
+            Ok(Some(result))
+        }
+        Err(TryRecvError::Empty) => Ok(None),
+        Err(TryRecvError::Disconnected) => {
+            let completed = task.take().expect("disconnected state loader");
+            let _ = completed.join();
+            Err(ContextWakeError::InvalidData(
+                "TUI state loader stopped unexpectedly".into(),
+            ))
+        }
+    }
+}
+
+fn load_state_responsively<B: Backend>(
+    terminal: &mut Terminal<B>,
+    app: &Application,
+    ascii: bool,
+) -> Result<Option<UiState>> {
+    let mut load_task = Some(UiStateLoader::start(app, ascii)?);
+    let mut frame_number = 0usize;
+    let mut quit_requested = false;
+    let load_result = loop {
+        if let Some(result) = poll_state_loader(&mut load_task)? {
+            break result;
+        }
+        terminal
+            .draw(|frame| render_loading(frame, ascii, frame_number, quit_requested))
+            .map_err(|error| {
+                ContextWakeError::InvalidData(format!("terminal draw failed: {error}"))
+            })?;
+        frame_number = frame_number.wrapping_add(1);
+        if event::poll(Duration::from_millis(100)).map_err(terminal_error)?
+            && let Event::Key(key) = event::read().map_err(terminal_error)?
+            && key.kind == event::KeyEventKind::Press
+            && matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc)
+        {
+            quit_requested = true;
+        }
+    };
+    if quit_requested {
+        Ok(None)
+    } else {
+        load_result.map(Some)
+    }
+}
+
+fn render_loading(
+    frame: &mut ratatui::Frame<'_>,
+    ascii: bool,
+    frame_number: usize,
+    quit_requested: bool,
+) {
+    let spinner = if ascii {
+        ["|", "/", "-", "\\"][frame_number % 4]
+    } else {
+        ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"][frame_number % 10]
+    };
     let area = centered(frame.area(), 62, 7);
     frame.render_widget(
         Paragraph::new(vec![
@@ -390,11 +605,14 @@ fn render_loading(frame: &mut ratatui::Frame<'_>, ascii: bool) {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(if ascii {
-                "Inspecting local workspace and registered coding agents..."
+            Line::from(if quit_requested {
+                format!("{spinner} Finishing bounded probes before exit...")
+            } else if ascii {
+                format!("{spinner} Inspecting workspace and coding agents...")
             } else {
-                "Inspecting local workspace and registered coding agents…"
+                format!("{spinner} Inspecting workspace and coding agents…")
             }),
+            Line::from("Q/Esc exits safely after active probes are reaped."),
         ])
         .alignment(Alignment::Center)
         .block(Block::default().title(" LOADING ").borders(Borders::ALL)),
@@ -582,8 +800,12 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
         KeyCode::Char('d' | 'D') => state.select_screen(Screen::Diagnostics),
         KeyCode::Char('t' | 'T') => state.select_screen(Screen::Settings),
         KeyCode::Char('r' | 'R') => {
-            state.refresh(app)?;
-            state.message = Some("Refreshed local and provider state.".into());
+            if state.refreshing || state.refresh_requested {
+                state.message = Some("Provider discovery is already running…".into());
+            } else {
+                state.refresh_requested = true;
+                state.message = Some("Checking local and provider state…".into());
+            }
         }
         KeyCode::Char('f' | 'F') if state.screen == Screen::AgentCapabilities => {
             state.agent_filter = state.agent_filter.next();
@@ -1607,7 +1829,7 @@ fn render_settings(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
         Paragraph::new(vec![
             Line::from(format!("Configuration       {}", "run `ctx config path`")),
             Line::from(format!("Telemetry           {}", false)),
-            Line::from("Agent experiment     Codex app-server disabled"),
+            Line::from("Agent adapters       Compile-time registry only"),
             Line::from(format!("ASCII mode          {}", state.ascii)),
             Line::from(""),
             Line::from("Configuration precedence"),
@@ -1663,13 +1885,13 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("Profiles are local labels around isolated coding-agent configuration homes."),
-        Line::from("ContextWake never stores passwords or copies access tokens."),
+        Line::from("Profiles are local labels; isolation follows each adapter's evidence."),
+        Line::from("Credentials remain provider-owned and are never copied by ContextWake."),
         Line::from(""),
     ];
     for agent in &state.agents {
         lines.push(Line::from(format!(
-            "[{}] {:<12} {}",
+            "[{}] {:<18} {}",
             if agent.detected_version.is_some() {
                 "DETECTED"
             } else {
@@ -1679,22 +1901,15 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
             agent.detected_version.as_deref().unwrap_or("")
         )));
     }
-    lines.extend([
-        Line::from(format!(
-            "[WORKSPACE] {}",
-            state.status.workspace.path.display()
-        )),
-        Line::from(""),
-        Line::from("[Enter] Configure Personal profile (Tab changes agent)"),
-        Line::from("[A]     Configure a custom profile"),
-        Line::from("[Q]     Quit"),
-    ]);
+    lines.push(Line::from(
+        "[Enter] Personal profile  [A] Custom profile  [Q] Quit",
+    ));
     frame.render_widget(
         Paragraph::new(lines)
             .alignment(Alignment::Left)
             .block(Block::default().title(" FIRST RUN ").borders(Borders::ALL))
             .wrap(Wrap { trim: true }),
-        centered(area, 74, 18),
+        centered(area, 76, 19),
     );
 }
 
@@ -2158,6 +2373,8 @@ mod tests {
             input: InputMode::Normal,
             message: None,
             launch_action: None,
+            refresh_requested: false,
+            refreshing: false,
             ascii: false,
         }
     }
@@ -2177,7 +2394,7 @@ mod tests {
         let backend = TestBackend::new(80, 20);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_loading(frame, false))
+            .draw(|frame| render_loading(frame, false, 0, false))
             .expect("draw");
         let rendered = terminal
             .backend()
@@ -2188,6 +2405,39 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("LOADING"));
         assert!(rendered.contains("coding agents"));
+        assert!(rendered.contains("Q/Esc"));
+    }
+
+    #[test]
+    fn background_refresh_preserves_navigation_and_queued_follow_up() {
+        let mut current = fixture();
+        current.screen = Screen::AgentCapabilities;
+        current.agent_filter = AgentFilter::Installed;
+        current.refresh_requested = true;
+        current.refreshing = true;
+        current.message = Some("Created a checkpoint.".into());
+
+        let mut refreshed = fixture();
+        refreshed.agents[0].detected_version = Some("codex-cli 9.9.9".into());
+        current.apply_background_refresh(refreshed);
+
+        assert_eq!(current.screen, Screen::AgentCapabilities);
+        assert_eq!(current.agent_filter, AgentFilter::Installed);
+        assert_eq!(
+            current.agents[0].detected_version.as_deref(),
+            Some("codex-cli 9.9.9")
+        );
+        assert!(current.refresh_requested);
+        assert!(!current.refreshing);
+        assert_eq!(current.message.as_deref(), Some("Created a checkpoint."));
+    }
+
+    #[test]
+    fn no_profile_health_is_agent_neutral() {
+        let health = unconfigured_agent_health();
+        assert_eq!(health.agent_id, "unconfigured");
+        assert!(!health.installed);
+        assert_eq!(health.auth_state, AuthState::Unknown);
     }
 
     #[test]
@@ -2196,6 +2446,45 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
         let state = fixture();
         terminal.draw(|frame| render(frame, &state)).expect("draw");
+    }
+
+    #[test]
+    fn onboarding_fits_nine_agents_and_actions_in_a_standard_terminal() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        let mut state = fixture();
+        state.screen = Screen::Onboarding;
+        let template = state.agents[0].clone();
+        state.agents = [
+            ("codex", "Codex"),
+            ("claude", "Claude Code"),
+            ("github-copilot", "GitHub Copilot"),
+            ("cursor", "Cursor"),
+            ("opencode", "OpenCode"),
+            ("gemini", "Gemini"),
+            ("kiro", "Kiro"),
+            ("kimi", "Kimi Code"),
+            ("grok", "Grok Build"),
+        ]
+        .into_iter()
+        .map(|(id, display_name)| CodingAgent {
+            id: id.into(),
+            display_name: display_name.into(),
+            ..template.clone()
+        })
+        .collect();
+
+        terminal.draw(|frame| render(frame, &state)).expect("draw");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect::<String>();
+        assert!(rendered.contains("Grok Build"), "{rendered}");
+        assert!(rendered.contains("Personal profile"), "{rendered}");
+        assert!(rendered.contains("Custom profile"), "{rendered}");
     }
 
     #[test]

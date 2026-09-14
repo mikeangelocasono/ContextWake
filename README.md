@@ -278,9 +278,9 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 
 | Platform | Current evidence |
 |---|---|
-| Windows 11 x86_64 | Native format/check/strict Clippy and 110 tests; nine-agent bounded detection with live Cursor and Grok Build probes |
-| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 114 tests, optimized build, RustSec audit, and clean-tree package verification passed |
-| macOS Apple Silicon | GitHub-hosted format/strict Clippy, 114 tests, release build, binary smoke tests, and PATH-collision check passed; no physical-device TUI QA |
+| Windows 11 x86_64 | Native format/check/strict Clippy and 114 tests; nine-agent bounded detection with live Cursor and Grok Build probes |
+| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 118 tests, optimized build, RustSec audit, and clean-tree package verification passed |
+| macOS Apple Silicon | GitHub-hosted format/strict Clippy, 118 tests, release build, binary smoke tests, and PATH-collision check passed; no physical-device TUI QA |
 
 ## Current limitations
 
@@ -289,7 +289,6 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 - Cursor settings can be scoped, but local QA proved its authenticated identity remains global; Copilot, Kimi, and Grok multi-identity isolation awaits authenticated QA.
 - Cross-agent artifact fidelity is verified; authenticated destination-agent comprehension still needs deliberately authorized disposable profiles.
 - Current adapters do not expose reliable provider quota balances or context percentages.
-- The TUI refresh path is synchronous; event-driven background refresh is planned.
 - Windows artifacts are unsigned; macOS signing, notarization, and physical-device QA remain pending.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remaining work.
@@ -297,7 +296,7 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remain
 ## Roadmap
 
 - Complete authenticated provider resume and cross-agent comprehension QA.
-- Add event-driven TUI refresh and richer model selection.
+- Add a richer TUI model picker and persistent, non-secret provider-detection cache.
 - Extend session ingestion where providers expose stable structured metadata.
 - Add property/fuzz testing for handoff and provider parsers.
 - Design a signed, versioned adapter SDK before considering third-party plugins.

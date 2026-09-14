@@ -229,17 +229,31 @@ impl Application {
     }
 
     pub fn status(&self, path: &Path) -> Result<StatusView> {
+        let active_profile = self.store.active_profile()?;
+        let agent = if let Some(profile) = &active_profile {
+            self.agents
+                .get(&profile.agent_id)?
+                .detect(Some(&profile.agent_home))?
+        } else {
+            crate::model::AgentHealth {
+                agent_id: "unconfigured".into(),
+                installed: false,
+                executable: None,
+                version: None,
+                auth_state: AuthState::Unknown,
+                message: "no active coding-agent profile".into(),
+            }
+        };
+        self.status_with_agent(path, agent)
+    }
+
+    pub(crate) fn status_with_agent(
+        &self,
+        path: &Path,
+        agent: crate::model::AgentHealth,
+    ) -> Result<StatusView> {
         let workspace = self.register_workspace(path, TrustState::Untrusted, false)?;
         let mut active_profile = self.store.active_profile()?;
-        let agent_id = active_profile
-            .as_ref()
-            .map_or("codex", |profile| profile.agent_id.as_str());
-        let adapter = self.agents.get(agent_id)?;
-        let agent = adapter.detect(
-            active_profile
-                .as_ref()
-                .map(|profile| profile.agent_home.as_path()),
-        )?;
         if let Some(profile) = active_profile.as_mut() {
             let previous_auth_state = profile.auth_state;
             profile.auth_state = agent.auth_state;

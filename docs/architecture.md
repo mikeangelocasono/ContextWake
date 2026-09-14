@@ -49,7 +49,7 @@ An agent can expose several model providers. A provider is never assumed to be a
 
 Nine adapters are registered without provider-name branching in generic application code: Codex, Claude Code, GitHub Copilot CLI, Cursor CLI, Gemini CLI, OpenCode, Kiro CLI, Kimi Code, and Grok Build. OpenCode, Cursor, Kiro, and Grok exercise dynamic model catalogs where supported. OpenCode/Kiro consume structured session output; Copilot, Kimi, and Grok read only bounded documented metadata files. Cursor's interactive session picker is not scraped. Kiro and Cursor Windows credentials are explicitly treated as shared where real QA disproved identity isolation.
 
-The registry stores trait objects in stable display order and resolves aliases through each adapter. Discovery uses bounded groups of three probes so several Node-based CLIs cannot starve each other's timeouts. Results retain registry order. The TUI shows a loading state, remains scrollable with nine agents, and supports capability filters; manual refresh is still synchronous.
+The registry stores trait objects in stable display order and resolves aliases through each adapter. Discovery uses bounded groups of three probes so several Node-based CLIs cannot starve each other's timeouts. Results retain registry order. The TUI runs one discovery set on a worker, shares those results with Doctor, animates while probes run, remains navigable during refresh, and safely joins the worker after every provider child has been reaped.
 
 ## Continuity transaction
 
@@ -77,7 +77,7 @@ Agent-owned authentication stays in provider-managed storage. ContextWake suppli
 
 Git and non-interactive agent probes are bounded subprocesses. Repository validation is fixed-argv, trusted-workspace gated, explicit-only, and has null standard streams plus a timeout. Imported artifacts and rendered terminal text are untrusted.
 
-Initial provider discovery and doctor checks use bounded parallel probes behind a loading state. Manual TUI refresh remains synchronous, so event-driven refresh remains P1. Interactive provider processes start only after ContextWake restores the ordinary terminal.
+Initial provider discovery and manual refresh use a background worker with bounded parallel probes. The render/input loop stays active, local mutations refresh immediately, and provider state follows asynchronously. Exit waits for bounded probes to kill/reap their children, preventing orphaned agent processes. Interactive provider processes start only after ContextWake restores the ordinary terminal.
 
 ## TUI interaction contract
 

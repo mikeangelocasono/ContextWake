@@ -17,7 +17,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 ### Changed
 
 - Replaced the fixed provider registry with an ordered trait-object registry, adapter-owned aliases, shared safe probes, and bounded three-at-a-time discovery.
-- Expanded the doctor, first-run detection, and TUI to nine agents; the TUI can filter installed, authenticated, resume-capable, or ACP-capable agents.
+- Expanded the doctor, first-run detection, and TUI to nine agents; the TUI can filter installed, authenticated, resume-capable, or ACP-capable agents and refresh provider state without blocking input/rendering.
+- Removed redundant TUI/Doctor provider probes and the implicit Codex fallback when no profile is configured.
 - Expanded capability reporting for non-interactive mode, structured output, ACP, MCP, portable handoff, and separately classified cloud handoff.
 - The canonical ContextWake command is now `ctx`; alpha release archives also
   include the shared-implementation `ctxwake` compatibility executable.

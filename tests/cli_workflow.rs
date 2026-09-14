@@ -82,6 +82,20 @@ fn legacy_home_override_remains_compatible_after_rename() {
 }
 
 #[test]
+fn status_without_a_profile_has_no_implicit_agent() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+
+    let status = json_output(&home, &["status", &workspace.to_string_lossy()]);
+    assert!(status["active_profile"].is_null());
+    assert_eq!(status["agent"]["agent_id"], "unconfigured");
+    assert_eq!(status["agent"]["installed"], false);
+    assert_eq!(status["agent"]["auth_state"], "unknown");
+}
+
+#[test]
 fn profile_workspace_checkpoint_and_handoff_survive_restart() {
     let root = tempfile::tempdir().expect("root");
     let home = root.path().join("home");
