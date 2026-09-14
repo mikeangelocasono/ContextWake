@@ -13,7 +13,7 @@
   <strong>One workspace. Any coding agent. Keep your context.</strong>
 </p>
 
-ContextWake is an open-source, terminal-native workspace and context-continuity manager for AI coding CLIs. It keeps profiles, workspaces, Git state, sessions, checkpoints, and portable handoffs explicit as you move between Codex CLI, Claude Code, OpenCode, Gemini CLI, and Kiro CLI.
+ContextWake is an open-source, terminal-native workspace and context-continuity manager for AI coding CLIs. It keeps profiles, workspaces, Git state, sessions, checkpoints, and portable handoffs explicit as you move among Codex CLI, Claude Code, GitHub Copilot CLI, Cursor CLI, OpenCode, Gemini CLI, Kiro CLI, Kimi Code, and Grok Build.
 
 ContextWake is local-first. It has no web dashboard, hosted control plane, telemetry pipeline, or cloud account service. Coding-agent credentials remain owned by each agent.
 
@@ -40,7 +40,7 @@ _Real 120 x 36 ContextWake TUI capture from a disposable dirty Git fixture. The 
 ## Features
 
 - Keyboard-first Ratatui dashboard with wide, narrow, tiny-terminal, empty, warning, and error states.
-- Provider-neutral agent adapter and graded capability system.
+- Provider-neutral agent adapter, optional ACP transport, and graded capability system.
 - Local profile metadata without plaintext passwords or copied access tokens.
 - Git and non-Git workspace registry with branch, status, conflicts, ahead/behind, and diff summaries.
 - Local session browser with search, archive, workspace/profile filters, and guarded native resume.
@@ -57,13 +57,19 @@ Support is deliberately capability-specific. "Partial" often means command const
 
 | Coding agent | Detection | Authentication | Sessions / native resume | Models | Portable handoff | Current status |
 |---|---|---|---|---|---|---|
-| OpenAI Codex CLI | Verified 0.154.0 on Windows | Verified; isolated profile signed out | Resume contract verified; authenticated resume pending | Selection verified | Verified | Partial |
-| Claude Code | Verified 2.1.267 on Windows | Verified JSON status | Resume contract verified; authenticated resume pending | Hosted modes supported | Verified | Partial |
-| OpenCode | Verified 1.18.25 on Windows | Credential-presence check | JSON listing verified; authenticated resume pending | Dynamic catalog verified | Verified | Partial |
-| Gemini CLI | Verified 0.59.0 on Windows | Interactive; non-interactive status unavailable | Resume contract verified; authenticated resume pending | Selection verified | Verified | Partial |
-| Kiro CLI | Verified 2.21.3 on Windows | JSON status verified | Real same-identity listing, sync, and resume verified | Dynamic catalog verified | Verified | Partial; isolated Windows identities unsupported |
+| OpenAI Codex CLI | Verified 0.154.0 on Windows | Verified | Authenticated resume pending | Selection | Verified | Partial |
+| Claude Code | Verified 2.1.270 on Windows | Verified | Authenticated resume pending | Hosted modes | Verified | Partial |
+| GitHub Copilot CLI | Contract tested; not locally installed | Unknown without spending a request | Session metadata contract; resume pending auth | Selection | Contract tested | Partial |
+| Cursor CLI | Verified 2026.07.23 on Windows | Verified | Interactive listing unsupported; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
+| OpenCode | Verified 1.18.25 on Windows | Partial | JSON listing; resume pending auth | Dynamic/local catalog verified | Verified | Partial |
+| Gemini CLI | Verified 0.59.0 on Windows | Unknown non-interactively | Resume pending auth | Selection | Contract tested | Partial |
+| Kiro CLI | Verified 2.21.3 in prior Windows QA | Verified in prior QA | Same-identity resume verified | Dynamic catalog verified | Contract tested | Partial; isolated Windows identities unsupported |
+| Kimi Code CLI | Contract tested; not locally installed | Unknown | Session metadata contract; resume pending auth | Selection | Partial | Partial |
+| Grok Build | Verified 0.2.114 on Windows | Signed-out boundary verified | Session metadata contract; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
 
-See the [full compatibility matrix](docs/providers/compatibility.md) and the evidence for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), and [Kiro CLI](docs/providers/kiro.md).
+See the [full compatibility matrix](docs/providers/compatibility.md) and provider guides for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [GitHub Copilot](docs/providers/github-copilot.md), [Cursor](docs/providers/cursor.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), [Kiro](docs/providers/kiro.md), [Kimi Code](docs/providers/kimi.md), and [Grok Build](docs/providers/grok.md).
+
+A coding agent is not a model provider. For example, Cursor or GitHub Copilot can offer models from several vendors, while OpenCode can target local runtimes. ContextWake registers the agent once and stores provider/model selection separately.
 
 ## How context continuity works
 
@@ -217,7 +223,7 @@ ctx handoff continue <handoff-id>
 
 The last command starts a **new** agent session restored from the handoff. It is not reported as Native Resume.
 
-The repository also contains a [deterministic continuity demo](demo/README.md) that uses an explicitly labeled provider fixture and never presents mock interaction as a live provider response.
+The repository also contains a [deterministic continuity demo](demo/README.md) and a [seven-hop cross-agent QA matrix](docs/qa/cross-agent-continuity.md). Both distinguish artifact contract evidence from live destination-model comprehension.
 
 ## TUI controls
 
@@ -231,6 +237,7 @@ The repository also contains a [deterministic continuity demo](demo/README.md) t
 | `J`, `K`, arrows | Move selection |
 | `Enter` | Open or confirm the current action |
 | `/` | Search sessions |
+| `F` | Cycle agent filters on the capabilities screen |
 | `R` | Refresh local and provider state |
 | `Esc` | Back or cancel |
 | `?` | Key reference |
@@ -263,20 +270,23 @@ Use `ctx config path` or `ctx doctor --verbose` to see the exact paths selected 
 
 ContextWake is not designed to bypass provider quotas, rate limits, subscription restrictions, authentication controls, or provider Terms of Service.
 
+ContextWake is an independent open-source project and is not affiliated with the coding-agent vendors. Product names and trademarks belong to their respective owners.
+
 Read the [security model](docs/security.md), [data classification](docs/data-classification.md), and [vulnerability reporting policy](SECURITY.md).
 
 ## Platform support
 
 | Platform | Current evidence |
 |---|---|
-| Windows 11 x86_64 | Native build, 85 tests, release executable, TUI, and five-agent detection verified |
-| Linux x86_64 | WSL build, 89 tests, Cargo package, audit, and extracted artifact verified |
-| macOS Apple Silicon | GitHub-hosted format, strict Clippy, 89 tests, release build, packaging, and checksum automation passed; no physical-device TUI QA |
+| Windows 11 x86_64 | Native format/check/strict Clippy and 110 tests; nine-agent bounded detection with live Cursor and Grok Build probes |
+| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 114 tests, optimized build, and RustSec audit passed; final clean-tree package verification follows commits |
+| macOS Apple Silicon | GitHub-hosted build/test/package automation; expanded nine-adapter run pending this branch's CI; no physical-device TUI QA |
 
 ## Current limitations
 
-- Authenticated native resume remains pending for Codex, Claude Code, OpenCode, and Gemini CLI.
+- Authenticated native resume remains pending for every adapter except the prior verified Kiro same-identity path.
 - Kiro same-identity resume is verified, but its Windows OS credential is shared across `KIRO_HOME` roots; ContextWake does not advertise isolated Kiro profiles.
+- Cursor settings can be scoped, but local QA proved its authenticated identity remains global; Copilot, Kimi, and Grok multi-identity isolation awaits authenticated QA.
 - Cross-agent artifact fidelity is verified; authenticated destination-agent comprehension still needs deliberately authorized disposable profiles.
 - Current adapters do not expose reliable provider quota balances or context percentages.
 - The TUI refresh path is synchronous; event-driven background refresh is planned.
@@ -307,12 +317,16 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remain
                               |
                        AgentAdapter API
                               |
-        +----------+----------+----------+----------+
-        |          |          |          |          |
-      Codex      Claude    OpenCode    Gemini      Kiro
+                  AgentAdapter registry
+             +------------+------------+
+             |            |            |
+          Existing     New vendors   Local/open
+             |            |            |
+       Codex/Claude   Copilot/Cursor   OpenCode
+       Gemini/Kiro    Kimi/Grok        model backends
 ```
 
-Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md) and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), [adapter](docs/adr/0003-provider-adapter-model.md), and [CLI command](docs/adr/0005-cli-command-name.md) decisions.
+Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md), [provider guide](docs/providers/adding-a-provider.md), and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), [adapter](docs/adr/0003-provider-adapter-model.md), [CLI command](docs/adr/0005-cli-command-name.md), and [ACP transport](docs/adr/0006-acp-provider-transport.md) decisions.
 
 ## Development and testing
 

@@ -4,14 +4,31 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
-## [0.1.0-alpha.2] - 2026-09-13
+## [0.1.0-alpha.2] - 2026-09-14
+
+### Added
+
+- GitHub Copilot CLI, Cursor CLI, Kimi Code, and Grok Build adapters with conservative evidence-based capabilities and portable AWHF launch paths.
+- Optional fixed-argument ACP transports for Copilot, Cursor, Kimi, Grok, and OpenCode.
+- Bounded provider session-metadata readers for Copilot, Kimi, and Grok, plus live Cursor and Grok model discovery.
+- Deterministic seven-hop cross-agent CSV continuity fixture and nine-adapter portable-handoff contract coverage.
+- Provider candidate review, individual provider guides, and contributor instructions for adding adapters safely.
 
 ### Changed
 
+- Replaced the fixed provider registry with an ordered trait-object registry, adapter-owned aliases, shared safe probes, and bounded three-at-a-time discovery.
+- Expanded the doctor, first-run detection, and TUI to nine agents; the TUI can filter installed, authenticated, resume-capable, or ACP-capable agents.
+- Expanded capability reporting for non-interactive mode, structured output, ACP, MCP, portable handoff, and separately classified cloud handoff.
 - The canonical ContextWake command is now `ctx`; alpha release archives also
   include the shared-implementation `ctxwake` compatibility executable.
 - Existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite
   state remain compatible. The immutable `v0.1.0-alpha.1` release is unchanged.
+
+### Security
+
+- Generic executable names require vendor-specific signatures and repository-local candidates are rejected.
+- Provider output and metadata are bounded and sanitized; provider credentials remain provider-owned and are never copied into SQLite.
+- Copilot remote session/export flags and Cursor cloud workers are disabled in ContextWake launch paths.
 
 ### Fixed
 

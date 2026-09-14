@@ -6,14 +6,18 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 |---|---|---|---|
 | Terminal-only scope | COMPLETE | No web runtime, frontend, server, or hosted control plane exists | Preserve boundary |
 | Rust CLI router | COMPLETE | Coherent CLI/JSON output and completion generation under canonical `ctx`; compatibility `ctxwake` delegates to the same startup path | Shell-completion distribution |
-| TUI | COMPLETE | Real service state across dashboard, capabilities, profiles, workspaces, sessions, checkpoints, handoffs, activity, settings, diagnostics, onboarding, auth help, and keyboard help; responsive render tests | Event-driven background refresh and richer model picker |
+| TUI | COMPLETE | Scrollable nine-agent discovery/details with installation/auth/capability states and `F` filters for installed, authenticated, native resume, and ACP; responsive render tests | Event-driven background refresh and richer model picker |
 | Domain model | COMPLETE | Agent, ModelProvider, Model, Profile, Workspace, Session, Checkpoint, Handoff, GitSnapshot, and UsageEvent are distinct | Persistence APIs for richer model metadata |
-| Adapter architecture | COMPLETE | Compile-time `AgentAdapter`, graded capabilities, five adapters, and dynamic model/session hooks | Signed/sandboxed external adapter design is future work |
+| Adapter architecture | COMPLETE | Compile-time trait-object registry, aliases, graded capabilities, bounded three-at-a-time detection, shared safe probes/metadata reads, optional ACP transport, and nine adapters | Signed/sandboxed external adapter design is future work |
 | Codex adapter | PARTIAL | Detection/version/auth/login/logout/model selection/local backends/native resume/handoff construction use official interfaces | Disposable authenticated resume QA; stable session listing unavailable |
 | Claude Code adapter | PARTIAL | Detection/version/auth/login/logout/model selection/hosted modes/native resume/handoff construction use official interfaces | Disposable authenticated resume QA; macOS Keychain isolation QA; provider session parser |
 | Gemini CLI adapter | PARTIAL | Gemini CLI 0.59.0 installed/detected on Windows; current npm entry point, `GEMINI_CLI_HOME`, model/resume/prompt interfaces, and unauthenticated boundary verified | Authenticated resume/handoff QA; machine auth status/session list unavailable |
 | OpenCode adapter | PARTIAL | Detection/auth presence/login, isolated XDG roots, JSON session sync, native resume construction, dynamic models, custom/local backends, and AWHF launch; installed 1.18.25 QA passed | Disposable authenticated resume/handoff QA and cross-platform credential isolation |
 | Kiro CLI adapter | PARTIAL | Vendor-signed 2.21.3 installed; detection, JSON auth/session/model discovery, sanitized persistence, dynamic models, and real same-identity native resume verified | Cross-platform QA and authenticated cross-agent handoff comprehension; isolated credentials unsupported on tested Windows host |
+| GitHub Copilot CLI adapter | PARTIAL | Official-current `copilot` interface, signature-gated detection, `COPILOT_HOME`, bounded session metadata, fixed-argv resume/handoff, JSONL/ACP capabilities, parser and failure contract tests | CLI not installed locally; auth, multi-identity isolation, and real resume/comprehension QA pending |
+| Cursor CLI adapter | PARTIAL | Real Windows 2026.07.23 detection/auth/model QA; rejects unrelated `agent.exe`; fixed-argv bundle launch, ACP, resume and handoff contracts | Interactive history cannot be safely parsed; authenticated resume pending; tested auth is global despite scoped settings |
+| Kimi Code adapter | PARTIAL | Official-current Kimi Code contract, `KIMI_CODE_HOME`, contained/bounded session metadata, ACP and resume/handoff construction with secret-bearing provider catalog excluded | CLI not installed locally; auth/isolation/resume/comprehension QA pending; interactive handoff requires user instruction |
+| Grok Build adapter | PARTIAL | Real signed Windows 0.2.114 detection/help/model/signed-out QA; `GROK_HOME`, contained summary metadata, ACP, models, resume and handoff contracts | Authenticated identity isolation, resume, and comprehension QA pending |
 | SQLite state | COMPLETE | Schema v4, quick check, transactions, and v1/v2/v3 migrations with data-preservation tests | Backup/recovery command |
 | Workspace manager | COMPLETE | Git/non-Git registry and trusted project metadata | Nested worktree enrichment |
 | Git snapshot | COMPLETE | Branch, clean/dirty, staged/unstaged/untracked, ahead/behind, conflicts, numstat, and last commit; temporary-repository integration tests | Background refresh and large-repository benchmark |
@@ -27,7 +31,7 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Context Guardian | COMPLETE | Labeled local checkpoint-age/Git-drift indicators; never a fake provider percentage | Background recommendations and non-Git signals |
 | Provider usage | UNSUPPORTED | No adapter labels local observations as provider quota | Add only when an official reliable interface exists |
 | Local activity | COMPLETE | SQLite events and separate CLI/TUI section | Duration tracking |
-| Diagnostics | COMPLETE | Config, DB, Git, all five adapters, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
+| Diagnostics | COMPLETE | Config, DB, Git, all nine adapters, explicit optional `Not installed`, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
 | Security controls | COMPLETE | Fixed argv, bounded probes, redaction, terminal sanitization, containment, symlink defense, and transactional switching | Fuzzing and external security review |
 | Open-source readiness | COMPLETE | Public ContextWake repository and `v0.1.0-alpha.1` prerelease, compatibility migration, README and real TUI image, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, green three-platform CI, and verified release artifacts | Optional signing/notarization and future package registries |
 
@@ -37,6 +41,10 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
   `contextwake` crate and `.contextwake`/`CONTEXTWAKE_HOME` state paths, adds
   canonical `ctx` and compatibility `ctxwake` binaries, and covers both
   entrypoints with CLI regression tests.
+
+- Expanded-agent milestone, Windows Rust 1.98.1/MSVC: format, locked all-target check, strict Clippy, and 110 tests passed before release validation. Bounded nine-agent detection completed in about 2.4 seconds warm on the QA host (6.1 seconds on the first post-build cold run). Codex 0.154.0, Claude Code 2.1.270, Cursor 2026.07.23-e383d2b, OpenCode 1.18.25, Gemini 0.59.0, and Grok Build 0.2.114 were detected; Copilot, Kiro, and Kimi were absent in this run. No paid provider prompt was used.
+- Ubuntu WSL, minimum Rust 1.88.0: format, locked all-target check, strict Clippy, 114 tests, and optimized build passed. RustSec scanned all 249 locked dependencies against 1,244 advisories with no vulnerability failure. Clean-tree Cargo packaging follows the milestone commits.
+- The deterministic CSV fixture contract covers Codex → GitHub Copilot → Claude → Cursor → OpenCode → Kimi → Grok → Codex. Every hop retained objective, active task, completed work, streaming-output decision, no-new-dependency constraint, comma-quoting issue, pending tasks, and staged/unstaged/untracked counts. This is artifact-level contract evidence; destination-agent comprehension remains `NOT TESTED`.
 
 - Ubuntu WSL, Rust 1.88.0: final format, strict Clippy, and 89 tests passed with no failures or ignored tests; the locked optimized build and RustSec audit of 249 dependencies passed. Alpha.2 Cargo packaging passed with 80 files (1018.1 KiB unpacked, 488.9 KiB compressed), including the canonical and compatibility entrypoints plus public documentation while excluding ignored local/release material.
 - Windows, Rust 1.98.1/MSVC after Smart App Control was disabled: final format, strict Clippy, and 85 native tests passed with no failures or ignored tests, including the formerly blocked Git integration executable; the locked optimized build passed. Alpha.2 `ctx.exe` and `ctxwake.exe` both passed version/help smoke tests.
@@ -51,6 +59,6 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 
 ## Known alpha limitations
 
-- Disposable authenticated native-resume QA has not been performed for Codex, Claude, OpenCode, or Gemini; cross-agent target-model comprehension requires deliberately authorized disposable profiles; Windows Authenticode and Apple signing/notarization identities are unavailable; macOS has automated CI and artifact evidence but no interactive physical-device QA.
+- Disposable authenticated native-resume QA has not been performed for Copilot, Cursor, Kimi, Grok, Codex, Claude, OpenCode, or Gemini; cross-agent target-model comprehension requires deliberately authorized disposable profiles; Windows Authenticode and Apple signing/notarization identities are unavailable; macOS has automated CI and artifact evidence but no interactive physical-device QA.
 
 These limits are reflected in the [compatibility matrix](docs/providers/compatibility.md); no UI value claims otherwise.

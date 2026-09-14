@@ -1,23 +1,19 @@
-# Verified agent compatibility
+# Coding-agent compatibility
 
-Reviewed 11 September 2026. Allowed values are `VERIFIED`, `PARTIAL`, `UNSUPPORTED`, `UNKNOWN`, and `NOT TESTED`. A documented command is not considered verified until its relevant behavior is exercised. Provider usage means provider-reported quota, never locally observed activity.
+Reviewed 14 September 2026. `VERIFIED` means the relevant behavior was exercised against a real CLI or artifact flow. `PARTIAL (contract)` means safe adapter tests passed without credentials. `UNSUPPORTED`, `UNKNOWN`, `NOT TESTED`, and `PENDING AUTH` are intentionally not checkmarks.
 
-| Capability | Codex | Claude Code | OpenCode | Gemini CLI | Kiro CLI |
-|---|---|---|---|---|---|
-| Detection | VERIFIED 0.154.0 (Windows) | VERIFIED 2.1.267 (Windows) | VERIFIED 1.18.25 (Windows) | VERIFIED 0.59.0 (Windows) | VERIFIED 2.21.3 (Windows) |
-| Version | VERIFIED | VERIFIED | VERIFIED | VERIFIED | VERIFIED |
-| Auth status | VERIFIED globally; isolated QA signed out | VERIFIED globally; isolated QA signed out | PARTIAL credential-presence check | UNSUPPORTED non-interactively | VERIFIED JSON |
-| Isolated profiles | PARTIAL; `CODEX_HOME` | PARTIAL; config directory, keychain QA pending | PARTIAL; XDG roots, credential QA pending | PARTIAL; OAuth/keychain QA pending | UNSUPPORTED on tested Windows credential store |
-| Session listing | UNSUPPORTED stable interface | PARTIAL native picker; no parser | VERIFIED JSON | PARTIAL human output; no parser | VERIFIED JSON |
-| Native resume | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | PARTIAL; command/guards verified, authenticated QA pending | VERIFIED same identity |
-| Cross-profile native resume | UNSUPPORTED/UNKNOWN; never attempted as bypass | UNSUPPORTED/UNKNOWN | UNSUPPORTED/UNKNOWN | UNSUPPORTED/UNKNOWN | UNSUPPORTED (shared credential) |
-| Model detection | PARTIAL selection; no account catalog | PARTIAL declared hosted modes | VERIFIED dynamic catalog | UNSUPPORTED catalog | VERIFIED dynamic catalog |
-| Model selection | VERIFIED by contract | VERIFIED by contract | VERIFIED live | VERIFIED by contract | VERIFIED live |
-| Context reporting | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
-| Provider usage reporting | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED | UNSUPPORTED |
-| Portable handoff | VERIFIED by contract and artifact flow | VERIFIED by contract and artifact flow | VERIFIED by contract and artifact flow | VERIFIED by contract | VERIFIED by contract |
-| Windows QA | VERIFIED core/detection | VERIFIED core/detection | VERIFIED core/discovery | VERIFIED detection/unauthenticated boundary | VERIFIED auth/session/model/resume |
-| Linux QA | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests | VERIFIED core/contract tests |
-| macOS CI | VERIFIED core/contract; live agent NOT TESTED | VERIFIED core/contract; live agent NOT TESTED | VERIFIED core/contract; live agent NOT TESTED | VERIFIED core/contract; live agent NOT TESTED | VERIFIED core/contract; live agent NOT TESTED |
+| Agent | Detection | Tested version | Auth | Profile isolation | Session listing | Native resume | Models | Structured output | ACP | Handoff | Windows | Linux | macOS | Status |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Codex CLI | VERIFIED | 0.154.0 | VERIFIED | PARTIAL | UNSUPPORTED stable listing | PENDING AUTH | PARTIAL selection | PARTIAL | UNSUPPORTED | VERIFIED artifact | VERIFIED | PARTIAL (contract) | PARTIAL (contract) | PARTIAL |
+| Claude Code | VERIFIED | 2.1.270 | VERIFIED | PARTIAL | UNSUPPORTED parser | PENDING AUTH | PARTIAL selection | PARTIAL | UNSUPPORTED | VERIFIED artifact | VERIFIED | PARTIAL (contract) | PARTIAL (contract) | PARTIAL |
+| GitHub Copilot CLI | PARTIAL (contract) | NOT TESTED | UNKNOWN | PARTIAL | PARTIAL (contract) | PENDING AUTH | PARTIAL selection | PARTIAL | PARTIAL | PARTIAL (contract) | NOT TESTED | NOT TESTED | NOT TESTED | PARTIAL |
+| Cursor CLI | VERIFIED | 2026.07.23-e383d2b | VERIFIED | UNSUPPORTED identities / PARTIAL settings | UNSUPPORTED | PENDING AUTH | VERIFIED dynamic | PARTIAL | PARTIAL | PARTIAL (contract) | VERIFIED | NOT TESTED | NOT TESTED | PARTIAL |
+| OpenCode | VERIFIED | 1.18.25 | PARTIAL | PARTIAL | VERIFIED JSON | PENDING AUTH | VERIFIED dynamic/local | VERIFIED | PARTIAL | VERIFIED artifact | VERIFIED | PARTIAL (contract) | PARTIAL (contract) | PARTIAL |
+| Gemini CLI | VERIFIED | 0.59.0 | UNKNOWN | PARTIAL | UNSUPPORTED parser | PENDING AUTH | PARTIAL selection | PARTIAL | EXPERIMENTAL | PARTIAL (contract) | VERIFIED | PARTIAL (contract) | PARTIAL (contract) | PARTIAL |
+| Kiro CLI | VERIFIED prior QA | 2.21.3 | VERIFIED prior QA | UNSUPPORTED Windows credential | VERIFIED JSON | VERIFIED same identity | VERIFIED dynamic | VERIFIED JSON | UNSUPPORTED | PARTIAL (contract) | VERIFIED prior QA | PARTIAL (contract) | PARTIAL (contract) | PARTIAL |
+| Kimi Code CLI | PARTIAL (contract) | NOT TESTED | UNKNOWN | PARTIAL | PARTIAL (contract) | PENDING AUTH | PARTIAL selection | PARTIAL | PARTIAL | PARTIAL | NOT TESTED | NOT TESTED | NOT TESTED | PARTIAL |
+| Grok Build | VERIFIED | 0.2.114 | VERIFIED signed-out boundary | PARTIAL | PARTIAL (contract) | PENDING AUTH | VERIFIED dynamic | PARTIAL | PARTIAL | PARTIAL (contract) | VERIFIED | NOT TESTED | NOT TESTED | PARTIAL |
 
-The provider documents adjacent to this matrix contain commands, official sources, and the precise limitations. Cross-agent Codex to Claude, Claude to OpenCode, and OpenCode to Codex portable artifacts were exercised against a controlled dirty repository; target-model comprehension remains pending disposable authenticated profiles. The macOS row records GitHub-hosted core and adapter-contract tests, not installed-agent or physical-device QA.
+Provider usage is not shown as subscription quota unless an official reliable interface exists. Grok's per-session totals are distinct from subscription balance. macOS and Linux contract cells describe core/adapter CI, not installed-agent or physical-device QA.
+
+The deterministic AWHF contract matrix covers Codex → Copilot → Claude → Cursor → OpenCode → Kimi → Grok → Codex while preserving narrative and dirty Git state. It does not count as destination-model comprehension. Authenticated comprehension results remain `NOT TESTED`.

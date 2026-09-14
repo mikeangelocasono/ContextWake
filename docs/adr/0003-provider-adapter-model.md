@@ -11,8 +11,8 @@ Adapters own installation/version probes, authentication orchestration, session 
 
 ## Rationale
 
-Codex, Claude Code, Gemini CLI, OpenCode, and Kiro expose different authentication, session, model, and machine-readable surfaces. A lowest-common-denominator boolean API would either lie or scatter agent-specific branches through the core. Graded `SUPPORTED`, `PARTIAL`, `UNSUPPORTED`, `UNKNOWN`, and `EXPERIMENTAL` values let the UI explain reality.
+Codex, Claude Code, GitHub Copilot CLI, Cursor CLI, Gemini CLI, OpenCode, Kiro CLI, Kimi Code, and Grok Build expose different authentication, session, model, and machine-readable surfaces. A lowest-common-denominator boolean API would either lie or scatter agent-specific branches through the core. Graded `SUPPORTED`, `PARTIAL`, `UNSUPPORTED`, `UNKNOWN`, and `EXPERIMENTAL` values let the UI explain reality.
 
 ## Consequences
 
-The current alpha ships Codex, Claude, Gemini, and OpenCode adapters. OpenCode's custom-provider support is validated against its live model catalog rather than reduced to a static allow-list. Gemini demonstrates a conservative partial adapter: supported resume/model/launch behavior exists while unavailable auth status and machine session listing remain unavailable. Research alone does not register an adapter. Dynamic plugins are deferred because executing arbitrary downloaded code without signing or sandboxing would undermine the threat model.
+The registry is a vector of compile-time trait objects with adapter-owned aliases, which avoids core provider-name branches. Shared probing, bounded metadata reads, stable capability declarations, and optional fixed-argv ACP transports reduce boilerplate without forcing provider-specific behavior into configuration. Research alone does not register an adapter. Dynamic plugins are deferred because executing arbitrary downloaded code without signing or sandboxing would undermine the threat model.
