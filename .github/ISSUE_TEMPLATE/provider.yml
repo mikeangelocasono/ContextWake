@@ -12,8 +12,8 @@ body:
     id: contextwake_version
     attributes:
       label: ContextWake version
-      description: Output from `ctxwake --version`.
-      placeholder: ctxwake 0.1.0-alpha.1
+      description: Output from `ctx --version`.
+      placeholder: ctx 0.1.0-alpha.2
     validations:
       required: true
   - type: dropdown
@@ -40,7 +40,7 @@ body:
     attributes:
       label: ContextWake command
       description: The safe command shape, with IDs and paths replaced by placeholders.
-      placeholder: ctxwake session sync --workspace <workspace>
+      placeholder: ctx session sync --workspace <workspace>
     validations:
       required: true
   - type: dropdown
@@ -63,7 +63,7 @@ body:
     id: observed
     attributes:
       label: Observed behavior
-      description: Include only redacted output. `ctxwake doctor --verbose` is designed to be privacy-safe, but review it before posting.
+      description: Include only redacted output. `ctx doctor --verbose` is designed to be privacy-safe, but review it before posting.
     validations:
       required: true
   - type: textarea

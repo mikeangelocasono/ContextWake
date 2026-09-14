@@ -1,7 +1,7 @@
 # Configuration
 
-Run `ctxwake config path` to see the platform-specific global file. Set `CONTEXTWAKE_HOME` to an isolated root for tests or portable development.
-Use `ctxwake config set --ascii true` (and the other documented flags) for atomic,
+Run `ctx config path` to see the platform-specific global file. Set `CONTEXTWAKE_HOME` to an isolated root for tests or portable development.
+Use `ctx config set --ascii true` (and the other documented flags) for atomic,
 validated changes without opening an editor. The command exposes no credential
 or provider-home settings.
 
@@ -40,8 +40,8 @@ Project configuration is ignored until the workspace is explicitly trusted. Vali
 For a trusted workspace, `instructions_file` must remain inside the workspace,
 must be a regular non-symlink UTF-8 file, and is limited to 64 KiB. Its
 secret-redacted, terminal-safe contents are captured in new checkpoints.
-Run `ctxwake workspace validate` to execute them explicitly, or pass `--validate`
-to `ctxwake checkpoint create` to execute them and capture redacted status-only
+Run `ctx workspace validate` to execute them explicitly, or pass `--validate`
+to `ctx checkpoint create` to execute them and capture redacted status-only
 results. Standard input and output are disconnected, and each command has the
 configured timeout. ContextWake does not invoke a shell or persist command output.
 

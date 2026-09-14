@@ -16,6 +16,6 @@ handoff/
 
 All content files are SHA-256 hashed. Readers reject absolute paths, parent traversal, symlink payloads, identity mismatches, schema mismatches, duplicate paths, unsupported media, oversized files, possible secrets, terminal control data, and hash failures.
 
-`ctxwake handoff import <directory>` copies only validated files into managed storage. Imported commands remain untrusted notes and never execute automatically. Because a portable handoff has no trusted relationship to a local workspace, continuing from one requires `--workspace <path>`. The current manifest schema is in [`schemas/awhf-1.2.0.schema.json`](../schemas/awhf-1.2.0.schema.json). Readers continue to accept the legacy [`1.1.0`](../schemas/awhf-1.1.0.schema.json) and [`1.0.0`](../schemas/awhf-1.0.0.schema.json) schemas.
+`ctx handoff import <directory>` copies only validated files into managed storage. Imported commands remain untrusted notes and never execute automatically. Because a portable handoff has no trusted relationship to a local workspace, continuing from one requires `--workspace <path>`. The current manifest schema is in [`schemas/awhf-1.2.0.schema.json`](../schemas/awhf-1.2.0.schema.json). Readers continue to accept the legacy [`1.1.0`](../schemas/awhf-1.1.0.schema.json) and [`1.0.0`](../schemas/awhf-1.0.0.schema.json) schemas.
 
 Provider-specific extensions must use namespaced keys and must be ignorable by generic readers.

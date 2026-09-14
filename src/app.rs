@@ -32,7 +32,7 @@ use crate::security::{
 use crate::store::Store;
 use crate::validation::ValidationRunner;
 use crate::workspace::{detect_workspace, load_project_config};
-use crate::{PRODUCT_NAME, VERSION};
+use crate::{BINARY_NAME, PRODUCT_NAME, VERSION};
 
 #[derive(Clone, Debug)]
 pub struct Application {
@@ -221,7 +221,7 @@ impl Application {
                         &serde_json::json!({"application": PRODUCT_NAME, "version": VERSION}),
                     );
                 } else {
-                    println!("ctxwake {VERSION}");
+                    println!("{BINARY_NAME} {VERSION}");
                 }
                 Ok(0)
             }
@@ -506,7 +506,7 @@ impl Application {
     pub fn resume_session(&self, session_reference: &str) -> Result<()> {
         let profile = self.store.active_profile()?.ok_or_else(|| {
             ContextWakeError::InvalidData(
-                "no active profile; run 'ctxwake profile add' or 'ctxwake profile use'".into(),
+                "no active profile; run 'ctx profile add' or 'ctx profile use'".into(),
             )
         })?;
         let known = match self.store.session(session_reference) {
@@ -596,7 +596,7 @@ impl Application {
                     print_json(&profile);
                 } else {
                     println!(
-                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctxwake profile login {}",
+                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctx profile login {}",
                         profile.display_name, profile.agent_id, profile.name
                     );
                 }
@@ -608,7 +608,7 @@ impl Application {
                 } else {
                     let active = self.store.active_profile()?.map(|profile| profile.id);
                     if profiles.is_empty() {
-                        println!("No profiles. Create one with 'ctxwake profile add Personal'.");
+                        println!("No profiles. Create one with 'ctx profile add Personal'.");
                     }
                     for profile in profiles {
                         let active_marker = if active == Some(profile.id) { "*" } else { " " };
@@ -742,7 +742,7 @@ impl Application {
                 if json {
                     print_json(&workspaces);
                 } else if workspaces.is_empty() {
-                    println!("No workspaces. Add one with 'ctxwake workspace add .'.");
+                    println!("No workspaces. Add one with 'ctx workspace add .'.");
                 } else {
                     let active = self.store.active_workspace()?.map(|value| value.id);
                     for workspace in workspaces {
@@ -814,7 +814,7 @@ impl Application {
             } => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
                     ContextWakeError::InvalidData(
-                        "an active profile is required; run 'ctxwake profile add'".into(),
+                        "an active profile is required; run 'ctx profile add'".into(),
                     )
                 })?;
                 let workspace = self.resolve_workspace(workspace.as_deref())?;
@@ -1023,7 +1023,7 @@ impl Application {
                     print_json(&checkpoints);
                 } else if checkpoints.is_empty() {
                     println!(
-                        "No checkpoints. Create one with 'ctxwake checkpoint create --objective ...'."
+                        "No checkpoints. Create one with 'ctx checkpoint create --objective ...'."
                     );
                 } else {
                     for checkpoint in checkpoints {
@@ -1067,7 +1067,7 @@ impl Application {
                 let handoff = service.create(&checkpoint, &workspace)?;
                 output_value(&handoff, json, || {
                     format!(
-                        "Created handoff {}. Preview with 'ctxwake handoff preview {}'.",
+                        "Created handoff {}. Preview with 'ctx handoff preview {}'.",
                         handoff.id, handoff.id
                     )
                 });
@@ -1208,7 +1208,7 @@ impl Application {
             ModelCommand::List => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
                     ContextWakeError::InvalidData(
-                        "an active profile is required; run 'ctxwake profile add'".into(),
+                        "an active profile is required; run 'ctx profile add'".into(),
                     )
                 })?;
                 let adapter = self.agents.get(&profile.agent_id)?;

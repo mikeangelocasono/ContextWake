@@ -5,7 +5,7 @@
 
 ## Decision
 
-Use **ContextWake** as the provider-neutral project name, `contextwake` as the Rust crate and recommended repository name, `ctxwake` as the executable, and `.contextwake` as the repository-local configuration directory.
+Use **ContextWake** as the provider-neutral project name, `contextwake` as the Rust crate and repository name, `ctx` as the canonical executable, `ctxwake` as the alpha compatibility executable, and `.contextwake` as the repository-local configuration directory.
 
 The positioning remains: **One workspace. Any coding agent. Keep your context.** A wake is the durable, inspectable project trail that lets work continue behind a previous coding-agent session without claiming that private model context moved.
 
@@ -30,7 +30,7 @@ Additional point-in-time checks found zero exact results for the `ctxwake` crate
 - Default OS application directories are moved from the legacy AgentDeck location only when the corresponding ContextWake directory does not already exist. Existing destinations are never overwritten.
 - `.contextwake/project.toml` takes precedence; `.agentdeck/project.toml` remains readable.
 - New provider executable overrides use `CONTEXTWAKE_<AGENT>_BIN`; legacy `AGENTDECK_<AGENT>_BIN` variables remain accepted at lower precedence.
-- The binary is renamed to `ctxwake`; no permanent legacy binary is shipped during the pre-release period.
+- The canonical binary is `ctx`; the alpha release also ships `ctxwake` as a compatibility alias backed by the same startup path. Existing `ctxwake` releases remain immutable.
 
 ## Consequences
 

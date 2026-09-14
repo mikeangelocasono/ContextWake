@@ -126,7 +126,7 @@ impl AgentRegistry {
             "kiro" | "kiro-cli" => Ok(&self.kiro),
             "opencode" => Ok(&self.opencode),
             _ => Err(ContextWakeError::CapabilityUnavailable(format!(
-                "agent {id} has no implemented adapter; run 'ctxwake agent list'"
+                "agent {id} has no implemented adapter; run 'ctx agent list'"
             ))),
         }
     }

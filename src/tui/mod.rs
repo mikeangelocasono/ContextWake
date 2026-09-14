@@ -218,7 +218,7 @@ impl UiState {
         };
         if handoff.checkpoint_id.is_nil() {
             self.message = Some(format!(
-                "Imported handoff: run `ctxwake handoff continue {} --workspace <path>`.",
+                "Imported handoff: run `ctx handoff continue {} --workspace <path>`.",
                 handoff.id
             ));
             return false;
@@ -393,7 +393,7 @@ fn handle_key(app: &Application, state: &mut UiState, key: KeyEvent) -> Result<b
                         state.input = InputMode::Normal;
                         state.screen = Screen::Profiles;
                         state.message = Some(format!(
-                            "Created {} for {}. Authenticate with: ctxwake profile login {}",
+                            "Created {} for {}. Authenticate with: ctx profile login {}",
                             profile.display_name, agent.display_name, profile.name
                         ));
                         state.refresh(app)?;
@@ -1088,7 +1088,7 @@ fn render_workspaces(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
             frame,
             area,
             " WORKSPACES ",
-            "No workspaces.\n\nRun: ctxwake workspace add <path>",
+            "No workspaces.\n\nRun: ctx workspace add <path>",
         );
         return;
     }
@@ -1132,7 +1132,7 @@ fn render_sessions(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
             frame,
             area,
             " RECENT SESSIONS ",
-            "[NO SESSIONS]\n\nContextWake has no local session metadata.\nUse an agent's native picker, 'ctxwake session sync', or 'ctxwake session resume <id>'.",
+            "[NO SESSIONS]\n\nContextWake has no local session metadata.\nUse an agent's native picker, 'ctx session sync', or 'ctx session resume <id>'.",
         );
         return;
     }
@@ -1384,7 +1384,7 @@ fn render_handoff_preview(frame: &mut ratatui::Frame<'_>, state: &UiState, area:
         .find(|checkpoint| checkpoint.id == handoff.checkpoint_id);
     let launch_instruction = if handoff.checkpoint_id.is_nil() {
         format!(
-            "Imported package: use `ctxwake handoff continue {} --workspace <path>`",
+            "Imported package: use `ctx handoff continue {} --workspace <path>`",
             handoff.id
         )
     } else {
@@ -1499,10 +1499,7 @@ fn render_usage(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
 fn render_settings(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(format!(
-                "Configuration       {}",
-                "run `ctxwake config path`"
-            )),
+            Line::from(format!("Configuration       {}", "run `ctx config path`")),
             Line::from(format!("Telemetry           {}", false)),
             Line::from("Agent experiment     Codex app-server disabled"),
             Line::from(format!("ASCII mode          {}", state.ascii)),
@@ -1514,7 +1511,7 @@ fn render_settings(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
         ])
         .block(
             Block::default()
-                .title(" SETTINGS · edit with ctxwake config path ")
+                .title(" SETTINGS · edit with ctx config path ")
                 .borders(Borders::ALL),
         )
         .wrap(Wrap { trim: true }),
@@ -1598,8 +1595,8 @@ fn render_onboarding(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect
 fn render_authentication(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     let profile = state.profiles.get(state.selected);
     let command = profile.map_or_else(
-        || "ctxwake profile add Personal".into(),
-        |profile| format!("ctxwake profile login {}", profile.name),
+        || "ctx profile add Personal".into(),
+        |profile| format!("ctx profile login {}", profile.name),
     );
     frame.render_widget(
         Paragraph::new(vec![

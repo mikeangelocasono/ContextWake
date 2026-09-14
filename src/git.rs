@@ -225,7 +225,7 @@ fn read_stream(mut stream: impl Read) -> std::io::Result<Vec<u8>> {
 fn actionable_git_error(stderr: &str) -> String {
     let message = sanitize_terminal(stderr.trim());
     if message.is_empty() {
-        "Git returned a non-zero status. Run `ctxwake doctor` for details.".into()
+        "Git returned a non-zero status. Run `ctx doctor` for details.".into()
     } else {
         message
     }

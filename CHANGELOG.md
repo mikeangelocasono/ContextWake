@@ -4,6 +4,15 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-09-13
+
+### Changed
+
+- The canonical ContextWake command is now `ctx`; alpha release archives also
+  include the shared-implementation `ctxwake` compatibility executable.
+- Existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite
+  state remain compatible. The immutable `v0.1.0-alpha.1` release is unchanged.
+
 ### Fixed
 
 - Clarified the Windows archive extraction destination in the public installation instructions.

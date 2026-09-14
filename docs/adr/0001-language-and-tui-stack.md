@@ -5,7 +5,7 @@
 
 ## Decision
 
-Use Rust 2024 (MSRV 1.88), Clap, Ratatui, Crossterm, Serde, Rusqlite, and typed errors. Ship one native `ctxwake` binary.
+Use Rust 2024 (MSRV 1.88), Clap, Ratatui, Crossterm, Serde, Rusqlite, and typed errors. Ship a canonical native `ctx` binary plus a compatibility `ctxwake` entrypoint that delegates to the same library startup function.
 
 ## Rationale
 

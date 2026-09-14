@@ -17,6 +17,8 @@ ContextWake is an open-source, terminal-native workspace and context-continuity 
 
 ContextWake is local-first. It has no web dashboard, hosted control plane, telemetry pipeline, or cloud account service. Coding-agent credentials remain owned by each agent.
 
+The canonical command is `ctx`. The `ctxwake` executable remains available as a compatibility alias during the alpha migration; existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite state are unchanged.
+
 ## Why ContextWake?
 
 AI-assisted work is increasingly fragmented across agents, accounts, models, sessions, repositories, and branches. A provider may know its own conversation, but it does not necessarily know the state of another tool or identity.
@@ -46,7 +48,7 @@ _Real 120 x 36 ContextWake TUI capture from a disposable dirty Git fixture. The 
 - Agent Workspace Handoff Format (AWHF) JSON and Markdown for portable context restoration.
 - Transactional profile switching: target validation and artifact creation complete before activation.
 - Context Guardian indicators based on local checkpoint age and observable Git drift.
-- Privacy-safe diagnostics through `ctxwake doctor`.
+- Privacy-safe diagnostics through `ctx doctor`.
 - JSON CLI output, shell completions, SQLite schema migrations, and cross-platform automation.
 
 ## Supported AI coding agents
@@ -107,6 +109,8 @@ Expand-Archive .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -DestinationPath 
 
 The alpha executable is unsigned. Do not disable Defender or other platform protection; compare its hash with `SHA256SUMS`.
 
+The immutable `v0.1.0-alpha.1` archive predates the short command and contains `ctxwake.exe`; the next alpha archives contain both `ctx.exe` and the compatibility `ctxwake.exe`.
+
 ### Linux x86_64
 
 Download `contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the prerelease, then:
@@ -137,35 +141,35 @@ Install Rust 1.88 or newer and Git, then:
 git clone https://github.com/mikeangelocasono/ContextWake.git
 cd ContextWake
 cargo build --release --locked
-./target/release/ctxwake --version
+./target/release/ctx --version
 ```
 
-On Windows, run `.\target\release\ctxwake.exe --version` instead. Coding-agent CLIs are optional unless you want to use their adapters.
+On Windows, run `.\target\release\ctx.exe --version` instead. ContextWake also ships a temporary `ctxwake` compatibility executable in release archives. Coding-agent CLIs are optional unless you want to use their adapters.
 
 ## Quick Start
 
 ```sh
 # Inspect the machine and current directory
-ctxwake doctor
-ctxwake status
-ctxwake agent detect
+ctx doctor
+ctx status
+ctx agent detect
 
 # Register a legitimate local profile and this workspace
-ctxwake profile add Personal --agent codex --model-provider openai
-ctxwake workspace add .
+ctx profile add Personal --agent codex --model-provider openai
+ctx workspace add .
 
 # Capture accessible project state
-ctxwake checkpoint create --objective "Continue the current implementation"
-ctxwake checkpoint list
+ctx checkpoint create --objective "Continue the current implementation"
+ctx checkpoint list
 
 # Launch the TUI
-ctxwake
+ctx
 ```
 
 Authenticate through the coding agent when needed:
 
 ```sh
-ctxwake profile login personal
+ctx profile login personal
 ```
 
 ContextWake initiates the provider-owned login flow; it does not ask you to paste a token into its configuration.
@@ -176,24 +180,24 @@ The CLI and TUI use the same application services and SQLite state.
 
 | Area | Useful commands |
 |---|---|
-| Status | `ctxwake status`, `ctxwake doctor --verbose` |
-| Agents | `ctxwake agent list`, `ctxwake agent detect`, `ctxwake agent info codex` |
-| Profiles | `ctxwake profile add`, `list`, `show`, `use`, `login`, `logout`, `remove` |
-| Workspaces | `ctxwake workspace add`, `list`, `show`, `open`, `validate`, `remove` |
-| Sessions | `ctxwake session sync`, `list`, `show`, `resume`, `archive` |
-| Checkpoints | `ctxwake checkpoint create`, `list`, `show`, `export`, `delete` |
-| Handoffs | `ctxwake handoff create`, `list`, `show`, `preview`, `export`, `import`, `continue` |
-| Models | `ctxwake model list`, `ctxwake model select` |
-| Configuration | `ctxwake config show`, `path`, `validate`, `set` |
-| Automation | `ctxwake --json ...`, `ctxwake completion <shell>` |
+| Status | `ctx status`, `ctx doctor --verbose` |
+| Agents | `ctx agent list`, `ctx agent detect`, `ctx agent info codex` |
+| Profiles | `ctx profile add`, `list`, `show`, `use`, `login`, `logout`, `remove` |
+| Workspaces | `ctx workspace add`, `list`, `show`, `open`, `validate`, `remove` |
+| Sessions | `ctx session sync`, `list`, `show`, `resume`, `archive` |
+| Checkpoints | `ctx checkpoint create`, `list`, `show`, `export`, `delete` |
+| Handoffs | `ctx handoff create`, `list`, `show`, `preview`, `export`, `import`, `continue` |
+| Models | `ctx model list`, `ctx model select` |
+| Configuration | `ctx config show`, `path`, `validate`, `set` |
+| Automation | `ctx --json ...`, `ctx completion <shell>` |
 
-Run `ctxwake <command> --help` for exact arguments. Use `--ascii` when the terminal cannot render Unicode status markers.
+Run `ctx <command> --help` for exact arguments. The legacy `ctxwake` executable remains available as a compatibility alias during the alpha migration. Use `--ascii` when the terminal cannot render Unicode status markers.
 
 ## Example workflow
 
 ```sh
 # While Codex / Personal is active in the current project
-ctxwake checkpoint create \
+ctx checkpoint create \
   --objective "Ship the authentication flow" \
   --task "Add refresh-token failure coverage" \
   --completed "Implemented token rotation" \
@@ -201,14 +205,14 @@ ctxwake checkpoint create \
   --pending "Add integration tests"
 
 # Switch explicitly; ContextWake creates continuity before activation
-ctxwake profile use work --handoff \
+ctx profile use work --handoff \
   --objective "Continue the authentication flow" \
   --workspace .
 
 # Review the generated package before starting a new provider session
-ctxwake handoff list
-ctxwake handoff preview <handoff-id>
-ctxwake handoff continue <handoff-id>
+ctx handoff list
+ctx handoff preview <handoff-id>
+ctx handoff continue <handoff-id>
 ```
 
 The last command starts a **new** agent session restored from the handoff. It is not reported as Native Resume.
@@ -244,7 +248,7 @@ Identity changes show Git evidence and require confirmation. Handoff previews re
 | Linux | `$XDG_CONFIG_HOME/contextwake` | `$XDG_DATA_HOME/contextwake` |
 | macOS | `~/Library/Application Support/dev.ContextWake.ContextWake` | Same application-support root |
 
-Use `ctxwake config path` or `ctxwake doctor --verbose` to see the exact paths selected on a machine. Repository-local, non-secret metadata lives in `.contextwake/project.toml`; see [configuration](docs/configuration.md).
+Use `ctx config path` or `ctx doctor --verbose` to see the exact paths selected on a machine. Repository-local, non-secret metadata lives in `.contextwake/project.toml`; see [configuration](docs/configuration.md).
 
 ## Security and privacy
 
@@ -265,9 +269,9 @@ Read the [security model](docs/security.md), [data classification](docs/data-cla
 
 | Platform | Current evidence |
 |---|---|
-| Windows 11 x86_64 | Native build, 83 tests, release executable, TUI, and five-agent detection verified |
-| Linux x86_64 | WSL build, 87 tests, Cargo package, audit, and extracted artifact verified |
-| macOS Apple Silicon | GitHub-hosted format, strict Clippy, 87 tests, release build, packaging, and checksum automation passed; no physical-device TUI QA |
+| Windows 11 x86_64 | Native build, 85 tests, release executable, TUI, and five-agent detection verified |
+| Linux x86_64 | WSL build, 89 tests, Cargo package, audit, and extracted artifact verified |
+| macOS Apple Silicon | GitHub-hosted format, strict Clippy, 89 tests, release build, packaging, and checksum automation passed; no physical-device TUI QA |
 
 ## Current limitations
 
@@ -308,7 +312,7 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remain
       Codex      Claude    OpenCode    Gemini      Kiro
 ```
 
-Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md) and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), and [adapter](docs/adr/0003-provider-adapter-model.md) decisions.
+Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md) and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), [adapter](docs/adr/0003-provider-adapter-model.md), and [CLI command](docs/adr/0005-cli-command-name.md) decisions.
 
 ## Development and testing
 

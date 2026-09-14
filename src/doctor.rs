@@ -68,7 +68,7 @@ pub fn run_doctor(
             name: "Configuration".into(),
             status: CheckStatus::Fail,
             summary: sanitize_terminal(&error.to_string()),
-            action: Some("Run 'ctxwake config validate' after correcting config.toml.".into()),
+            action: Some("Run 'ctx config validate' after correcting config.toml.".into()),
         },
     });
 
@@ -168,14 +168,14 @@ pub fn run_doctor(
                 },
                 summary: format!("{}: {}", profile.display_name, auth.as_str()),
                 action: (auth != AuthState::SignedIn)
-                    .then(|| format!("Run 'ctxwake profile login {}'.", profile.name)),
+                    .then(|| format!("Run 'ctx profile login {}'.", profile.name)),
             }
         }
         None => DoctorCheck {
             name: "Authentication".into(),
             status: CheckStatus::Warning,
             summary: "no active ContextWake profile".into(),
-            action: Some("Run 'ctxwake profile add Personal'.".into()),
+            action: Some("Run 'ctx profile add Personal'.".into()),
         },
     });
 
@@ -197,7 +197,7 @@ pub fn run_doctor(
         summary: if std::io::stdout().is_terminal() {
             "interactive terminal detected".into()
         } else {
-            "non-interactive output; use CLI commands or run 'ctxwake' in a terminal".into()
+            "non-interactive output; use CLI commands or run 'ctx' in a terminal".into()
         },
         action: None,
     });

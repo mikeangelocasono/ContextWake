@@ -1,4 +1,4 @@
-param([string]$Binary = "target/release/ctxwake.exe")
+param([string]$Binary = "target/release/ctx.exe")
 
 $ErrorActionPreference = "Stop"
 $binaryPath = [System.IO.Path]::GetFullPath($Binary)
