@@ -64,58 +64,51 @@ Model availability and model selection are managed by each agent and its
 provider account. See the [full compatibility matrix](docs/providers/compatibility.md)
 for exact capabilities, tested versions, and limitations.
 
-## Installation
+## Install ContextWake
 
-Download the archive for your platform from the
-[v0.1.0-alpha.2 release](https://github.com/mikeangelocasono/ContextWake/releases/tag/v0.1.0-alpha.2).
-Download [`SHA256SUMS`](https://github.com/mikeangelocasono/ContextWake/releases/download/v0.1.0-alpha.2/SHA256SUMS)
-alongside it if you want to verify the archive before running it.
+The installers download an official GitHub release, verify its SHA-256 checksum,
+and install `ctx` plus the `ctxwake` compatibility command. Rust and a repository
+clone are not required.
 
-### Windows x86_64
-
-Download
-[`contextwake-v0.1.0-alpha.2-windows-x86_64.zip`](https://github.com/mikeangelocasono/ContextWake/releases/download/v0.1.0-alpha.2/contextwake-v0.1.0-alpha.2-windows-x86_64.zip),
-then run in PowerShell:
+### Windows PowerShell
 
 ```powershell
-Expand-Archive .\contextwake-v0.1.0-alpha.2-windows-x86_64.zip -DestinationPath .
-.\contextwake-v0.1.0-alpha.2-windows-x86_64\ctx.exe --version
-.\contextwake-v0.1.0-alpha.2-windows-x86_64\ctx.exe doctor
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1)))
 ```
 
-Add the extracted folder to `PATH` if you want to run `ctx` from anywhere.
-The Windows binary is currently unsigned; keep platform protection enabled and
-verify its checksum.
+The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
+`PATH` when needed. Administrator access is not required.
+
+### Windows Command Prompt
+
+```bat
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1')))"
+```
+
+Open a new Command Prompt if the installer added `ctx` to `PATH`.
 
 ### Linux x86_64
 
-Download
-[`contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz`](https://github.com/mikeangelocasono/ContextWake/releases/download/v0.1.0-alpha.2/contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz),
-then run:
-
 ```sh
-tar -xzf contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz
-./contextwake-v0.1.0-alpha.2-linux-x86_64/ctx --version
-./contextwake-v0.1.0-alpha.2-linux-x86_64/ctx doctor
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh | sh
 ```
-
-Add the extracted directory to your `PATH` if you want to run `ctx` from
-anywhere.
 
 ### macOS Apple Silicon
 
-Download
-[`contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz`](https://github.com/mikeangelocasono/ContextWake/releases/download/v0.1.0-alpha.2/contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz),
-then run:
-
 ```sh
-tar -xzf contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz
-./contextwake-v0.1.0-alpha.2-macos-aarch64/ctx --version
-./contextwake-v0.1.0-alpha.2-macos-aarch64/ctx doctor
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh | sh
 ```
 
-The Apple Silicon build is CI validated, unsigned, and not notarized. Physical
-Mac TUI testing is still pending.
+Linux and macOS install to `~/.local/bin`. Open a new terminal if the installer
+adds that directory to your shell profile. The macOS build is CI validated,
+unsigned, and not notarized; keep Gatekeeper enabled.
+
+Using the VS Code terminal? Use the command matching its shell: PowerShell,
+Command Prompt, Bash/WSL, or zsh.
+
+Prefer to inspect a script before running it, select a specific version, choose
+another install directory, install manually, or uninstall? Read the
+[installation guide](docs/installation.md).
 
 ### Build from source
 
@@ -128,14 +121,11 @@ cargo build --release --locked
 ```
 
 Run `target\release\ctx.exe` on Windows or `target/release/ctx` on Linux and
-macOS. Release archives also contain `ctxwake`, a temporary compatibility alias
-that runs the same application.
+macOS. Building from source is the only installation method that requires Rust.
 
 ## Quick Start
 
-The examples below assume the extracted directory is on your `PATH`.
-
-1. Check Git, local storage, and installed coding agents:
+1. Check ContextWake, Git, local storage, and installed coding agents:
 
    ```sh
    ctx doctor

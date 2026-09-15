@@ -34,8 +34,17 @@ Statuses are evidence-based: `COMPLETE`, `PARTIAL`, `BLOCKED`, `UNSUPPORTED`, or
 | Diagnostics | COMPLETE | Config, DB, Git, all nine adapters, explicit optional `Not installed`, auth boundaries, terminal, and safe verbose paths | Deeper Windows/macOS permission checks |
 | Security controls | COMPLETE | Fixed argv, bounded probes, redaction, terminal sanitization, containment, symlink defense, transactional switching, and path-like session-reference rejection | Fuzzing and external security review |
 | Open-source readiness | COMPLETE | Public ContextWake repository and `v0.1.0-alpha.1` prerelease, compatibility migration, README and real TUI image, Apache-2.0, governance, security policy, changelog, docs, schemas, templates, green three-platform CI, and verified release artifacts | Optional signing/notarization and future package registries |
+| Direct installation | COMPLETE | User-local PowerShell and POSIX installers consume the existing GitHub Release archives, require SHA-256 verification, install both CLI names without Rust/admin rights, own only their PATH changes, support safe reinstall, and preserve all ContextWake state on uninstall | Signing/notarization and future package-manager submissions |
 
 ## Latest validation evidence
+
+- Direct-installer pass: Windows PowerShell 5.1, Windows CMD, and WSL Linux
+  installed the public `v0.1.0-alpha.2` archives from non-build locations,
+  verified both CLI versions, ran Doctor/status, reinstalled without duplicate
+  PATH entries, and uninstalled while preserving isolated state. Corrupted
+  archives, missing releases, and unsupported architectures failed closed
+  without installing a binary. Hosted macOS/PowerShell 7 evidence is tracked by
+  the dedicated installer workflow.
 
 - Alpha.2 live provider pass, Windows: official GitHub Copilot CLI 1.0.83 and
   Kimi Code 0.42.0 were installed and signature-detected. Copilot completed an

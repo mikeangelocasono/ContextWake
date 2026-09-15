@@ -21,3 +21,16 @@ No signing identity is currently available. Local and CI-produced alpha binaries
 - Linux archives are checksum-protected but not signed. A future release may sign `SHA256SUMS` with Sigstore or a maintained signing key.
 
 Users should compare an archive against the published SHA-256 manifest. Documentation must not suggest disabling Defender, Gatekeeper, or other platform protection to run an unsigned build.
+
+## Direct installers
+
+Repository-provided `scripts/install.ps1` and `scripts/install.sh` install the
+existing release archives into user-local binary directories. They resolve the
+latest compatible public release (including prereleases), verify `SHA256SUMS`,
+allow only the expected archive entries, and verify both CLI binaries before
+reporting success. Rerunning an installer is the supported alpha update path.
+
+README commands use an immutable commit URL for installer code. A release does
+not need a new binary merely because the repository adds or updates installation
+tooling compatible with its existing archive layout. Any future archive-layout
+change must update installer validation and may require a new release.
