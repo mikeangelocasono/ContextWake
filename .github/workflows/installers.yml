@@ -64,20 +64,20 @@ jobs:
           & (Join-Path $installDir "ctxwake.exe") --version
           .\scripts\uninstall.ps1 -InstallDir $installDir
       - name: Command Prompt install and use
-        shell: pwsh
+        shell: cmd
         run: |
-          $installDir = Join-Path $env:RUNNER_TEMP "contextwake-cmd\bin"
-          $stateDir = Join-Path $env:RUNNER_TEMP "contextwake-cmd\state"
-          $env:CONTEXTWAKE_VERSION = "v0.1.0-alpha.2"
-          $env:CONTEXTWAKE_INSTALL_DIR = $installDir
-          $env:CONTEXTWAKE_NO_PATH_UPDATE = "1"
-          cmd.exe /d /c powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
-          if ($LASTEXITCODE -ne 0) { throw "CMD installer invocation failed" }
-          $env:PATH = "$installDir;$env:PATH"
-          $env:CONTEXTWAKE_HOME = $stateDir
-          cmd.exe /d /c "where.exe ctx && ctx --version && ctx doctor && ctx status"
-          if ($LASTEXITCODE -ne 0) { throw "CMD smoke test failed" }
-          .\scripts\uninstall.ps1 -InstallDir $installDir
+          set "CONTEXTWAKE_VERSION=v0.1.0-alpha.2"
+          set "CONTEXTWAKE_INSTALL_DIR=%RUNNER_TEMP%\contextwake-cmd\bin"
+          set "CONTEXTWAKE_HOME=%RUNNER_TEMP%\contextwake-cmd\state"
+          set "CONTEXTWAKE_NO_PATH_UPDATE=1"
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1 || exit /b 1
+          set "PATH=%CONTEXTWAKE_INSTALL_DIR%;%PATH%"
+          where.exe ctx || exit /b 1
+          ctx --version || exit /b 1
+          ctxwake --version || exit /b 1
+          ctx doctor || exit /b 1
+          ctx status || exit /b 1
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\uninstall.ps1 || exit /b 1
       - name: Reject checksum mismatch, unsupported architecture, and missing release
         shell: pwsh
         run: |

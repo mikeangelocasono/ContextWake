@@ -167,6 +167,21 @@ function Get-ManifestChecksum {
     return $checksums[0]
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $stream = [IO.File]::OpenRead($Path)
+    $hasher = [Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $hasher.ComputeHash($stream)
+        return (($digest | ForEach-Object { $_.ToString("x2") }) -join '')
+    }
+    finally {
+        $hasher.Dispose()
+        $stream.Dispose()
+    }
+}
+
 function Assert-SafeArchive {
     param(
         [Parameter(Mandatory = $true)][string]$ArchivePath,
@@ -477,7 +492,7 @@ function Invoke-ContextWakeInstall {
 
         Write-Step "Verifying SHA-256..."
         $expectedHash = Get-ManifestChecksum -ManifestPath $manifestPath -AssetName $archiveName
-        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash.ToLowerInvariant()
+        $actualHash = Get-Sha256Hex -Path $archivePath
         if ($actualHash -cne $expectedHash) {
             throw "checksum mismatch for $archiveName. Expected: $expectedHash Actual: $actualHash. Installation aborted."
         }
@@ -485,7 +500,7 @@ function Invoke-ContextWakeInstall {
 
         Assert-SafeArchive -ArchivePath $archivePath -ArchiveRoot $archiveRoot
         New-Item -ItemType Directory -Path $extractDirectory | Out-Null
-        Expand-Archive -LiteralPath $archivePath -DestinationPath $extractDirectory
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $extractDirectory)
         $payloadDirectory = Join-Path $extractDirectory $archiveRoot
         foreach ($name in @("ctx.exe", "ctxwake.exe")) {
             Assert-RegularFile -Path (Join-Path $payloadDirectory $name)
