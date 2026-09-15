@@ -1,0 +1,166 @@
+name: Installer validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fresh install, reinstall, PATH, and uninstall (Windows PowerShell 5.1)
+        shell: powershell
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "contextwake-winps\bin"
+          $stateDir = Join-Path $env:RUNNER_TEMP "contextwake-winps\state"
+          $originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          try {
+              .\scripts\install.ps1 -Version latest -InstallDir $installDir
+              $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+              $entries = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $installDir.TrimEnd('\') })
+              if ($entries.Count -ne 1) { throw "installer did not add exactly one user PATH entry" }
+
+              $env:PATH = "$installDir;$env:PATH"
+              $env:CONTEXTWAKE_HOME = $stateDir
+              where.exe ctx
+              ctx --version
+              ctxwake --version
+              ctx doctor
+              ctx status
+
+              New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+              Set-Content -LiteralPath (Join-Path $stateDir "preserve-sentinel") -Value "preserve"
+              .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir $installDir
+              $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+              $entries = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $installDir.TrimEnd('\') })
+              if ($entries.Count -ne 1) { throw "reinstall duplicated the user PATH entry" }
+              if (-not (Test-Path -LiteralPath (Join-Path $stateDir "preserve-sentinel"))) {
+                  throw "reinstall removed ContextWake state"
+              }
+
+              .\scripts\uninstall.ps1 -InstallDir $installDir
+              if (Test-Path -LiteralPath (Join-Path $installDir "ctx.exe")) { throw "ctx.exe survived uninstall" }
+              if (Test-Path -LiteralPath (Join-Path $installDir "ctxwake.exe")) { throw "ctxwake.exe survived uninstall" }
+              if (-not (Test-Path -LiteralPath (Join-Path $stateDir "preserve-sentinel"))) {
+                  throw "uninstall removed ContextWake state"
+              }
+              if ([Environment]::GetEnvironmentVariable("Path", "User") -cne $originalUserPath) {
+                  throw "uninstall did not restore the original user PATH"
+              }
+          }
+          finally {
+              [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
+          }
+      - name: PowerShell 7 install smoke test
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "contextwake-pwsh\bin"
+          .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir $installDir -NoPathUpdate
+          & (Join-Path $installDir "ctx.exe") --version
+          & (Join-Path $installDir "ctxwake.exe") --version
+          .\scripts\uninstall.ps1 -InstallDir $installDir
+      - name: Command Prompt install and use
+        shell: pwsh
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP "contextwake-cmd\bin"
+          $stateDir = Join-Path $env:RUNNER_TEMP "contextwake-cmd\state"
+          $env:CONTEXTWAKE_VERSION = "v0.1.0-alpha.2"
+          $env:CONTEXTWAKE_INSTALL_DIR = $installDir
+          $env:CONTEXTWAKE_NO_PATH_UPDATE = "1"
+          cmd.exe /d /c powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\install.ps1
+          if ($LASTEXITCODE -ne 0) { throw "CMD installer invocation failed" }
+          $env:PATH = "$installDir;$env:PATH"
+          $env:CONTEXTWAKE_HOME = $stateDir
+          cmd.exe /d /c "where.exe ctx && ctx --version && ctx doctor && ctx status"
+          if ($LASTEXITCODE -ne 0) { throw "CMD smoke test failed" }
+          .\scripts\uninstall.ps1 -InstallDir $installDir
+      - name: Reject checksum mismatch, unsupported architecture, and missing release
+        shell: pwsh
+        run: |
+          $negativeRoot = Join-Path $env:RUNNER_TEMP "contextwake-negative"
+          $env:CONTEXTWAKE_TEST_CORRUPT_ARCHIVE = "1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir (Join-Path $negativeRoot "corrupt") -NoPathUpdate
+          if ($LASTEXITCODE -eq 0) { throw "corrupted archive unexpectedly installed" }
+          if (Test-Path (Join-Path $negativeRoot "corrupt\ctx.exe")) { throw "corrupted ctx.exe was installed" }
+          Remove-Item Env:CONTEXTWAKE_TEST_CORRUPT_ARCHIVE
+
+          $env:CONTEXTWAKE_TEST_ARCHITECTURE = "ARM64"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir (Join-Path $negativeRoot "unsupported") -NoPathUpdate
+          if ($LASTEXITCODE -eq 0) { throw "unsupported architecture unexpectedly installed" }
+          Remove-Item Env:CONTEXTWAKE_TEST_ARCHITECTURE
+
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v99.99.99 -InstallDir (Join-Path $negativeRoot "missing") -NoPathUpdate
+          if ($LASTEXITCODE -eq 0) { throw "missing release unexpectedly installed" }
+
+  unix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Fresh install, reinstall, PATH, state preservation, and uninstall
+        shell: sh
+        run: |
+          set -eu
+          qa_root=$(mktemp -d "${RUNNER_TEMP}/contextwake-installer.XXXXXX")
+          export HOME="$qa_root/home"
+          mkdir -p "$HOME"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+              export SHELL=/bin/zsh
+              profile="$HOME/.zshrc"
+          else
+              export SHELL=/bin/bash
+              profile="$HOME/.bashrc"
+          fi
+
+          CONTEXTWAKE_VERSION=latest sh scripts/install.sh
+          test -x "$HOME/.local/bin/ctx"
+          test -x "$HOME/.local/bin/ctxwake"
+          test "$(grep -Fc '# ContextWake installer' "$profile")" -eq 1
+
+          export PATH="$HOME/.local/bin:$PATH"
+          export CONTEXTWAKE_HOME="$qa_root/state"
+          command -v ctx
+          ctx --version
+          ctxwake --version
+          ctx doctor
+          ctx status
+
+          mkdir -p "$CONTEXTWAKE_HOME"
+          printf preserve > "$CONTEXTWAKE_HOME/preserve-sentinel"
+          CONTEXTWAKE_VERSION=v0.1.0-alpha.2 sh scripts/install.sh
+          test "$(grep -Fc '# ContextWake installer' "$profile")" -eq 1
+          test -f "$CONTEXTWAKE_HOME/preserve-sentinel"
+
+          CONTEXTWAKE_INSTALL_DIR="$HOME/.local/bin" sh scripts/uninstall.sh
+          test ! -e "$HOME/.local/bin/ctx"
+          test ! -e "$HOME/.local/bin/ctxwake"
+          test -f "$CONTEXTWAKE_HOME/preserve-sentinel"
+          ! grep -F '# ContextWake installer' "$profile" >/dev/null
+      - name: Reject checksum mismatch, unsupported architecture, and missing release
+        shell: sh
+        run: |
+          set -eu
+          negative_root=$(mktemp -d "${RUNNER_TEMP}/contextwake-negative.XXXXXX")
+          if CONTEXTWAKE_VERSION=v0.1.0-alpha.2 CONTEXTWAKE_INSTALL_DIR="$negative_root/corrupt" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_CORRUPT_ARCHIVE=1 sh scripts/install.sh; then
+              echo "corrupted archive unexpectedly installed" >&2
+              exit 1
+          fi
+          test ! -e "$negative_root/corrupt/ctx"
+
+          if CONTEXTWAKE_VERSION=v0.1.0-alpha.2 CONTEXTWAKE_INSTALL_DIR="$negative_root/unsupported" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_ARCHITECTURE=riscv64 sh scripts/install.sh; then
+              echo "unsupported architecture unexpectedly installed" >&2
+              exit 1
+          fi
+          test ! -e "$negative_root/unsupported/ctx"
+
+          if CONTEXTWAKE_VERSION=v99.99.99 CONTEXTWAKE_INSTALL_DIR="$negative_root/missing" CONTEXTWAKE_NO_PATH_UPDATE=1 sh scripts/install.sh; then
+              echo "missing release unexpectedly installed" >&2
+              exit 1
+          fi
