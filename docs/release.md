@@ -1,6 +1,9 @@
 # Release process
 
-ContextWake `0.1.0-alpha.2` is the next prepared pre-release line. The immutable `v0.1.0-alpha.1` release remains available with its historical `ctxwake` executable; current archives contain canonical `ctx` plus the compatibility alias. Public publication remains an explicit maintainer action.
+The current alpha release is `v0.1.0-alpha.2`; its immutable predecessor
+`v0.1.0-alpha.1` remains available with its historical `ctxwake` executable.
+Current archives contain canonical `ctx` plus the compatibility alias. Public
+publication remains an explicit maintainer action.
 
 ## Local gates
 

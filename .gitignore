@@ -16,6 +16,13 @@
 *.bak
 *.swp
 *.swo
+*.db
+*.sqlite
+*.sqlite3
+*.sha256
+SHA256SUMS
+*.tar.gz
+*.zip
 coverage/
 test-output/
 .DS_Store

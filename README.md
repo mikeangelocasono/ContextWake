@@ -61,8 +61,8 @@ ContextWake currently supports these terminal coding agents:
 - Grok Build
 
 Model availability and model selection are managed by each agent and its
-provider account. See the [full compatibility matrix](docs/providers/compatibility.md)
-for exact capabilities, tested versions, and limitations.
+provider account. Run `ctx doctor` to see what is installed and
+`ctx agent info <agent>` for the capabilities ContextWake currently exposes.
 
 ## Install ContextWake
 
@@ -106,9 +106,8 @@ unsigned, and not notarized; keep Gatekeeper enabled.
 Using the VS Code terminal? Use the command matching its shell: PowerShell,
 Command Prompt, Bash/WSL, or zsh.
 
-Prefer to inspect a script before running it, select a specific version, choose
-another install directory, install manually, or uninstall? Read the
-[installation guide](docs/installation.md).
+Prefer to inspect a script before running it or choose a specific version or
+install directory? Download the matching script from [`scripts/`](scripts/).
 
 ### Build from source
 
@@ -122,6 +121,11 @@ cargo build --release --locked
 
 Run `target\release\ctx.exe` on Windows or `target/release/ctx` on Linux and
 macOS. Building from source is the only installation method that requires Rust.
+
+To update, rerun the same installer command. To uninstall, run
+`scripts/uninstall.ps1` on Windows or `scripts/uninstall.sh` on Linux/macOS;
+only the binaries and installer-owned PATH entry are removed, while profiles,
+workspaces, sessions, checkpoints, handoffs, and configuration are preserved.
 
 ## Quick Start
 
@@ -158,8 +162,15 @@ arguments.
 ![Sanitized ContextWake TUI showing an active profile, dirty Git workspace, and checkpoint](docs/assets/contextwake-tui.png)
 
 This is a real sanitized TUI capture from a disposable repository. You can also
-run the [deterministic continuity demo](demo/README.md) without provider
-credentials or paid model usage.
+run the deterministic continuity demo without provider credentials or paid
+model usage:
+
+```powershell
+./demo/continuity.ps1
+```
+
+The demo uses the built `ctx` binary, creates a disposable Git repository under
+the operating-system temporary directory, and never launches a coding agent.
 
 ## Basic Usage
 
@@ -263,30 +274,27 @@ chain-of-thought, or inaccessible provider state.
 - ContextWake telemetry is off by default.
 - ContextWake does not bypass provider authentication, quotas, or policies.
 
-Read the [security overview](docs/security.md) and
-[vulnerability reporting policy](SECURITY.md). ContextWake is an independent
-open-source project and is not affiliated with the supported agent vendors.
+Read the [vulnerability reporting policy](SECURITY.md). ContextWake is an
+independent open-source project and is not affiliated with the supported agent
+vendors.
 
 ## Current Limitations
 
-- Every provider adapter is still classified as partial for the public alpha.
+- Every provider adapter is partial for the public alpha; capabilities vary by
+  agent and installation. Use `ctx doctor` and `ctx agent info <agent>` for the
+  current boundary.
 - Authenticated Kimi and Grok resume testing remains pending.
 - Cursor and Kiro cannot provide isolated identities on the tested Windows host.
 - Live local-model to commercial-agent continuity testing remains pending.
 - Windows and macOS binaries are unsigned; macOS has CI validation but no
   physical-device TUI QA.
 
-See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed evidence
-and remaining work.
-
 ## Documentation
 
-- [Compatibility matrix](docs/providers/compatibility.md)
 - [Configuration](docs/configuration.md)
 - [Architecture](docs/architecture.md)
-- [Provider adapter guide](docs/providers/adding-a-provider.md)
 - [Handoff format](docs/handoff-format.md)
-- [Release and continuity QA](docs/qa/cross-agent-continuity.md)
+- [Release process](docs/release.md)
 
 ## Contributing
 

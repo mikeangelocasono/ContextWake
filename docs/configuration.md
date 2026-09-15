@@ -52,9 +52,13 @@ Agent executable overrides are process-local and must point to trusted binaries:
 ```text
 CONTEXTWAKE_CODEX_BIN=/absolute/path/to/codex
 CONTEXTWAKE_CLAUDE_BIN=/absolute/path/to/claude
+CONTEXTWAKE_COPILOT_BIN=/absolute/path/to/copilot
+CONTEXTWAKE_CURSOR_BIN=/absolute/path/to/cursor-agent
 CONTEXTWAKE_GEMINI_BIN=/absolute/path/to/gemini
-CONTEXTWAKE_OPENCODE_BIN=/absolute/path/to/opencode
+CONTEXTWAKE_GROK_BIN=/absolute/path/to/grok
+CONTEXTWAKE_KIMI_BIN=/absolute/path/to/kimi
 CONTEXTWAKE_KIRO_BIN=/absolute/path/to/kiro-cli
+CONTEXTWAKE_OPENCODE_BIN=/absolute/path/to/opencode
 ```
 
 ContextWake never discovers an executable from a repository-local path by itself. During the pre-release rename, `AGENTDECK_HOME`, `AGENTDECK_<AGENT>_BIN`, and `.agentdeck/project.toml` remain readable at lower precedence. Default legacy OS state directories are moved only when the corresponding ContextWake destination does not exist; existing destinations are never overwritten. Legacy project key `preferred_provider` and global table `[provider_experimental]` also remain readable, while new files serialize `preferred_agent` and `[agent_experimental]`.

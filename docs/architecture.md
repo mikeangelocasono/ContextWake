@@ -89,6 +89,6 @@ open the primary screens, identity changes and destructive actions require
 confirmation, and narrow or tiny terminals collapse to an essential one-column
 view with a clear size warning.
 
-See the [language/TUI](adr/0001-language-and-tui-stack.md), [storage](adr/0002-storage.md), [adapter](adr/0003-provider-adapter-model.md), and [ACP transport](adr/0006-acp-provider-transport.md) decisions.
-
-Field-level persistence rules are in the [data classification](data-classification.md).
+The non-obvious constraints are captured in the [storage](adr/0002-storage.md),
+[adapter](adr/0003-provider-adapter-model.md), and [ACP transport](adr/0006-acp-provider-transport.md)
+decisions.

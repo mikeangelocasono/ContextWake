@@ -19,7 +19,7 @@ Coding-agent credentials are never required in CI. Adapter behavior should use f
 
 - Keep one coherent change per PR.
 - Add tests for behavior and failure paths.
-- Update docs and `IMPLEMENTATION_STATUS.md` when capability status changes.
+- Update user-facing documentation and `CHANGELOG.md` when behavior changes.
 - Do not describe experimental or observed behavior as a guaranteed provider contract.
 - Never add auto-account rotation, quota-circumvention logic, secret copying, auto-executed repository commands, or web-platform scope.
 - Include TUI snapshots/screenshots for visual changes and test 80x24 plus a narrow layout.
