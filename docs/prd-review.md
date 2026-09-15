@@ -9,7 +9,7 @@ Reviewed in full on 10 September 2026. The terminal-native core, local state mod
 - “Profile” is ContextWake’s identity/configuration boundary. A Codex `--profile` only layers configuration and is not an account boundary.
 - Native resume and new-session restoration from a handoff are separate, user-visible outcomes.
 - No quota routing, limit-triggered identity rotation, auth bypass, fabricated usage, or fake context percentage is in scope.
-- ContextWake/`ctxwake` are selected following the practical collision audit in ADR 0004. Formal trademark clearance is not claimed.
+- ContextWake/`ctx` are selected following the practical collision audit in ADR 0004 and the CLI-specific audit in ADR 0005. Formal trademark clearance is not claimed.
 
 ## Provider-dependent feasibility
 

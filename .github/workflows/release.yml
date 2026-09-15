@@ -44,6 +44,19 @@ jobs:
             throw "Tag $env:GITHUB_REF_NAME does not match Cargo version v$version"
           }
       - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Smoke-test release binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\target\${{ matrix.target }}\release\ctx.exe --version
+          .\target\${{ matrix.target }}\release\ctx.exe --help
+          .\target\${{ matrix.target }}\release\ctxwake.exe --version
+      - name: Smoke-test release binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./target/${{ matrix.target }}/release/ctx --version
+          ./target/${{ matrix.target }}/release/ctx --help
+          ./target/${{ matrix.target }}/release/ctxwake --version
       - name: Package native artifact
         id: package
         shell: pwsh

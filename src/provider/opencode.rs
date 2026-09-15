@@ -10,9 +10,9 @@ use crate::model::{
     AgentCapabilities, AgentHealth, AgentModel, AuthState, Capability, CapabilityMaturity,
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
 };
-use crate::provider::AgentAdapter;
-use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
-use crate::security::{sanitize_terminal, validate_external_reference};
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::provider::{AcpTransport, AgentAdapter};
+use crate::security::{sanitize_terminal, validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_LIMIT_MAX: usize = 500;
@@ -46,7 +46,7 @@ fn parse_session_output(stdout: &[u8]) -> Result<Vec<DiscoveredAgentSession>> {
         .into_iter()
         .map(|session| {
             Ok(DiscoveredAgentSession {
-                provider_session_id: validate_external_reference(&session.id)?,
+                provider_session_id: validate_session_reference(&session.id)?,
                 title: Some(safe_agent_text(&session.title)),
                 workspace_path: Some(session.directory),
                 created_at: DateTime::<Utc>::from_timestamp_millis(session.created),
@@ -118,7 +118,7 @@ impl OpenCodeAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -205,6 +205,10 @@ fn discover_windows_native_executable() -> Option<PathBuf> {
 impl AgentAdapter for OpenCodeAdapter {
     fn id(&self) -> &'static str {
         "opencode"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["opencode-cli"]
     }
 
     fn display_name(&self) -> &'static str {
@@ -298,6 +302,14 @@ impl AgentAdapter for OpenCodeAdapter {
             programmatic_interface: Self::stable(
                 "JSON session listing plus documented run, ACP, SDK, and server interfaces",
             ),
+            non_interactive_mode: Self::stable("`opencode run`"),
+            structured_output: Self::stable("JSON output is available for automation"),
+            acp: Self::stable("`opencode acp` exposes a native ACP server"),
+            mcp: Self::stable("OpenCode supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate remote OpenCode tasks from the local adapter",
+            ),
             local_models: Self::stable(
                 "official Ollama, LM Studio, llama.cpp, and custom local-provider paths",
             ),
@@ -305,6 +317,24 @@ impl AgentAdapter for OpenCodeAdapter {
                 "ContextWake-scoped XDG data roots were locally verified on Windows; cross-platform credential isolation still requires release QA",
             ),
         }
+    }
+
+    fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
+        let mut transport = AcpTransport::new(&self.executable)
+            .argument("acp")
+            .environment("OPENCODE_DISABLE_AUTOUPDATE", "true")
+            .environment("OPENCODE_DISABLE_PRUNE", "true")
+            .environment("OPENCODE_DISABLE_TERMINAL_TITLE", "true")
+            .environment("OPENCODE_AUTO_SHARE", "false");
+        if let Some(home) = agent_home {
+            let config = home.join("config");
+            transport = transport
+                .environment("XDG_CONFIG_HOME", &config)
+                .environment("XDG_DATA_HOME", home.join("data"))
+                .environment("XDG_CACHE_HOME", home.join("cache"))
+                .environment("OPENCODE_CONFIG_DIR", config.join("opencode"));
+        }
+        Some(transport)
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
@@ -495,7 +525,7 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)

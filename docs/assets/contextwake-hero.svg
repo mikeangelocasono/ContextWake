@@ -44,7 +44,7 @@
 
     <text x="81" y="354" fill="#7f8ea3" font-size="16">workspaces  /  sessions  /  checkpoints  /  handoffs</text>
     <rect x="79" y="378" width="160" height="40" rx="8" fill="#0b1f2c" stroke="#155e75"/>
-    <text x="101" y="404" fill="#a5f3fc" font-size="16">$ ctxwake</text>
+    <text x="101" y="404" fill="#a5f3fc" font-size="16">$ ctx</text>
   </g>
 
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">

@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::config::AppConfig;
 use crate::git::GitClient;
-use crate::model::AuthState;
+use crate::model::{AgentHealth, AuthState};
 use crate::paths::AppPaths;
 use crate::provider::AgentRegistry;
 use crate::security::sanitize_terminal;
@@ -50,6 +50,23 @@ pub fn run_doctor(
     agents: &AgentRegistry,
     verbose: bool,
 ) -> DoctorReport {
+    let active_profile = store.active_profile().ok().flatten();
+    let active_agent = active_profile
+        .as_ref()
+        .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+    let agent_health = agents.detect_all(active_agent);
+    run_doctor_with_agent_results(paths, config, store, git, agents, verbose, &agent_health)
+}
+
+pub(crate) fn run_doctor_with_agent_results(
+    paths: &AppPaths,
+    config: &AppConfig,
+    store: &Store,
+    git: &GitClient,
+    agents: &AgentRegistry,
+    verbose: bool,
+    agent_health: &[crate::error::Result<AgentHealth>],
+) -> DoctorReport {
     let mut checks = vec![DoctorCheck {
         name: "Application".into(),
         status: CheckStatus::Pass,
@@ -68,7 +85,7 @@ pub fn run_doctor(
             name: "Configuration".into(),
             status: CheckStatus::Fail,
             summary: sanitize_terminal(&error.to_string()),
-            action: Some("Run 'ctxwake config validate' after correcting config.toml.".into()),
+            action: Some("Run 'ctx config validate' after correcting config.toml.".into()),
         },
     });
 
@@ -108,44 +125,45 @@ pub fn run_doctor(
         },
     });
 
-    let active_profile = store.active_profile().ok().flatten();
-    for adapter in agents.implemented() {
-        let home = active_profile
-            .as_ref()
-            .filter(|profile| profile.agent_id == adapter.id())
-            .map(|profile| profile.agent_home.as_path());
-        let agent_health = adapter.detect(home);
+    for (adapter, agent_health) in agents.implemented().zip(agent_health) {
+        let display_name = adapter.display_name();
         checks.push(match agent_health {
             Ok(health) if health.installed => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Pass,
                 summary: if verbose {
                     format!(
-                        "{} ({})",
+                        "{} · {} ({})",
                         health.version.as_deref().unwrap_or("version unavailable"),
+                        health.auth_state.as_str(),
                         health.executable.as_ref().map_or_else(
                             || "path unavailable".into(),
                             |path| { sanitize_terminal(&path.display().to_string()) }
                         )
                     )
                 } else {
-                    health
-                        .version
-                        .unwrap_or_else(|| "version unavailable".into())
+                    format!(
+                        "{} · {}",
+                        health.version.as_deref().unwrap_or("version unavailable"),
+                        health.auth_state.as_str()
+                    )
                 },
                 action: None,
             },
             Ok(health) => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Warning,
-                summary: health.message,
+                summary: if health.executable.is_none() {
+                    "Not installed".into()
+                } else {
+                    health.message.clone()
+                },
                 action: Some(format!(
-                    "Install {} or configure its CONTEXTWAKE_*_BIN override.",
-                    adapter.display_name()
+                    "Install {display_name} or configure its CONTEXTWAKE_*_BIN override."
                 )),
             },
             Err(error) => DoctorCheck {
-                name: adapter.display_name().into(),
+                name: display_name.into(),
                 status: CheckStatus::Warning,
                 summary: sanitize_terminal(&error.to_string()),
                 action: Some("Run the agent's own doctor command for deeper diagnostics.".into()),
@@ -153,12 +171,15 @@ pub fn run_doctor(
         });
     }
 
+    let active_profile = store.active_profile().ok().flatten();
     checks.push(match active_profile {
         Some(profile) => {
             let auth = agents
-                .get(&profile.agent_id)
-                .and_then(|adapter| adapter.auth_status(&profile.agent_home))
-                .unwrap_or(AuthState::Unknown);
+                .implemented()
+                .zip(agent_health)
+                .find(|(adapter, _)| adapter.id() == profile.agent_id)
+                .and_then(|(_, health)| health.as_ref().ok())
+                .map_or(AuthState::Unknown, |health| health.auth_state);
             DoctorCheck {
                 name: "Authentication".into(),
                 status: if auth == AuthState::SignedIn {
@@ -168,14 +189,14 @@ pub fn run_doctor(
                 },
                 summary: format!("{}: {}", profile.display_name, auth.as_str()),
                 action: (auth != AuthState::SignedIn)
-                    .then(|| format!("Run 'ctxwake profile login {}'.", profile.name)),
+                    .then(|| format!("Run 'ctx profile login {}'.", profile.name)),
             }
         }
         None => DoctorCheck {
             name: "Authentication".into(),
             status: CheckStatus::Warning,
             summary: "no active ContextWake profile".into(),
-            action: Some("Run 'ctxwake profile add Personal'.".into()),
+            action: Some("Run 'ctx profile add Personal'.".into()),
         },
     });
 
@@ -197,7 +218,7 @@ pub fn run_doctor(
         summary: if std::io::stdout().is_terminal() {
             "interactive terminal detected".into()
         } else {
-            "non-interactive output; use CLI commands or run 'ctxwake' in a terminal".into()
+            "non-interactive output; use CLI commands or run 'ctx' in a terminal".into()
         },
         action: None,
     });

@@ -3,30 +3,6 @@
 version = 4
 
 [[package]]
-name = "contextwake"
-version = "0.1.0-alpha.1"
-dependencies = [
- "assert_cmd",
- "chrono",
- "clap",
- "clap_complete",
- "crossterm",
- "directories",
- "hex",
- "ratatui",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tempfile",
- "thiserror 2.0.20",
- "toml",
- "uuid",
- "wait-timeout",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -344,6 +320,30 @@ name = "const-oid"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "contextwake"
+version = "0.1.0-alpha.2"
+dependencies = [
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "crossterm",
+ "directories",
+ "hex",
+ "ratatui",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "toml",
+ "uuid",
+ "wait-timeout",
+]
 
 [[package]]
 name = "convert_case"

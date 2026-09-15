@@ -11,8 +11,8 @@ use crate::model::{
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
-use crate::security::validate_external_reference;
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
@@ -73,7 +73,7 @@ impl KiroAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -139,7 +139,7 @@ fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgent
                 return Ok(sessions);
             }
             sessions.push(DiscoveredAgentSession {
-                provider_session_id: validate_external_reference(&session.session_id)?,
+                provider_session_id: validate_session_reference(&session.session_id)?,
                 title: session.title.map(|title| safe_agent_text(&title)),
                 workspace_path: Some(envelope.cwd.clone()),
                 created_at: None,
@@ -174,6 +174,10 @@ fn parse_models(stdout: &[u8]) -> Result<Vec<AgentModel>> {
 impl AgentAdapter for KiroAdapter {
     fn id(&self) -> &'static str {
         "kiro"
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        &["kiro-cli"]
     }
 
     fn display_name(&self) -> &'static str {
@@ -223,6 +227,16 @@ impl AgentAdapter for KiroAdapter {
             ),
             programmatic_interface: Self::stable(
                 "headless stream-json output exposes versioned ACP events",
+            ),
+            non_interactive_mode: Self::stable("headless chat mode"),
+            structured_output: Self::stable("stream-JSON headless output"),
+            acp: Self::partial(
+                "the headless event stream uses ACP events; no standalone ACP server is exposed",
+            ),
+            mcp: Self::stable("Kiro CLI supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate remote Kiro tasks from the local adapter",
             ),
             local_models: Self::unavailable(
                 "no supported local-model backend was found in the verified Kiro CLI interface",
@@ -393,7 +407,7 @@ impl AgentAdapter for KiroAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)

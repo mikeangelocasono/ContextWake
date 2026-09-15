@@ -32,7 +32,7 @@ use crate::security::{
 use crate::store::Store;
 use crate::validation::ValidationRunner;
 use crate::workspace::{detect_workspace, load_project_config};
-use crate::{PRODUCT_NAME, VERSION};
+use crate::{BINARY_NAME, PRODUCT_NAME, VERSION};
 
 #[derive(Clone, Debug)]
 pub struct Application {
@@ -221,7 +221,7 @@ impl Application {
                         &serde_json::json!({"application": PRODUCT_NAME, "version": VERSION}),
                     );
                 } else {
-                    println!("ctxwake {VERSION}");
+                    println!("{BINARY_NAME} {VERSION}");
                 }
                 Ok(0)
             }
@@ -229,17 +229,31 @@ impl Application {
     }
 
     pub fn status(&self, path: &Path) -> Result<StatusView> {
+        let active_profile = self.store.active_profile()?;
+        let agent = if let Some(profile) = &active_profile {
+            self.agents
+                .get(&profile.agent_id)?
+                .detect(Some(&profile.agent_home))?
+        } else {
+            crate::model::AgentHealth {
+                agent_id: "unconfigured".into(),
+                installed: false,
+                executable: None,
+                version: None,
+                auth_state: AuthState::Unknown,
+                message: "no active coding-agent profile".into(),
+            }
+        };
+        self.status_with_agent(path, agent)
+    }
+
+    pub(crate) fn status_with_agent(
+        &self,
+        path: &Path,
+        agent: crate::model::AgentHealth,
+    ) -> Result<StatusView> {
         let workspace = self.register_workspace(path, TrustState::Untrusted, false)?;
         let mut active_profile = self.store.active_profile()?;
-        let agent_id = active_profile
-            .as_ref()
-            .map_or("codex", |profile| profile.agent_id.as_str());
-        let adapter = self.agents.get(agent_id)?;
-        let agent = adapter.detect(
-            active_profile
-                .as_ref()
-                .map(|profile| profile.agent_home.as_path()),
-        )?;
         if let Some(profile) = active_profile.as_mut() {
             let previous_auth_state = profile.auth_state;
             profile.auth_state = agent.auth_state;
@@ -506,7 +520,7 @@ impl Application {
     pub fn resume_session(&self, session_reference: &str) -> Result<()> {
         let profile = self.store.active_profile()?.ok_or_else(|| {
             ContextWakeError::InvalidData(
-                "no active profile; run 'ctxwake profile add' or 'ctxwake profile use'".into(),
+                "no active profile; run 'ctx profile add' or 'ctx profile use'".into(),
             )
         })?;
         let known = match self.store.session(session_reference) {
@@ -596,7 +610,7 @@ impl Application {
                     print_json(&profile);
                 } else {
                     println!(
-                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctxwake profile login {}",
+                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctx profile login {}",
                         profile.display_name, profile.agent_id, profile.name
                     );
                 }
@@ -608,7 +622,7 @@ impl Application {
                 } else {
                     let active = self.store.active_profile()?.map(|profile| profile.id);
                     if profiles.is_empty() {
-                        println!("No profiles. Create one with 'ctxwake profile add Personal'.");
+                        println!("No profiles. Create one with 'ctx profile add Personal'.");
                     }
                     for profile in profiles {
                         let active_marker = if active == Some(profile.id) { "*" } else { " " };
@@ -742,7 +756,7 @@ impl Application {
                 if json {
                     print_json(&workspaces);
                 } else if workspaces.is_empty() {
-                    println!("No workspaces. Add one with 'ctxwake workspace add .'.");
+                    println!("No workspaces. Add one with 'ctx workspace add .'.");
                 } else {
                     let active = self.store.active_workspace()?.map(|value| value.id);
                     for workspace in workspaces {
@@ -814,14 +828,13 @@ impl Application {
             } => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
                     ContextWakeError::InvalidData(
-                        "an active profile is required; run 'ctxwake profile add'".into(),
+                        "an active profile is required; run 'ctx profile add'".into(),
                     )
                 })?;
                 let workspace = self.resolve_workspace(workspace.as_deref())?;
                 let adapter = self.agents.get(&profile.agent_id)?;
-                if adapter.capabilities().session_listing.support
-                    != crate::model::CapabilitySupport::Supported
-                {
+                let capabilities = adapter.capabilities();
+                if !capabilities.session_listing.is_available() {
                     return Err(ContextWakeError::CapabilityUnavailable(format!(
                         "{} does not expose a supported session list",
                         adapter.display_name()
@@ -864,7 +877,15 @@ impl Application {
                         model: profile.model_preference.clone(),
                         started_at,
                         last_seen_at,
-                        resume_capability: ResumeCapability::Native,
+                        resume_capability: match capabilities.native_resume.support {
+                            crate::model::CapabilitySupport::Verified => ResumeCapability::Native,
+                            crate::model::CapabilitySupport::Unsupported => {
+                                ResumeCapability::HandoffOnly
+                            }
+                            crate::model::CapabilitySupport::Partial
+                            | crate::model::CapabilitySupport::Experimental
+                            | crate::model::CapabilitySupport::Unknown => ResumeCapability::Unknown,
+                        },
                         archived: false,
                         continuity: ContinuityKind::Unknown,
                     };
@@ -1023,7 +1044,7 @@ impl Application {
                     print_json(&checkpoints);
                 } else if checkpoints.is_empty() {
                     println!(
-                        "No checkpoints. Create one with 'ctxwake checkpoint create --objective ...'."
+                        "No checkpoints. Create one with 'ctx checkpoint create --objective ...'."
                     );
                 } else {
                     for checkpoint in checkpoints {
@@ -1067,7 +1088,7 @@ impl Application {
                 let handoff = service.create(&checkpoint, &workspace)?;
                 output_value(&handoff, json, || {
                     format!(
-                        "Created handoff {}. Preview with 'ctxwake handoff preview {}'.",
+                        "Created handoff {}. Preview with 'ctx handoff preview {}'.",
                         handoff.id, handoff.id
                     )
                 });
@@ -1131,7 +1152,6 @@ impl Application {
                 let agents = self
                     .agents
                     .implemented()
-                    .into_iter()
                     .map(|adapter| {
                         serde_json::json!({
                             "id": adapter.id(),
@@ -1146,7 +1166,7 @@ impl Application {
                 } else {
                     for agent in agents {
                         println!(
-                            "{:<10} {:<24} {}",
+                            "{:<18} {:<24} {}",
                             agent["id"].as_str().unwrap_or("unknown"),
                             agent["name"].as_str().unwrap_or("unknown"),
                             agent["adapter"].as_str().unwrap_or("unknown")
@@ -1156,20 +1176,20 @@ impl Application {
             }
             AgentCommand::Detect => {
                 let active = self.store.active_profile()?;
-                let mut health = Vec::new();
-                for adapter in self.agents.implemented() {
-                    let home = active
-                        .as_ref()
-                        .filter(|profile| profile.agent_id == adapter.id())
-                        .map(|profile| profile.agent_home.as_path());
-                    health.push(adapter.detect(home)?);
-                }
+                let active = active
+                    .as_ref()
+                    .map(|profile| (profile.agent_id.as_str(), profile.agent_home.as_path()));
+                let health = self
+                    .agents
+                    .detect_all(active)
+                    .into_iter()
+                    .collect::<Result<Vec<_>>>()?;
                 if json {
                     print_json(&health);
                 } else {
                     for item in health {
                         println!(
-                            "{:<10} {:<12} {}",
+                            "{:<18} {:<12} {}",
                             item.agent_id,
                             if item.installed {
                                 "available"
@@ -1195,6 +1215,7 @@ impl Application {
                     adapter_version: VERSION.into(),
                     detected_version: health.version,
                     executable: health.executable,
+                    auth_state: health.auth_state,
                     capabilities: adapter.capabilities(),
                 };
                 output_value(&view, json, || format!("{view:#?}"));
@@ -1208,14 +1229,14 @@ impl Application {
             ModelCommand::List => {
                 let profile = self.store.active_profile()?.ok_or_else(|| {
                     ContextWakeError::InvalidData(
-                        "an active profile is required; run 'ctxwake profile add'".into(),
+                        "an active profile is required; run 'ctx profile add'".into(),
                     )
                 })?;
                 let adapter = self.agents.get(&profile.agent_id)?;
                 let providers = adapter.model_providers();
                 let workspace = self.store.active_workspace()?;
                 let models = if adapter.capabilities().available_models.support
-                    == crate::model::CapabilitySupport::Supported
+                    == crate::model::CapabilitySupport::Verified
                 {
                     Some(adapter.available_models(
                         &profile.agent_home,
@@ -1302,7 +1323,7 @@ impl Application {
                 let (provider, model) =
                     adapter.normalize_model_selection(provider.as_deref(), &model)?;
                 if adapter.capabilities().available_models.support
-                    == crate::model::CapabilitySupport::Supported
+                    == crate::model::CapabilitySupport::Verified
                 {
                     let workspace = self.store.active_workspace()?;
                     let models = adapter.available_models(

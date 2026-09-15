@@ -21,10 +21,36 @@ jobs:
           toolchain: 1.88.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Avoid restoring stale cargo-package target entries across releases.
+          # Registry and Git dependency caches remain enabled.
+          cache-targets: false
       - run: cargo fmt --all -- --check
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo build --locked --workspace --release
+      - name: Smoke-test canonical and compatibility binaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\target\release\ctx.exe --version
+          .\target\release\ctx.exe --help
+          .\target\release\ctxwake.exe --version
+      - name: Smoke-test canonical and compatibility binaries (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./target/release/ctx --version
+          ./target/release/ctx --help
+          ./target/release/ctxwake --version
+      - name: Check macOS PATH collision
+        if: runner.os == 'macOS'
+        run: |
+          if command -v ctx >/dev/null 2>&1; then
+            echo "ctx already exists on the runner PATH; smoke tests use the explicit build path"
+            command -v ctx
+          else
+            echo "ctx is not present on the runner PATH"
+          fi
       - if: runner.os == 'Linux'
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/contextwake-package

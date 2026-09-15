@@ -102,6 +102,18 @@ pub fn validate_external_reference(value: &str) -> Result<String> {
     Ok(value)
 }
 
+/// Validates provider-native session IDs and names before they are passed to a
+/// coding agent. Session references are opaque labels, never filesystem paths.
+pub fn validate_session_reference(value: &str) -> Result<String> {
+    let value = validate_external_reference(value)?;
+    if value.contains(['/', '\\']) || value == "." || value == ".." {
+        return Err(ContextWakeError::InvalidData(
+            "session references cannot contain path separators".into(),
+        ));
+    }
+    Ok(value)
+}
+
 /// Produces a bounded, redacted label for provider- or repository-controlled
 /// display metadata. Empty labels are omitted instead of persisted.
 pub fn sanitize_untrusted_label(value: &str, max_characters: usize) -> Option<String> {
@@ -223,6 +235,17 @@ mod tests {
         assert!(validate_external_reference("--dangerous").is_err());
         assert!(validate_external_reference("session\nsecond-line").is_err());
         assert!(validate_external_reference("\u{1b}[31m").is_err());
+    }
+
+    #[test]
+    fn rejects_path_like_session_references() {
+        assert_eq!(
+            validate_session_reference("named session").unwrap(),
+            "named session"
+        );
+        assert!(validate_session_reference("../escape").is_err());
+        assert!(validate_session_reference(r"..\escape").is_err());
+        assert!(validate_session_reference(".").is_err());
     }
 
     #[test]

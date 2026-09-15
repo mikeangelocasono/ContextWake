@@ -4,9 +4,42 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-09-14
+
+### Added
+
+- GitHub Copilot CLI, Cursor CLI, Kimi Code, and Grok Build adapters with conservative evidence-based capabilities and portable AWHF launch paths.
+- Optional fixed-argument ACP transports for Copilot, Cursor, Kimi, Grok, and OpenCode.
+- Bounded provider session-metadata readers for Copilot, Kimi, and Grok, plus live Cursor and Grok model discovery.
+- Deterministic seven-hop cross-agent CSV continuity fixture and nine-adapter portable-handoff contract coverage.
+- Provider candidate review, individual provider guides, and contributor instructions for adding adapters safely.
+- Release QA matrix and reproducible seven-field destination comprehension scoring.
+
+### Changed
+
+- Replaced the fixed provider registry with an ordered trait-object registry, adapter-owned aliases, shared safe probes, and bounded three-at-a-time discovery.
+- Expanded the doctor, first-run detection, and TUI to nine agents; the TUI can filter installed, authenticated, resume-capable, or ACP-capable agents and refresh provider state without blocking input/rendering.
+- Removed redundant TUI/Doctor provider probes and the implicit Codex fallback when no profile is configured.
+- Expanded capability reporting for non-interactive mode, structured output, ACP, MCP, portable handoff, and separately classified cloud handoff.
+- The canonical ContextWake command is now `ctx`; alpha release archives also
+  include the shared-implementation `ctxwake` compatibility executable.
+- Existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite
+  state remain compatible. The immutable `v0.1.0-alpha.1` release is unchanged.
+- Live validation now covers GitHub Copilot named-session resume, Copilot-to-Cursor and Cursor-to-OpenCode 7/7 handoffs, and an evidence-preserving partial Codex-to-Copilot handoff.
+
+### Security
+
+- Generic executable names require vendor-specific signatures and repository-local candidates are rejected.
+- Provider output and metadata are bounded and sanitized; provider credentials remain provider-owned and are never copied into SQLite.
+- Copilot remote session/export flags and Cursor cloud workers are disabled in ContextWake launch paths.
+- Provider-native session references reject path separators before a coding-agent process starts.
+
 ### Fixed
 
 - Clarified the Windows archive extraction destination in the public installation instructions.
+- Detect the official GitHub Copilot and Kimi Code npm distributions safely on Windows without executing npm command shims through a shell.
+- Bound Copilot version reporting to the version line instead of retaining updater guidance.
+- Normalize Windows verbatim workspace paths at the Cursor CLI boundary so provider-native resume can load persisted chats correctly.
 
 ## [0.1.0-alpha.1] - 2026-09-11
 

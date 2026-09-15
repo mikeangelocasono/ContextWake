@@ -8,8 +8,8 @@ use crate::model::{
     ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::codex::{run_probe, safe_agent_text, safe_probe_diagnostic};
-use crate::security::validate_external_reference;
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -65,7 +65,7 @@ impl GeminiAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -165,6 +165,10 @@ impl AgentAdapter for GeminiAdapter {
         "gemini"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["gemini-cli"]
+    }
+
     fn display_name(&self) -> &'static str {
         "Gemini CLI"
     }
@@ -223,6 +227,14 @@ impl AgentAdapter for GeminiAdapter {
             ),
             programmatic_interface: Self::stable(
                 "headless JSON/stream-JSON output and experimental ACP are documented",
+            ),
+            non_interactive_mode: Self::stable("headless prompt mode"),
+            structured_output: Self::stable("JSON and stream-JSON headless output"),
+            acp: Self::partial("Gemini ACP support remains experimental"),
+            mcp: Self::stable("Gemini CLI supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate remote Gemini tasks from the local adapter",
             ),
             local_models: Self::unavailable(
                 "no official local-model backend is documented for Gemini CLI",
@@ -360,7 +372,7 @@ impl AgentAdapter for GeminiAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .current_dir(workspace)

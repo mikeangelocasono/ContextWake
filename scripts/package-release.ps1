@@ -17,14 +17,17 @@ if ($null -eq $package) {
 }
 
 $version = $package.version
-$executableName = if ($Target -like "*-windows-*") { "ctxwake.exe" } else { "ctxwake" }
+$executableNames = if ($Target -like "*-windows-*") { @("ctx.exe", "ctxwake.exe") } else { @("ctx", "ctxwake") }
 $hostIsWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 if ($hostIsWindows -and $Target -notlike "*-windows-*") {
     throw "Unix release archives must be packaged on a Unix host so executable permissions are preserved"
 }
-$binary = Join-Path "target/$Target/release" $executableName
-if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
-    throw "release binary was not found at $binary"
+$binaryRoot = "target/$Target/release"
+foreach ($executableName in $executableNames) {
+    $binary = Join-Path $binaryRoot $executableName
+    if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+        throw "release binary was not found at $binary"
+    }
 }
 
 $archiveRootName = "contextwake-v$version-$Label"
@@ -47,7 +50,9 @@ if (Test-Path -LiteralPath $stage) {
     Remove-Item -LiteralPath $stage -Recurse -Force
 }
 New-Item -ItemType Directory -Path $stage | Out-Null
-Copy-Item -LiteralPath $binary -Destination $stage
+foreach ($executableName in $executableNames) {
+    Copy-Item -LiteralPath (Join-Path $binaryRoot $executableName) -Destination $stage
+}
 Copy-Item -LiteralPath "README.md" -Destination $stage
 Copy-Item -LiteralPath "LICENSE" -Destination $stage
 
@@ -62,9 +67,11 @@ if ($Target -like "*-windows-*") {
     if (Test-Path -LiteralPath $artifact) {
         Remove-Item -LiteralPath $artifact -Force
     }
-    chmod 755 (Join-Path $stage $executableName)
-    if ($LASTEXITCODE -ne 0) {
-        throw "chmod failed with exit code $LASTEXITCODE"
+    foreach ($executableName in $executableNames) {
+        chmod 755 (Join-Path $stage $executableName)
+        if ($LASTEXITCODE -ne 0) {
+            throw "chmod failed with exit code $LASTEXITCODE"
+        }
     }
     tar -C $outputRoot -czf $artifact $archiveRootName
     if ($LASTEXITCODE -ne 0) {

@@ -32,7 +32,7 @@
     <circle cx="25" cy="23" r="5" fill="#fb7185"/>
     <circle cx="43" cy="23" r="5" fill="#fbbf24"/>
     <circle cx="61" cy="23" r="5" fill="#34d399"/>
-    <text x="82" y="29" fill="#7f8ea3" font-size="13">ctxwake</text>
+    <text x="82" y="29" fill="#7f8ea3" font-size="13">ctx</text>
     <path d="M0 46H426" stroke="#26354b"/>
     <text x="24" y="84" fill="#67e8f9" font-size="14">ACTIVE</text>
     <text x="24" y="111" fill="#e2e8f0" font-size="17">Claude / Work</text>

@@ -13,9 +13,11 @@
   <strong>One workspace. Any coding agent. Keep your context.</strong>
 </p>
 
-ContextWake is an open-source, terminal-native workspace and context-continuity manager for AI coding CLIs. It keeps profiles, workspaces, Git state, sessions, checkpoints, and portable handoffs explicit as you move between Codex CLI, Claude Code, OpenCode, Gemini CLI, and Kiro CLI.
+ContextWake is an open-source, terminal-native workspace and context-continuity manager for AI coding CLIs. It keeps profiles, workspaces, Git state, sessions, checkpoints, and portable handoffs explicit as you move among Codex CLI, Claude Code, GitHub Copilot CLI, Cursor CLI, OpenCode, Gemini CLI, Kiro CLI, Kimi Code, and Grok Build.
 
 ContextWake is local-first. It has no web dashboard, hosted control plane, telemetry pipeline, or cloud account service. Coding-agent credentials remain owned by each agent.
+
+The canonical command is `ctx`. The `ctxwake` executable remains available as a compatibility alias during the alpha migration; existing `.contextwake` project metadata, `CONTEXTWAKE_HOME`, and SQLite state are unchanged.
 
 ## Why ContextWake?
 
@@ -38,7 +40,7 @@ _Real 120 x 36 ContextWake TUI capture from a disposable dirty Git fixture. The 
 ## Features
 
 - Keyboard-first Ratatui dashboard with wide, narrow, tiny-terminal, empty, warning, and error states.
-- Provider-neutral agent adapter and graded capability system.
+- Provider-neutral agent adapter, optional ACP transport, and graded capability system.
 - Local profile metadata without plaintext passwords or copied access tokens.
 - Git and non-Git workspace registry with branch, status, conflicts, ahead/behind, and diff summaries.
 - Local session browser with search, archive, workspace/profile filters, and guarded native resume.
@@ -46,7 +48,7 @@ _Real 120 x 36 ContextWake TUI capture from a disposable dirty Git fixture. The 
 - Agent Workspace Handoff Format (AWHF) JSON and Markdown for portable context restoration.
 - Transactional profile switching: target validation and artifact creation complete before activation.
 - Context Guardian indicators based on local checkpoint age and observable Git drift.
-- Privacy-safe diagnostics through `ctxwake doctor`.
+- Privacy-safe diagnostics through `ctx doctor`.
 - JSON CLI output, shell completions, SQLite schema migrations, and cross-platform automation.
 
 ## Supported AI coding agents
@@ -55,13 +57,19 @@ Support is deliberately capability-specific. "Partial" often means command const
 
 | Coding agent | Detection | Authentication | Sessions / native resume | Models | Portable handoff | Current status |
 |---|---|---|---|---|---|---|
-| OpenAI Codex CLI | Verified 0.154.0 on Windows | Verified; isolated profile signed out | Resume contract verified; authenticated resume pending | Selection verified | Verified | Partial |
-| Claude Code | Verified 2.1.267 on Windows | Verified JSON status | Resume contract verified; authenticated resume pending | Hosted modes supported | Verified | Partial |
-| OpenCode | Verified 1.18.25 on Windows | Credential-presence check | JSON listing verified; authenticated resume pending | Dynamic catalog verified | Verified | Partial |
-| Gemini CLI | Verified 0.59.0 on Windows | Interactive; non-interactive status unavailable | Resume contract verified; authenticated resume pending | Selection verified | Verified | Partial |
-| Kiro CLI | Verified 2.21.3 on Windows | JSON status verified | Real same-identity listing, sync, and resume verified | Dynamic catalog verified | Verified | Partial; isolated Windows identities unsupported |
+| OpenAI Codex CLI | Verified 0.154.0 on Windows | Verified | Authenticated resume pending | Selection | Verified | Partial |
+| Claude Code | Verified 2.1.270 on Windows | Verified | Authenticated resume pending | Hosted modes | Verified | Partial |
+| GitHub Copilot CLI | Verified 1.0.83 on Windows | Authenticated request verified | Named-session resume verified | Selection | Live 5/7 input; 7/7 output | Partial |
+| Cursor CLI | Verified 2026.09.10 on Windows | Verified | Known-state resume verified | Dynamic catalog verified | Live 7/7 input/output | Partial |
+| OpenCode | Verified 1.18.25 on Windows | Authenticated request verified | JSON listing; resume not tested | Dynamic/local catalog verified | Live 7/7 input | Partial |
+| Gemini CLI | Verified 0.59.0 on Windows | Unknown non-interactively | Resume pending auth | Selection | Contract tested | Partial |
+| Kiro CLI | Verified 2.21.3 in prior Windows QA | Verified in prior QA | Same-identity resume verified | Dynamic catalog verified | Contract tested | Partial; isolated Windows identities unsupported |
+| Kimi Code CLI | Verified 0.42.0 on Windows | Pending provider login | Empty JSON listing verified; resume pending auth | Selection pending auth | Contract tested | Partial |
+| Grok Build | Verified 1.0.30 on Windows | Signed-out boundary verified | Session metadata contract; resume pending auth | Dynamic catalog verified | Contract tested | Partial |
 
-See the [full compatibility matrix](docs/providers/compatibility.md) and the evidence for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), and [Kiro CLI](docs/providers/kiro.md).
+See the [full compatibility matrix](docs/providers/compatibility.md), [alpha.2 release QA matrix](docs/qa/release-provider-matrix.md), and provider guides for [Codex](docs/providers/codex.md), [Claude Code](docs/providers/claude.md), [GitHub Copilot](docs/providers/github-copilot.md), [Cursor](docs/providers/cursor.md), [OpenCode](docs/providers/opencode.md), [Gemini CLI](docs/providers/gemini.md), [Kiro](docs/providers/kiro.md), [Kimi Code](docs/providers/kimi.md), and [Grok Build](docs/providers/grok.md).
+
+A coding agent is not a model provider. For example, Cursor or GitHub Copilot can offer models from several vendors, while OpenCode can target local runtimes. ContextWake registers the agent once and stores provider/model selection separately.
 
 ## How context continuity works
 
@@ -81,15 +89,20 @@ The provider resumes its own session. ContextWake only offers this path when the
 ### Portable Handoff
 
 ```text
-Codex / Personal
+GitHub Copilot
        |
-       | switch to Claude / Work
+       | ContextWake checkpoint
        v
-   Checkpoint  -->  AWHF handoff  -->  new Claude Code session
-                                                |
-                                                v
-                                  Restored from Handoff
+Portable AWHF handoff  -->  new Cursor session
+                                     |
+                                     v
+                         Restored from Handoff
 ```
+
+That flow was exercised with authenticated CLIs against the deterministic CSV
+fixture: Cursor reconstructed all seven scored project fields plus the exact
+branch, HEAD, and staged/unstaged/untracked counts. Other pairings remain
+capability-specific and are reported in the QA matrix rather than implied here.
 
 A handoff can contain objective, current task, completed work, decisions, constraints, changed files, Git summary, validation results, known issues, pending work, and trusted project instructions. It excludes credentials, hidden reasoning, chain-of-thought, and inaccessible provider state.
 
@@ -97,34 +110,36 @@ A handoff can contain objective, current task, completed work, decisions, constr
 
 ### Windows x86_64
 
-Download `contextwake-v0.1.0-alpha.1-windows-x86_64.zip` and `SHA256SUMS` from the [v0.1.0-alpha.1 prerelease](https://github.com/mikeangelocasono/ContextWake/releases/tag/v0.1.0-alpha.1), verify the archive, extract it, and run:
+Download `contextwake-v0.1.0-alpha.2-windows-x86_64.zip` and `SHA256SUMS` from the [v0.1.0-alpha.2 prerelease](https://github.com/mikeangelocasono/ContextWake/releases/tag/v0.1.0-alpha.2), verify the archive, extract it, and run:
 
 ```powershell
-Get-FileHash .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -Algorithm SHA256
-Expand-Archive .\contextwake-v0.1.0-alpha.1-windows-x86_64.zip -DestinationPath .
-.\contextwake-v0.1.0-alpha.1-windows-x86_64\ctxwake.exe doctor
+Get-FileHash .\contextwake-v0.1.0-alpha.2-windows-x86_64.zip -Algorithm SHA256
+Expand-Archive .\contextwake-v0.1.0-alpha.2-windows-x86_64.zip -DestinationPath .
+.\contextwake-v0.1.0-alpha.2-windows-x86_64\ctx.exe doctor
 ```
 
 The alpha executable is unsigned. Do not disable Defender or other platform protection; compare its hash with `SHA256SUMS`.
 
+The archive contains `ctx.exe` and the temporary compatibility alias `ctxwake.exe`.
+
 ### Linux x86_64
 
-Download `contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz` and `SHA256SUMS` from the prerelease, then:
+Download `contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz` and `SHA256SUMS` from the prerelease, then:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
-tar -xzf contextwake-v0.1.0-alpha.1-linux-x86_64.tar.gz
-./contextwake-v0.1.0-alpha.1-linux-x86_64/ctxwake doctor
+tar -xzf contextwake-v0.1.0-alpha.2-linux-x86_64.tar.gz
+./contextwake-v0.1.0-alpha.2-linux-x86_64/ctx doctor
 ```
 
 ### macOS
 
-Download `contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz` and `SHA256SUMS` from the prerelease, then:
+Download `contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz` and `SHA256SUMS` from the prerelease, then:
 
 ```sh
-shasum -a 256 contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
-tar -xzf contextwake-v0.1.0-alpha.1-macos-aarch64.tar.gz
-./contextwake-v0.1.0-alpha.1-macos-aarch64/ctxwake doctor
+shasum -a 256 contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz
+tar -xzf contextwake-v0.1.0-alpha.2-macos-aarch64.tar.gz
+./contextwake-v0.1.0-alpha.2-macos-aarch64/ctx doctor
 ```
 
 The Apple Silicon artifact is GitHub Actions-built but unsigned and not notarized. Keep Gatekeeper enabled, verify the checksum, and use macOS's normal explicit approval flow if you choose to run this alpha. Automated CI is not physical-device TUI validation.
@@ -137,35 +152,35 @@ Install Rust 1.88 or newer and Git, then:
 git clone https://github.com/mikeangelocasono/ContextWake.git
 cd ContextWake
 cargo build --release --locked
-./target/release/ctxwake --version
+./target/release/ctx --version
 ```
 
-On Windows, run `.\target\release\ctxwake.exe --version` instead. Coding-agent CLIs are optional unless you want to use their adapters.
+On Windows, run `.\target\release\ctx.exe --version` instead. ContextWake also ships a temporary `ctxwake` compatibility executable in release archives. Coding-agent CLIs are optional unless you want to use their adapters.
 
 ## Quick Start
 
 ```sh
 # Inspect the machine and current directory
-ctxwake doctor
-ctxwake status
-ctxwake agent detect
+ctx doctor
+ctx status
+ctx agent detect
 
 # Register a legitimate local profile and this workspace
-ctxwake profile add Personal --agent codex --model-provider openai
-ctxwake workspace add .
+ctx profile add Personal --agent codex --model-provider openai
+ctx workspace add .
 
 # Capture accessible project state
-ctxwake checkpoint create --objective "Continue the current implementation"
-ctxwake checkpoint list
+ctx checkpoint create --objective "Continue the current implementation"
+ctx checkpoint list
 
 # Launch the TUI
-ctxwake
+ctx
 ```
 
 Authenticate through the coding agent when needed:
 
 ```sh
-ctxwake profile login personal
+ctx profile login personal
 ```
 
 ContextWake initiates the provider-owned login flow; it does not ask you to paste a token into its configuration.
@@ -176,24 +191,24 @@ The CLI and TUI use the same application services and SQLite state.
 
 | Area | Useful commands |
 |---|---|
-| Status | `ctxwake status`, `ctxwake doctor --verbose` |
-| Agents | `ctxwake agent list`, `ctxwake agent detect`, `ctxwake agent info codex` |
-| Profiles | `ctxwake profile add`, `list`, `show`, `use`, `login`, `logout`, `remove` |
-| Workspaces | `ctxwake workspace add`, `list`, `show`, `open`, `validate`, `remove` |
-| Sessions | `ctxwake session sync`, `list`, `show`, `resume`, `archive` |
-| Checkpoints | `ctxwake checkpoint create`, `list`, `show`, `export`, `delete` |
-| Handoffs | `ctxwake handoff create`, `list`, `show`, `preview`, `export`, `import`, `continue` |
-| Models | `ctxwake model list`, `ctxwake model select` |
-| Configuration | `ctxwake config show`, `path`, `validate`, `set` |
-| Automation | `ctxwake --json ...`, `ctxwake completion <shell>` |
+| Status | `ctx status`, `ctx doctor --verbose` |
+| Agents | `ctx agent list`, `ctx agent detect`, `ctx agent info codex` |
+| Profiles | `ctx profile add`, `list`, `show`, `use`, `login`, `logout`, `remove` |
+| Workspaces | `ctx workspace add`, `list`, `show`, `open`, `validate`, `remove` |
+| Sessions | `ctx session sync`, `list`, `show`, `resume`, `archive` |
+| Checkpoints | `ctx checkpoint create`, `list`, `show`, `export`, `delete` |
+| Handoffs | `ctx handoff create`, `list`, `show`, `preview`, `export`, `import`, `continue` |
+| Models | `ctx model list`, `ctx model select` |
+| Configuration | `ctx config show`, `path`, `validate`, `set` |
+| Automation | `ctx --json ...`, `ctx completion <shell>` |
 
-Run `ctxwake <command> --help` for exact arguments. Use `--ascii` when the terminal cannot render Unicode status markers.
+Run `ctx <command> --help` for exact arguments. The legacy `ctxwake` executable remains available as a compatibility alias during the alpha migration. Use `--ascii` when the terminal cannot render Unicode status markers.
 
 ## Example workflow
 
 ```sh
 # While Codex / Personal is active in the current project
-ctxwake checkpoint create \
+ctx checkpoint create \
   --objective "Ship the authentication flow" \
   --task "Add refresh-token failure coverage" \
   --completed "Implemented token rotation" \
@@ -201,19 +216,19 @@ ctxwake checkpoint create \
   --pending "Add integration tests"
 
 # Switch explicitly; ContextWake creates continuity before activation
-ctxwake profile use work --handoff \
+ctx profile use work --handoff \
   --objective "Continue the authentication flow" \
   --workspace .
 
 # Review the generated package before starting a new provider session
-ctxwake handoff list
-ctxwake handoff preview <handoff-id>
-ctxwake handoff continue <handoff-id>
+ctx handoff list
+ctx handoff preview <handoff-id>
+ctx handoff continue <handoff-id>
 ```
 
 The last command starts a **new** agent session restored from the handoff. It is not reported as Native Resume.
 
-The repository also contains a [deterministic continuity demo](demo/README.md) that uses an explicitly labeled provider fixture and never presents mock interaction as a live provider response.
+The repository also contains a [deterministic continuity demo](demo/README.md) and a [seven-hop cross-agent QA matrix](docs/qa/cross-agent-continuity.md). Both distinguish artifact contract evidence from live destination-model comprehension.
 
 ## TUI controls
 
@@ -227,6 +242,7 @@ The repository also contains a [deterministic continuity demo](demo/README.md) t
 | `J`, `K`, arrows | Move selection |
 | `Enter` | Open or confirm the current action |
 | `/` | Search sessions |
+| `F` | Cycle agent filters on the capabilities screen |
 | `R` | Refresh local and provider state |
 | `Esc` | Back or cancel |
 | `?` | Key reference |
@@ -244,7 +260,7 @@ Identity changes show Git evidence and require confirmation. Handoff previews re
 | Linux | `$XDG_CONFIG_HOME/contextwake` | `$XDG_DATA_HOME/contextwake` |
 | macOS | `~/Library/Application Support/dev.ContextWake.ContextWake` | Same application-support root |
 
-Use `ctxwake config path` or `ctxwake doctor --verbose` to see the exact paths selected on a machine. Repository-local, non-secret metadata lives in `.contextwake/project.toml`; see [configuration](docs/configuration.md).
+Use `ctx config path` or `ctx doctor --verbose` to see the exact paths selected on a machine. Repository-local, non-secret metadata lives in `.contextwake/project.toml`; see [configuration](docs/configuration.md).
 
 ## Security and privacy
 
@@ -259,23 +275,25 @@ Use `ctxwake config path` or `ctxwake doctor --verbose` to see the exact paths s
 
 ContextWake is not designed to bypass provider quotas, rate limits, subscription restrictions, authentication controls, or provider Terms of Service.
 
+ContextWake is an independent open-source project and is not affiliated with the coding-agent vendors. Product names and trademarks belong to their respective owners.
+
 Read the [security model](docs/security.md), [data classification](docs/data-classification.md), and [vulnerability reporting policy](SECURITY.md).
 
 ## Platform support
 
 | Platform | Current evidence |
 |---|---|
-| Windows 11 x86_64 | Native build, 83 tests, release executable, TUI, and five-agent detection verified |
-| Linux x86_64 | WSL build, 87 tests, Cargo package, audit, and extracted artifact verified |
-| macOS Apple Silicon | GitHub-hosted format, strict Clippy, 87 tests, release build, packaging, and checksum automation passed; no physical-device TUI QA |
+| Windows 11 x86_64 | Native format/check/strict Clippy and 119 tests; live Copilot/Cursor resume plus Cursor/OpenCode comprehension QA |
+| Linux x86_64 | WSL Rust 1.88 format/check/strict Clippy, 120 tests, optimized build, RustSec audit, and package verification passed |
+| macOS Apple Silicon | GitHub-hosted format/strict Clippy, tests, release build, binary smoke tests, and PATH-collision check required; no physical-device TUI QA |
 
 ## Current limitations
 
-- Authenticated native resume remains pending for Codex, Claude Code, OpenCode, and Gemini CLI.
+- Authenticated native resume is verified for Copilot and the prior Kiro same-identity path; it remains pending for the other adapters.
 - Kiro same-identity resume is verified, but its Windows OS credential is shared across `KIRO_HOME` roots; ContextWake does not advertise isolated Kiro profiles.
-- Cross-agent artifact fidelity is verified; authenticated destination-agent comprehension still needs deliberately authorized disposable profiles.
+- Cursor settings can be scoped, but Windows QA showed that the provider-owned identity remains available across `CURSOR_CONFIG_DIR` roots; ContextWake does not claim isolated Cursor identities. Copilot, Kimi, and Grok multi-identity isolation awaits authenticated QA.
+- Cross-agent artifact fidelity is verified. Live comprehension passed at 7/7 for Copilot -> Cursor and Cursor -> OpenCode, was partial at 5/7 for Codex -> Copilot, and remains untested for other pairs.
 - Current adapters do not expose reliable provider quota balances or context percentages.
-- The TUI refresh path is synchronous; event-driven background refresh is planned.
 - Windows artifacts are unsigned; macOS signing, notarization, and physical-device QA remain pending.
 
 See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remaining work.
@@ -283,7 +301,7 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remain
 ## Roadmap
 
 - Complete authenticated provider resume and cross-agent comprehension QA.
-- Add event-driven TUI refresh and richer model selection.
+- Add a richer TUI model picker and persistent, non-secret provider-detection cache.
 - Extend session ingestion where providers expose stable structured metadata.
 - Add property/fuzz testing for handoff and provider parsers.
 - Design a signed, versioned adapter SDK before considering third-party plugins.
@@ -303,12 +321,16 @@ See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for evidence and remain
                               |
                        AgentAdapter API
                               |
-        +----------+----------+----------+----------+
-        |          |          |          |          |
-      Codex      Claude    OpenCode    Gemini      Kiro
+                  AgentAdapter registry
+             +------------+------------+
+             |            |            |
+          Existing     New vendors   Local/open
+             |            |            |
+       Codex/Claude   Copilot/Cursor   OpenCode
+       Gemini/Kiro    Kimi/Grok        model backends
 ```
 
-Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md) and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), and [adapter](docs/adr/0003-provider-adapter-model.md) decisions.
+Agents, model providers, models, profiles, workspaces, sessions, checkpoints, and handoffs remain separate domain objects. Read the [architecture](docs/architecture.md), [provider guide](docs/providers/adding-a-provider.md), and the [language/TUI](docs/adr/0001-language-and-tui-stack.md), [storage](docs/adr/0002-storage.md), [adapter](docs/adr/0003-provider-adapter-model.md), [CLI command](docs/adr/0005-cli-command-name.md), and [ACP transport](docs/adr/0006-acp-provider-transport.md) decisions.
 
 ## Development and testing
 

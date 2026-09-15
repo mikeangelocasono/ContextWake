@@ -8,7 +8,7 @@ Evidence was revalidated on 11 September 2026 against the official OpenCode docu
 | Provider credential status | PARTIALLY CONFIRMED | `opencode auth list` is parsed as credential presence; local backends may require no credential |
 | Provider login | CONFIRMED | Provider-owned `opencode auth login`; ContextWake never reads the credential file |
 | Provider logout | UNSUPPORTED AS PROFILE-WIDE ACTION | OpenCode requires a particular provider ID; ContextWake refuses to delete every provider credential implicitly |
-| Session listing | CONFIRMED | JSON metadata is imported explicitly by `ctxwake session sync` and filtered to the canonical workspace |
+| Session listing | CONFIRMED | JSON metadata is imported explicitly by `ctx session sync` and filtered to the canonical workspace |
 | Native continuation | CONFIRMED | Same-profile `opencode --session <id>` implemented; authenticated live-resume QA remains outstanding |
 | Model selection/catalog | CONFIRMED | Dynamic `provider/model` catalog listing and exact selection validation implemented |
 | Multiple/custom/local providers | CONFIRMED | Static examples plus arbitrary safe custom provider IDs; concrete models are validated by OpenCode |
@@ -20,7 +20,7 @@ OpenCode demonstrates why Coding Agent and Model Provider are separate objects: 
 
 ContextWake starts OpenCode with external plugins disabled (`--pure`), automatic sharing disabled, automatic updating/pruning disabled, and terminal-title changes disabled. These controls reduce ambient mutation and plugin risk; they do not sandbox the coding agent.
 
-`ctxwake session sync` reads only the official public JSON fields (`id`, `title`, timestamps, and directory). It does not read OpenCode's SQLite database or transcript content. Empty output is accepted as an empty session list because this is observed behavior for a fresh isolated profile.
+`ctx session sync` reads only the official public JSON fields (`id`, `title`, timestamps, and directory). It does not read OpenCode's SQLite database or transcript content. Empty output is accepted as an empty session list because this is observed behavior for a fresh isolated profile.
 
 ## Official references
 

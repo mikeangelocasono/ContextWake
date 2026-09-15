@@ -10,4 +10,6 @@ Build the release binary, then run:
 
 The script leaves the disposable repository and isolated state under the operating-system temporary directory for inspection and prints both paths. It never launches a coding agent, authenticates, executes repository validation commands, commits user repositories, or calls a network service.
 
+The broader automated CSV fixture and seven-hop representative matrix are documented in [cross-agent continuity QA](../docs/qa/cross-agent-continuity.md).
+
 A GIF/asciinema capture is intentionally deferred until the recording tool is available. Any future recording must retain the explicit `DETERMINISTIC PROVIDER FIXTURE` label.

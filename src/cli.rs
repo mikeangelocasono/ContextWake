@@ -4,7 +4,7 @@ use clap::{Args, Parser, Subcommand};
 
 #[derive(Clone, Debug, Parser)]
 #[command(
-    name = "ctxwake",
+    name = "ctx",
     version,
     about = "Terminal-native identity and continuity manager for AI coding CLIs",
     long_about = None

@@ -3,7 +3,7 @@ use std::path::Path;
 use serde_json::Value;
 
 fn command(home: &Path) -> assert_cmd::Command {
-    let mut command = assert_cmd::cargo::cargo_bin_cmd!("ctxwake");
+    let mut command = assert_cmd::cargo::cargo_bin_cmd!("ctx");
     command
         .env("CONTEXTWAKE_HOME", home)
         .env("CONTEXTWAKE_CODEX_BIN", "contextwake-test-missing-codex")
@@ -16,13 +16,53 @@ fn json_output(home: &Path, args: &[&str]) -> Value {
         .arg("--json")
         .args(args)
         .output()
-        .expect("run ctxwake");
+        .expect("run ctx");
     assert!(
         output.status.success(),
         "command failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).expect("valid JSON")
+}
+
+#[test]
+fn canonical_cli_reports_contextwake_version_and_help() {
+    let version = assert_cmd::cargo::cargo_bin_cmd!("ctx")
+        .arg("--version")
+        .output()
+        .expect("run ctx --version");
+    assert!(version.status.success());
+    let version_text = String::from_utf8_lossy(&version.stdout);
+    assert!(version_text.starts_with("ctx "));
+    assert!(version_text.contains(env!("CARGO_PKG_VERSION")));
+
+    let help = assert_cmd::cargo::cargo_bin_cmd!("ctx")
+        .arg("--help")
+        .output()
+        .expect("run ctx --help");
+    assert!(help.status.success());
+    let help_text = String::from_utf8_lossy(&help.stdout);
+    assert!(help_text.contains("Usage: ctx"));
+    assert!(help_text.contains("ContextWake"));
+}
+
+#[test]
+fn legacy_cli_alias_reports_the_same_version() {
+    let output = assert_cmd::cargo::cargo_bin_cmd!("ctxwake")
+        .arg("--version")
+        .output()
+        .expect("run ctxwake --version");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.starts_with("ctxwake "));
+    assert!(stdout.contains(env!("CARGO_PKG_VERSION")));
+
+    let help = assert_cmd::cargo::cargo_bin_cmd!("ctxwake")
+        .arg("--help")
+        .output()
+        .expect("run ctxwake --help");
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: ctxwake"));
 }
 
 #[test]
@@ -34,11 +74,25 @@ fn legacy_home_override_remains_compatible_after_rename() {
         .env("AGENTDECK_HOME", &legacy_home)
         .args(["config", "path"])
         .output()
-        .expect("run ctxwake with legacy home");
+        .expect("run ctxwake compatibility alias with legacy home");
     assert!(output.status.success());
     let reported = String::from_utf8(output.stdout).expect("UTF-8 path");
     assert!(reported.contains(&legacy_home.to_string_lossy().to_string()));
     assert!(legacy_home.join("data/state.sqlite3").is_file());
+}
+
+#[test]
+fn status_without_a_profile_has_no_implicit_agent() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("home");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+
+    let status = json_output(&home, &["status", &workspace.to_string_lossy()]);
+    assert!(status["active_profile"].is_null());
+    assert_eq!(status["agent"]["agent_id"], "unconfigured");
+    assert_eq!(status["agent"]["installed"], false);
+    assert_eq!(status["agent"]["auth_state"], "unknown");
 }
 
 #[test]
@@ -217,7 +271,7 @@ fn errors_are_structured_and_do_not_echo_terminal_control_sequences() {
         .arg("--json")
         .args(["profile", "show", "\u{1b}[31mmissing"])
         .output()
-        .expect("run ctxwake");
+        .expect("run ctx");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!stderr.contains('\u{1b}'));
@@ -290,7 +344,20 @@ fn agent_and_model_are_distinct_and_persisted() {
 
     let agents = json_output(&home, &["agent", "list"]);
     let agents = agents.as_array().expect("agent list");
-    assert_eq!(agents.len(), 5);
+    assert_eq!(agents.len(), 9);
+    for expected in [
+        "codex",
+        "claude",
+        "github-copilot",
+        "cursor",
+        "opencode",
+        "gemini",
+        "kiro",
+        "kimi",
+        "grok",
+    ] {
+        assert!(agents.iter().any(|agent| agent["id"] == expected));
+    }
     assert!(
         agents.iter().all(|agent| {
             agent["adapter"] == "implemented" && agent["capabilities"].is_object()

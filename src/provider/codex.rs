@@ -1,10 +1,6 @@
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::Duration;
-
-use wait_timeout::ChildExt;
 
 use crate::error::{ContextWakeError, IoContext, Result};
 use crate::model::{
@@ -12,7 +8,8 @@ use crate::model::{
     ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::security::{SecretScanner, sanitize_terminal, validate_external_reference};
+use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::security::{validate_external_reference, validate_session_reference};
 
 #[derive(Clone, Debug)]
 pub struct CodexAdapter {
@@ -20,15 +17,6 @@ pub struct CodexAdapter {
 }
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PROBE_OUTPUT: usize = 65_536;
-
-#[derive(Debug)]
-pub(crate) struct ProbeOutput {
-    pub(crate) success: bool,
-    pub(crate) timed_out: bool,
-    pub(crate) stdout: Vec<u8>,
-    pub(crate) stderr: Vec<u8>,
-}
 
 impl CodexAdapter {
     pub fn discover() -> Self {
@@ -54,7 +42,7 @@ impl CodexAdapter {
 
     fn stable(detail: &str) -> Capability {
         Capability {
-            support: CapabilitySupport::Supported,
+            support: CapabilitySupport::Verified,
             maturity: CapabilityMaturity::Stable,
             detail: detail.into(),
         }
@@ -143,6 +131,10 @@ impl AgentAdapter for CodexAdapter {
         "codex"
     }
 
+    fn aliases(&self) -> &'static [&'static str] {
+        &["codex-cli"]
+    }
+
     fn display_name(&self) -> &'static str {
         "OpenAI Codex CLI"
     }
@@ -201,6 +193,14 @@ impl AgentAdapter for CodexAdapter {
                 maturity: CapabilityMaturity::Experimental,
                 detail: "Codex app-server exists but is not used by the P0 adapter".into(),
             },
+            non_interactive_mode: Self::stable("`codex exec`"),
+            structured_output: Self::stable("`codex exec --json` emits JSONL events"),
+            acp: Self::unavailable("Codex exposes app-server, not a native ACP server"),
+            mcp: Self::stable("Codex supports configured MCP servers"),
+            portable_handoff: Self::stable("interactive launch with an explicit AWHF context"),
+            cloud_handoff: Self::unavailable(
+                "ContextWake does not initiate Codex cloud tasks from the local adapter",
+            ),
             local_models: Self::stable("`--oss` supports Ollama or LM Studio"),
             profile_isolation: Capability {
                 support: CapabilitySupport::Partial,
@@ -357,7 +357,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
-        let session_id = validate_external_reference(session_id)?;
+        let session_id = validate_session_reference(session_id)?;
         let status = self
             .base_command(Some(agent_home))
             .arg("resume")
@@ -426,92 +426,10 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
-pub(crate) fn safe_agent_text(value: &str) -> String {
-    let redacted = SecretScanner::new().redact(&sanitize_terminal(value)).text;
-    compact_agent_text(&redacted, 512)
-        .unwrap_or_else(|| "Provider returned no diagnostic output".into())
-}
-
-pub(crate) fn safe_probe_diagnostic(output: &ProbeOutput) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let source = if stderr.trim().is_empty() {
-        stdout.as_ref()
-    } else {
-        stderr.as_ref()
-    };
-    let redacted = SecretScanner::new().redact(&sanitize_terminal(source)).text;
-    let selected = redacted
-        .lines()
-        .find(|line| line.trim_start().to_ascii_lowercase().starts_with("error:"))
-        .or_else(|| redacted.lines().find(|line| !line.trim().is_empty()))
-        .unwrap_or_default();
-    compact_agent_text(selected, 512)
-        .unwrap_or_else(|| "Provider probe failed without diagnostic output".into())
-}
-
-fn compact_agent_text(value: &str, max_characters: usize) -> Option<String> {
-    let compact = value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(max_characters)
-        .collect::<String>();
-    (!compact.is_empty()).then_some(compact)
-}
-
-pub(crate) fn run_probe(mut command: Command, timeout: Duration) -> std::io::Result<ProbeOutput> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn()?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| std::io::Error::other("provider probe standard output was not captured"))?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        std::io::Error::other("provider probe diagnostic output was not captured")
-    })?;
-    let stdout_reader = thread::spawn(move || read_bounded(stdout));
-    let stderr_reader = thread::spawn(move || read_bounded(stderr));
-    let status = child.wait_timeout(timeout)?;
-    let (success, timed_out) = if let Some(status) = status {
-        (status.success(), false)
-    } else {
-        let _ = child.kill();
-        let _ = child.wait();
-        (false, true)
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| std::io::Error::other("provider output reader failed"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| std::io::Error::other("provider diagnostic reader failed"))??;
-    Ok(ProbeOutput {
-        success,
-        timed_out,
-        stdout,
-        stderr,
-    })
-}
-
-fn read_bounded(mut reader: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut output = Vec::new();
-    let mut chunk = [0_u8; 8_192];
-    loop {
-        let count = reader.read(&mut chunk)?;
-        if count == 0 {
-            break;
-        }
-        let remaining = MAX_PROBE_OUTPUT.saturating_sub(output.len());
-        output.extend_from_slice(&chunk[..count.min(remaining)]);
-    }
-    Ok(output)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::common::ProbeOutput;
 
     #[test]
     fn capability_matrix_does_not_claim_experimental_features() {
