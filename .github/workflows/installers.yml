@@ -96,6 +96,10 @@ jobs:
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v99.99.99 -InstallDir (Join-Path $negativeRoot "missing") -NoPathUpdate
           if ($LASTEXITCODE -eq 0) { throw "missing release unexpectedly installed" }
 
+          # The final installer failure is expected. Clear its native exit code so
+          # the test step itself reports success after all rejection assertions pass.
+          $global:LASTEXITCODE = 0
+
   unix:
     strategy:
       fail-fast: false
