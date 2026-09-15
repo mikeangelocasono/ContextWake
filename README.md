@@ -48,28 +48,21 @@ separately installed and own their authentication.
 
 ## Supported AI Coding Agents
 
-All nine adapters are available in alpha. Their overall status is currently
-`Partial` because live authentication, resume, model, and platform coverage
-varies by agent.
+ContextWake currently supports these terminal coding agents:
 
-| Agent | Status |
-|---|---|
-| Codex CLI | Partial |
-| Claude Code | Partial |
-| GitHub Copilot CLI | Partial |
-| Cursor CLI | Partial |
-| OpenCode | Partial |
-| Gemini CLI | Partial |
-| Kiro CLI | Partial |
-| Kimi Code CLI | Partial |
-| Grok Build | Partial |
+- Codex CLI
+- Claude Code
+- GitHub Copilot CLI
+- Cursor CLI
+- OpenCode
+- Gemini CLI
+- Kiro CLI
+- Kimi Code CLI
+- Grok Build
 
-Copilot and Cursor native resume have passed known-state tests. Kiro has prior
-same-identity resume evidence, and live portable-handoff comprehension has
-passed for Copilot to Cursor and Cursor to OpenCode.
-
-See the [full compatibility matrix](docs/providers/compatibility.md) for exact
-capabilities, tested versions, and limitations.
+Model availability and model selection are managed by each agent and its
+provider account. See the [full compatibility matrix](docs/providers/compatibility.md)
+for exact capabilities, tested versions, and limitations.
 
 ## Installation
 
