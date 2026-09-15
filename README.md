@@ -73,7 +73,7 @@ clone are not required.
 ### Windows PowerShell
 
 ```powershell
-irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
 ```
 
 The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
@@ -82,7 +82,7 @@ The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
 ### Windows Command Prompt
 
 ```bat
-powershell -NoProfile -Command "irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1' | iex"
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1')))"
 ```
 
 Open a new Command Prompt if the installer added `ctx` to `PATH`.

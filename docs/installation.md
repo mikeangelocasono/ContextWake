@@ -25,7 +25,7 @@ is currently no prebuilt Windows ARM64, Linux ARM64, or Intel macOS archive.
 Install:
 
 ```powershell
-irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
 ```
 
 The script supports Windows PowerShell 5.1 and PowerShell 7. It downloads the
@@ -55,7 +55,7 @@ Environment variables work with the one-line installer too:
 ```powershell
 $env:CONTEXTWAKE_VERSION = 'v0.1.0-alpha.2'
 $env:CONTEXTWAKE_INSTALL_DIR = 'C:\Tools\ContextWake'
-irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
 ```
 
 Custom directories are not added to `PATH` automatically unless the PowerShell
@@ -67,7 +67,7 @@ installer is allowed to update the user `PATH`. Pass `-NoPathUpdate` or set
 Install from CMD:
 
 ```bat
-powershell -NoProfile -Command "irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1' | iex"
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1')))"
 ```
 
 Open a new Command Prompt if the installer added the installation directory to
@@ -135,7 +135,7 @@ mechanism; there is no `ctx update` command.
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/uninstall.ps1 | iex
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/uninstall.ps1)))
 ```
 
 Linux or macOS:
