@@ -73,7 +73,7 @@ clone are not required.
 ### Windows PowerShell
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1)))
 ```
 
 The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
@@ -82,7 +82,7 @@ The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
 ### Windows Command Prompt
 
 ```bat
-powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1')))"
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1')))"
 ```
 
 Open a new Command Prompt if the installer added `ctx` to `PATH`.
@@ -90,13 +90,13 @@ Open a new Command Prompt if the installer added `ctx` to `PATH`.
 ### Linux x86_64
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh | sh
 ```
 
 ### macOS Apple Silicon
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh | sh
 ```
 
 Linux and macOS install to `~/.local/bin`. Open a new terminal if the installer

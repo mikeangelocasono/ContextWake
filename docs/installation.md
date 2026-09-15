@@ -25,7 +25,7 @@ is currently no prebuilt Windows ARM64, Linux ARM64, or Intel macOS archive.
 Install:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1)))
 ```
 
 The script supports Windows PowerShell 5.1 and PowerShell 7. It downloads the
@@ -36,7 +36,7 @@ user's `PATH` without changing the system `PATH`.
 To inspect the installer first:
 
 ```powershell
-Invoke-WebRequest https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1 -OutFile install-contextwake.ps1
+Invoke-WebRequest https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1 -OutFile install-contextwake.ps1
 Get-Content .\install-contextwake.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install-contextwake.ps1
 ```
@@ -55,7 +55,7 @@ Environment variables work with the one-line installer too:
 ```powershell
 $env:CONTEXTWAKE_VERSION = 'v0.1.0-alpha.2'
 $env:CONTEXTWAKE_INSTALL_DIR = 'C:\Tools\ContextWake'
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1)))
 ```
 
 Custom directories are not added to `PATH` automatically unless the PowerShell
@@ -67,7 +67,7 @@ installer is allowed to update the user `PATH`. Pass `-NoPathUpdate` or set
 Install from CMD:
 
 ```bat
-powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.ps1')))"
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1')))"
 ```
 
 Open a new Command Prompt if the installer added the installation directory to
@@ -78,7 +78,7 @@ the user `PATH`. No execution-policy or security setting is changed globally.
 Install:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh | sh
 ```
 
 The script requires standard platform tools: `curl`, `tar`, `awk`, `grep`,
@@ -90,7 +90,7 @@ that change.
 To inspect the installer first:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSLo install-contextwake.sh https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/install.sh
+curl --proto '=https' --tlsv1.2 -fsSLo install-contextwake.sh https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.sh
 less install-contextwake.sh
 sh install-contextwake.sh
 ```
@@ -135,13 +135,13 @@ mechanism; there is no `ctx update` command.
 Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/uninstall.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/uninstall.ps1)))
 ```
 
 Linux or macOS:
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/abeeef76ff787b394d66f184c56c93e1311a6c5a/scripts/uninstall.sh | sh
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/uninstall.sh | sh
 ```
 
 Uninstall removes only `ctx`, `ctxwake`, and a PATH entry previously owned by
