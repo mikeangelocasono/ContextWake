@@ -4,6 +4,19 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- Checksum-verifying, user-local PowerShell and POSIX shell installers for the
+  existing GitHub Release archives.
+- State-preserving uninstall scripts and cross-platform installer CI covering
+  fresh installation, reinstall, PATH idempotency, failure handling, and both
+  `ctx` and `ctxwake`.
+
+### Changed
+
+- Made direct terminal installation the primary README path; Rust is now
+  required only when building ContextWake from source.
+
 ## [0.1.0-alpha.2] - 2026-09-14
 
 ### Added
