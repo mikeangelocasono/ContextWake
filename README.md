@@ -9,7 +9,7 @@ When one coding agent becomes unavailable or you want to switch tools, ContextWa
 helps the next agent understand the useful project state you were working with.
 
 <p align="center">
-  <img src="docs/assets/contextwake-hero.svg" alt="ContextWake — One workspace. Any coding agent. Keep your context." width="100%">
+  <img src="docs/assets/contextwake-hero.png" alt="ContextWake — One workspace. Any coding agent. Keep your context." width="100%">
 </p>
 
 <p align="center">
