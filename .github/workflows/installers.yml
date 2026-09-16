@@ -34,7 +34,7 @@ jobs:
 
               New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
               Set-Content -LiteralPath (Join-Path $stateDir "preserve-sentinel") -Value "preserve"
-              .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir $installDir
+              .\scripts\install.ps1 -Version latest -InstallDir $installDir
               $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
               $entries = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $installDir.TrimEnd('\') })
               if ($entries.Count -ne 1) { throw "reinstall duplicated the user PATH entry" }
@@ -59,14 +59,14 @@ jobs:
         shell: pwsh
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "contextwake-pwsh\bin"
-          .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir $installDir -NoPathUpdate
+          .\scripts\install.ps1 -Version latest -InstallDir $installDir -NoPathUpdate
           & (Join-Path $installDir "ctx.exe") --version
           & (Join-Path $installDir "ctxwake.exe") --version
           .\scripts\uninstall.ps1 -InstallDir $installDir
       - name: Command Prompt install and use
         shell: cmd
         run: |
-          set "CONTEXTWAKE_VERSION=v0.1.0-alpha.2"
+          set "CONTEXTWAKE_VERSION=latest"
           set "CONTEXTWAKE_INSTALL_DIR=%RUNNER_TEMP%\contextwake-cmd\bin"
           set "CONTEXTWAKE_HOME=%RUNNER_TEMP%\contextwake-cmd\state"
           set "CONTEXTWAKE_NO_PATH_UPDATE=1"
@@ -83,13 +83,13 @@ jobs:
         run: |
           $negativeRoot = Join-Path $env:RUNNER_TEMP "contextwake-negative"
           $env:CONTEXTWAKE_TEST_CORRUPT_ARCHIVE = "1"
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir (Join-Path $negativeRoot "corrupt") -NoPathUpdate
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version latest -InstallDir (Join-Path $negativeRoot "corrupt") -NoPathUpdate
           if ($LASTEXITCODE -eq 0) { throw "corrupted archive unexpectedly installed" }
           if (Test-Path (Join-Path $negativeRoot "corrupt\ctx.exe")) { throw "corrupted ctx.exe was installed" }
           Remove-Item Env:CONTEXTWAKE_TEST_CORRUPT_ARCHIVE
 
           $env:CONTEXTWAKE_TEST_ARCHITECTURE = "ARM64"
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version v0.1.0-alpha.2 -InstallDir (Join-Path $negativeRoot "unsupported") -NoPathUpdate
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1 -Version latest -InstallDir (Join-Path $negativeRoot "unsupported") -NoPathUpdate
           if ($LASTEXITCODE -eq 0) { throw "unsupported architecture unexpectedly installed" }
           Remove-Item Env:CONTEXTWAKE_TEST_ARCHITECTURE
 
@@ -152,13 +152,13 @@ jobs:
         run: |
           set -eu
           negative_root=$(mktemp -d "${RUNNER_TEMP}/contextwake-negative.XXXXXX")
-          if CONTEXTWAKE_VERSION=v0.1.0-alpha.2 CONTEXTWAKE_INSTALL_DIR="$negative_root/corrupt" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_CORRUPT_ARCHIVE=1 sh scripts/install.sh; then
+          if CONTEXTWAKE_VERSION=latest CONTEXTWAKE_INSTALL_DIR="$negative_root/corrupt" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_CORRUPT_ARCHIVE=1 sh scripts/install.sh; then
               echo "corrupted archive unexpectedly installed" >&2
               exit 1
           fi
           test ! -e "$negative_root/corrupt/ctx"
 
-          if CONTEXTWAKE_VERSION=v0.1.0-alpha.2 CONTEXTWAKE_INSTALL_DIR="$negative_root/unsupported" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_ARCHITECTURE=riscv64 sh scripts/install.sh; then
+          if CONTEXTWAKE_VERSION=latest CONTEXTWAKE_INSTALL_DIR="$negative_root/unsupported" CONTEXTWAKE_NO_PATH_UPDATE=1 CONTEXTWAKE_TEST_ARCHITECTURE=riscv64 sh scripts/install.sh; then
               echo "unsupported architecture unexpectedly installed" >&2
               exit 1
           fi

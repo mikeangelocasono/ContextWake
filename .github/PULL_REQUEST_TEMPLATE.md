@@ -1,6 +1,6 @@
 ## Summary
 
-## Validation
+## Testing
 
 - [ ] `cargo fmt --all -- --check`
 - [ ] `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`
@@ -12,6 +12,8 @@
 Describe changes to credentials, process execution, repository trust, handoffs,
 updates, or provider protocols. Write `none` when not applicable.
 
-## Provider capability evidence
+## Provider impact
 
-Link official documentation or reproducible observations for capability changes.
+Describe any provider behavior or capability changes. Link official
+documentation or reproducible observations when applicable; write `none` when
+not applicable.

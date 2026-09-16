@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand};
 #[command(
     name = "ctx",
     version,
-    about = "Terminal-native identity and continuity manager for AI coding CLIs",
+    about = "Terminal-native context continuity manager for AI coding CLIs",
     long_about = None
 )]
 pub struct Cli {

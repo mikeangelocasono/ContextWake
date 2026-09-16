@@ -1184,7 +1184,7 @@ fn render_home(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
         if wide {
             vec![
                 Line::from(format!("Session     {:.8}", session.id)),
-                Line::from(format!("Continuity  {}", session.continuity.as_str())),
+                Line::from(format!("Continuity  {}", session.continuity.label())),
             ]
         } else {
             Vec::new()
@@ -1478,7 +1478,7 @@ fn render_sessions(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) 
                     .as_deref()
                     .unwrap_or("provider id unavailable"),
                 session.agent_id,
-                session.continuity.as_str()
+                session.continuity.label()
             );
             ListItem::new(line).style(if index == state.selected {
                 Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
@@ -1540,7 +1540,7 @@ fn render_session_detail(frame: &mut ratatui::Frame<'_>, state: &UiState, area: 
             )),
             Line::from(format!("Started        {}", session.started_at)),
             Line::from(format!("Last seen      {}", session.last_seen_at)),
-            Line::from(format!("Continuity     {}", session.continuity.as_str())),
+            Line::from(format!("Continuity     {}", session.continuity.label())),
             Line::from(""),
             Line::from(Span::styled(resume_label, Style::default().fg(WARNING))),
             Line::from("ContextWake never treats a handoff-created session as a native resume."),

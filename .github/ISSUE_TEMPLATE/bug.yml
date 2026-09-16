@@ -6,6 +6,49 @@ body:
   - type: markdown
     attributes:
       value: Never attach provider auth files, tokens, API keys, or unredacted handoffs.
+  - type: input
+    id: contextwake_version
+    attributes:
+      label: ContextWake version
+      description: Output from `ctx --version`.
+      placeholder: ctx 0.1.0-alpha.3
+    validations:
+      required: true
+  - type: input
+    id: operating_system
+    attributes:
+      label: Operating system
+      description: Include the OS version and architecture.
+      placeholder: Windows 11 x86_64, Ubuntu 24.04 x86_64, or macOS 15 arm64
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Provider or coding agent
+      description: Use `none` if the issue is unrelated to a provider.
+      placeholder: Codex CLI
+    validations:
+      required: true
+  - type: input
+    id: provider_version
+    attributes:
+      label: Provider version
+      description: Use `none` if the issue is unrelated to a provider.
+      placeholder: 0.154.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - Direct installer
+        - Release archive
+        - Build from source
+        - Other
+    validations:
+      required: true
   - type: textarea
     id: behavior
     attributes:

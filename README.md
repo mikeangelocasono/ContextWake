@@ -5,6 +5,8 @@
 ContextWake is a terminal tool that helps you move between AI coding agents
 without rebuilding your project context by hand. It keeps your workspace, Git
 state, tasks, decisions, checkpoints, and provider sessions organized locally.
+When one coding agent becomes unavailable or you want to switch tools, ContextWake
+helps the next agent understand the useful project state you were working with.
 
 <p align="center">
   <img src="docs/assets/contextwake-hero.svg" alt="ContextWake — One workspace. Any coding agent. Keep your context." width="100%">
@@ -20,17 +22,29 @@ state, tasks, decisions, checkpoints, and provider sessions organized locally.
 > but some provider-specific capabilities are still being validated.
 
 The primary command is `ctx`, which launches the terminal interface. The
-`ctxwake` command remains available as a temporary compatibility alias. Adapters
+`ctxwake` command remains available as a compatibility alias. Adapters
 ship for Codex, Claude Code, GitHub Copilot, Cursor, OpenCode, Gemini, Kiro,
 Kimi Code, and Grok Build.
 
 ```text
-Cursor  -->  ContextWake checkpoint  -->  Portable handoff  -->  OpenCode
+GitHub Copilot CLI
+        |
+        v
+   ContextWake
+        |
+        v
+     Codex CLI
+  Restored from Handoff
 ```
 
-Your workspace, branch, changed files, current task, decisions, and pending work
-can move with you. When the same agent has a compatible provider session,
-ContextWake can use that agent's native resume feature instead.
+Copilot and Codex do not share the same native conversation. For a cross-agent
+switch, ContextWake creates a portable handoff containing accessible project
+state such as the workspace, branch, changed files, objective, task, completed
+work, decisions, constraints, pending work, and checkpoints. The destination
+starts a new session marked **Restored from Handoff**; credentials, hidden model
+reasoning, and provider-private conversation state do not move between agents.
+When the same agent has a compatible provider session, ContextWake can use that
+agent's native resume feature instead.
 
 ## Why ContextWake?
 
@@ -69,6 +83,12 @@ provider account. Run `ctx doctor` to see what is installed and
 The installers download an official GitHub release, verify its SHA-256 checksum,
 and install `ctx` plus the `ctxwake` compatibility command. Rust and a repository
 clone are not required.
+
+For most users, run the installer for your platform. It selects the latest
+compatible public alpha release. If you download an archive manually, choose
+the latest **Pre-release** on the [Releases page](https://github.com/mikeangelocasono/ContextWake/releases)
+and match its platform label: Windows x86_64, Linux x86_64, or macOS Apple
+Silicon.
 
 ### Windows PowerShell
 
@@ -214,41 +234,48 @@ reported capabilities. ContextWake reports unsupported features directly.
 
 ## Example: Switching AI Coding Agents
 
-Create profiles for two installed agents and register the project:
+This example moves from GitHub Copilot CLI to Codex CLI. The agents do not share
+the same native conversation; ContextWake carries the accessible project state
+forward in a portable handoff.
+
+Create profiles for both installed agents and register the project:
 
 ```sh
-ctx profile add Cursor --agent cursor
-ctx profile add OpenCode --agent opencode
+ctx profile add Copilot --agent copilot
+ctx profile add Codex --agent codex
 ctx workspace add .
-ctx profile use cursor
+ctx profile use copilot
 ```
 
-While working in Cursor, record the state you want the next agent to receive:
+While working in Copilot, record the state you want Codex to receive:
 
 ```sh
 ctx checkpoint create --objective "Add CSV export" --task "Implement field quoting" --decision "Use a streaming writer" --pending "Tests and README example"
 ```
 
-Switch profiles and ask ContextWake to create the handoff before activation:
+Switch profiles and ask ContextWake to create the handoff before activating Codex:
 
 ```sh
-ctx profile use opencode --handoff --objective "Continue CSV export" --workspace .
+ctx profile use codex --handoff --objective "Continue CSV export" --workspace .
 ctx handoff list
 ctx handoff preview <handoff-id>
 ctx handoff continue <handoff-id>
 ```
 
 ```text
-Cursor
+GitHub Copilot CLI
   |
   v
-Checkpoint
+ContextWake checkpoint
   |
   v
 Portable Handoff
   |
   v
-OpenCode
+Codex CLI
+  |
+  v
+Restored from Handoff
 ```
 
 Previewing is separate from launching. `ctx handoff continue` starts a new agent
@@ -260,8 +287,9 @@ session using the handoff; it does not claim to transfer the original chat.
 same-agent, same-profile session.
 
 **Portable Handoff** is used when moving between agents. It carries accessible
-project information such as the task, decisions, Git state, known issues, and
-pending work into a new session.
+project information such as the workspace, branch, changed files, current
+objective and task, completed work, decisions, constraints, Git state, known
+issues, pending work, and checkpoints into a new session.
 
 ContextWake does not transfer credentials, hidden model reasoning,
 chain-of-thought, or inaccessible provider state.
@@ -286,8 +314,8 @@ vendors.
 - Authenticated Kimi and Grok resume testing remains pending.
 - Cursor and Kiro cannot provide isolated identities on the tested Windows host.
 - Live local-model to commercial-agent continuity testing remains pending.
-- Windows and macOS binaries are unsigned; macOS has CI validation but no
-  physical-device TUI QA.
+- Windows x86_64 and macOS Apple Silicon alpha binaries are unsigned; macOS
+  has CI validation but no physical-device TUI QA.
 
 ## Documentation
 
