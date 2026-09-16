@@ -1,9 +1,9 @@
 [package]
 name = "contextwake"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 edition = "2024"
 rust-version = "1.88"
-description = "Terminal-native workspace, identity, session, and context continuity manager for AI coding CLIs"
+description = "Terminal-native context continuity manager for AI coding CLIs"
 license = "Apache-2.0"
 readme = "README.md"
 homepage = "https://github.com/mikeangelocasono/ContextWake"

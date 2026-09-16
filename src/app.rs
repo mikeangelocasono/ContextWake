@@ -511,7 +511,7 @@ impl Application {
             continuity: ContinuityKind::RestoredFromHandoff,
         })?;
         println!(
-            "New {} session completed using workspace handoff {handoff}. This was not a native session resume.",
+            "Restored from Handoff: started a new {} session using workspace handoff {handoff}. This was not a native session resume.",
             adapter.display_name()
         );
         Ok(())
@@ -970,7 +970,7 @@ impl Application {
                                 .provider_session_id
                                 .as_deref()
                                 .unwrap_or("provider id unavailable"),
-                            session.continuity.as_str()
+                            session.continuity.label()
                         );
                     }
                 }

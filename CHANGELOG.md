@@ -4,6 +4,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-09-16
+
 ### Added
 
 - Checksum-verifying, user-local PowerShell and POSIX shell installers for the
@@ -16,6 +18,8 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 - Made direct terminal installation the primary README path; Rust is now
   required only when building ContextWake from source.
+- Simplified the public repository presentation and documented the Copilot-to-
+  Codex portable-handoff flow.
 
 ## [0.1.0-alpha.2] - 2026-09-14
 

@@ -13,7 +13,7 @@ body:
     attributes:
       label: ContextWake version
       description: Output from `ctx --version`.
-      placeholder: ctx 0.1.0-alpha.2
+      placeholder: ctx 0.1.0-alpha.3
     validations:
       required: true
   - type: dropdown
@@ -31,8 +31,27 @@ body:
   - type: input
     id: agent
     attributes:
-      label: Coding agent and version
-      description: For example, `Codex CLI 0.154.0`. Do not include account identifiers.
+      label: Coding agent
+      description: For example, `Codex CLI`. Do not include account identifiers.
+    validations:
+      required: true
+  - type: input
+    id: provider_version
+    attributes:
+      label: Provider version
+      description: The installed coding-agent version.
+      placeholder: 0.154.0
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - Direct installer
+        - Release archive
+        - Build from source
+        - Other
     validations:
       required: true
   - type: input

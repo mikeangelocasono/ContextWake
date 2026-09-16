@@ -228,6 +228,15 @@ impl ContinuityKind {
             Self::Unknown => "unknown",
         }
     }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NativeResume => "Native Resume",
+            Self::RestoredFromHandoff => "Restored from Handoff",
+            Self::NewSession => "New Session",
+            Self::Unknown => "Unknown",
+        }
+    }
 }
 
 impl From<&str> for ContinuityKind {

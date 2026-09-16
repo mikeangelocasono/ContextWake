@@ -11,7 +11,7 @@ Set-StrictMode -Version 2.0
 $Repository = "mikeangelocasono/ContextWake"
 $RepositoryUrl = "https://github.com/$Repository"
 $ReleaseFeedUrl = "$RepositoryUrl/releases.atom"
-$DefaultReleaseVersion = "v0.1.0-alpha.2"
+$DefaultReleaseVersion = "v0.1.0-alpha.3"
 $PathMarkerName = ".contextwake-path-added"
 
 function Write-Step {
@@ -113,7 +113,7 @@ function Resolve-ReleaseVersion {
 
     if ($RequestedVersion -ne "latest") {
         if (-not (Test-ReleaseVersion -Value $RequestedVersion)) {
-            throw "version must be 'latest' or a release tag such as v0.1.0-alpha.2"
+            throw "version must be 'latest' or a release tag such as v0.1.0-alpha.3"
         }
         return $RequestedVersion
     }

@@ -8,6 +8,7 @@ Install Rust 1.88+, Git, and platform native build tools. Then run:
 
 ```text
 cargo fmt --all -- --check
+cargo check --locked --workspace --all-targets --all-features
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked --all-targets --all-features
 cargo build --locked --release

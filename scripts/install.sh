@@ -4,7 +4,7 @@ set -eu
 repository="mikeangelocasono/ContextWake"
 repository_url="https://github.com/$repository"
 release_feed_url="$repository_url/releases.atom"
-default_release_version="v0.1.0-alpha.2"
+default_release_version="v0.1.0-alpha.3"
 path_marker_name=".contextwake-path-added"
 path_line='export PATH="$HOME/.local/bin:$PATH" # ContextWake installer'
 
@@ -325,7 +325,7 @@ main() {
     requested_version=${CONTEXTWAKE_VERSION:-latest}
     if [ "$requested_version" != "latest" ]; then
         valid_version "$requested_version" ||
-            fail "version must be 'latest' or a release tag such as v0.1.0-alpha.2"
+            fail "version must be 'latest' or a release tag such as v0.1.0-alpha.3"
     fi
 
     install_directory=${CONTEXTWAKE_INSTALL_DIR:-"$HOME/.local/bin"}

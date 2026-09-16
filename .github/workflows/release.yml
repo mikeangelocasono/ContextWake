@@ -103,4 +103,4 @@ jobs:
       - name: Create prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --prerelease --generate-notes --title "ContextWake $GITHUB_REF_NAME"
+        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --prerelease --notes-file "docs/releases/$GITHUB_REF_NAME.md" --title "ContextWake $GITHUB_REF_NAME"

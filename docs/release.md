@@ -1,7 +1,9 @@
 # Release process
 
-The current alpha release is `v0.1.0-alpha.2`; its immutable predecessor
-`v0.1.0-alpha.1` remains available with its historical `ctxwake` executable.
+The current alpha release is `v0.1.0-alpha.3`; its immutable predecessors
+`v0.1.0-alpha.2` and `v0.1.0-alpha.1` remain available. Alpha.2 introduced the
+expanded nine-agent registry; alpha.3 adds the direct installation and public
+launch surface.
 Current archives contain canonical `ctx` plus the compatibility alias. Public
 publication remains an explicit maintainer action.
 
@@ -13,7 +15,7 @@ Run the final locked format, Clippy, test, release-build, RustSec audit, and Car
 
 ## CI
 
-The ordinary CI matrix validates Ubuntu, Windows, and macOS. The release workflow builds native archives for Linux x86_64, Windows x86_64 MSVC, and macOS Apple Silicon. A pushed tag must exactly match the Cargo version, for example `v0.1.0-alpha.2`; tag-triggered publication creates a GitHub prerelease. Manual dispatch builds artifacts but does not publish.
+The ordinary CI matrix validates Ubuntu, Windows, and macOS. The release workflow builds native archives for Linux x86_64, Windows x86_64 MSVC, and macOS Apple Silicon. A pushed tag must exactly match the Cargo version, for example `v0.1.0-alpha.3`; tag-triggered publication creates a GitHub prerelease using the matching checked-in release notes. Manual dispatch builds artifacts but does not publish.
 
 ## Signing and notarization
 
