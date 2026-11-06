@@ -117,16 +117,23 @@ fn npm_packaged_executable(npm_prefix: &Path) -> PathBuf {
 /// `claude auth status --json` prints `{"loggedIn": bool, ...}` for both
 /// states (and exits non-zero when signed out). The JSON is authoritative;
 /// anything unparsable is `Unknown` rather than a guess from the exit code.
+/// Notices printed before or after the JSON object are ignored.
 fn parse_auth_status(output: &ProbeOutput) -> AuthState {
     if output.timed_out {
         return AuthState::Unknown;
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let document = stdout.find('{').map_or("", |start| &stdout[start..]);
-    match serde_json::from_str::<serde_json::Value>(document.trim())
-        .ok()
-        .and_then(|value| value.get("loggedIn").and_then(serde_json::Value::as_bool))
-    {
+    let logged_in = stdout.match_indices('{').find_map(|(start, _)| {
+        // A stream deserializer stops after the first complete value, so
+        // trailing text does not invalidate the document.
+        serde_json::Deserializer::from_str(&stdout[start..])
+            .into_iter::<serde_json::Value>()
+            .next()?
+            .ok()?
+            .get("loggedIn")?
+            .as_bool()
+    });
+    match logged_in {
         Some(true) => AuthState::SignedIn,
         Some(false) => AuthState::SignedOut,
         None => AuthState::Unknown,
@@ -482,6 +489,19 @@ mod tests {
         assert_eq!(
             parse_auth_status(&probe(true, &format!("Update available\n{signed_in}\n"))),
             AuthState::SignedIn
+        );
+        // Text after the object, or a brace inside a leading notice, does
+        // not hide the document.
+        assert_eq!(
+            parse_auth_status(&probe(true, &format!("{signed_in}\nUpdate available\n"))),
+            AuthState::SignedIn
+        );
+        assert_eq!(
+            parse_auth_status(&probe(
+                false,
+                &format!("Notice {{see docs}}\n{signed_out}\nRun `claude login`\n")
+            )),
+            AuthState::SignedOut
         );
         assert_eq!(
             parse_auth_status(&probe(true, "Logged in")),

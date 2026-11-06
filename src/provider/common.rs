@@ -199,12 +199,20 @@ pub(crate) fn run_probe(
             return Err(error);
         }
     };
+    // On Windows a descendant that outlives a successful probe and keeps the
+    // pipes is not killed: its parent has exited, so `taskkill /T` can no
+    // longer find the tree (that needs a Job Object). Its reader threads are
+    // abandoned instead. Probes never run npm `.cmd` shims there.
     let drained = wait_for_pipes(&finished, 2, PIPE_DRAIN_GRACE);
     let pipes_held_open = drained < 2;
     #[cfg(unix)]
     if pipes_held_open {
         // The probe is gone but a descendant in its process group still holds
-        // the pipes; stop it so the reader threads can finish.
+        // the pipes; stop it so the reader threads can finish. Accepted
+        // residual risk: the leader is already reaped, so if every holder
+        // left the group (setsid) the group is empty and its ID could in
+        // principle be reused within the grace period. Closing that window
+        // needs `waitid(WNOWAIT)` from libc, which this crate does not use.
         signal_process_group(child.id());
         let _ = wait_for_pipes(&finished, 2 - drained, PIPE_DRAIN_GRACE);
     }
