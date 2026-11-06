@@ -11,16 +11,26 @@ use crate::model::{
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::provider::common::{
+    MAX_LISTING_OUTPUT, MAX_PROBE_OUTPUT, ProbeOutput, advisory_auth_state, run_listing, run_probe,
+    safe_agent_label, safe_agent_text, safe_probe_diagnostic,
+};
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 const PROVIDER_RESULT_LIMIT: usize = 500;
 
+const BINARY: AgentBinary = AgentBinary {
+    name: "Kiro CLI",
+    install_hint: "Install Kiro CLI",
+    variables: &["CONTEXTWAKE_KIRO_BIN", "AGENTDECK_KIRO_BIN"],
+};
+
 #[derive(Clone, Debug)]
 pub struct KiroAdapter {
-    executable: PathBuf,
+    executable: AgentExecutable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,24 +61,50 @@ struct KiroModel {
 
 impl KiroAdapter {
     pub fn discover() -> Self {
-        let executable = std::env::var_os("CONTEXTWAKE_KIRO_BIN")
-            .or_else(|| std::env::var_os("AGENTDECK_KIRO_BIN"))
-            .map_or_else(default_executable, PathBuf::from);
-        Self { executable }
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            // Kiro ships no npm wrapper, so a batch-file override cannot be
+            // resolved and is refused.
+            executable: BINARY.resolve(context, |_, _| None, default_launcher),
+        }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            executable: executable.into(),
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.executable);
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("KIRO_HOME", home);
         }
+        Ok(command)
+    }
+
+    fn list_sessions_bounded(
+        &self,
+        agent_home: &Path,
+        workspace: &Path,
+        max_count: usize,
+        output_limit: usize,
+    ) -> Result<Vec<DiscoveredAgentSession>> {
+        let mut command = self.base_command(Some(agent_home))?;
         command
+            .current_dir(workspace)
+            .args(["chat", "--list-sessions", "--format", "json"]);
+        let stdout = run_listing(
+            command,
+            DISCOVERY_TIMEOUT,
+            output_limit,
+            "Kiro CLI session listing",
+            None,
+        )?;
+        parse_sessions(&stdout, max_count)
     }
 
     fn stable(detail: &str) -> Capability {
@@ -96,35 +132,29 @@ impl KiroAdapter {
     }
 }
 
-fn default_executable() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(path) = discover_windows_native_executable() {
-            return path;
-        }
-        PathBuf::from(r"C:\__contextwake_missing__\kiro-cli.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        super::find_safe_on_path("kiro-cli")
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/kiro-cli"))
-    }
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    let name = if cfg!(windows) {
+        "kiro-cli.exe"
+    } else {
+        "kiro-cli"
+    };
+    context.find_on_path(name).map(Launcher::direct)
 }
 
-#[cfg(windows)]
-fn discover_windows_native_executable() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    for directory in std::env::split_paths(&path) {
-        if !directory.is_absolute() {
-            continue;
-        }
-        let candidate = directory.join("kiro-cli.exe");
-        if super::safe_executable_candidate(&candidate, &current) {
-            return Some(candidate);
-        }
+/// `kiro-cli whoami --format json`: a non-zero exit means signed out; a
+/// successful exit is signed in only when it printed a JSON document. Other
+/// output (an update notice, an older build ignoring `--format`) is `Unknown`
+/// instead of an error that aborted detection.
+fn parse_whoami(output: &ProbeOutput) -> AuthState {
+    if output.timed_out {
+        AuthState::Unknown
+    } else if !output.success {
+        AuthState::SignedOut
+    } else if serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok() {
+        AuthState::SignedIn
+    } else {
+        AuthState::Unknown
     }
-    None
 }
 
 fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgentSession>> {
@@ -140,7 +170,7 @@ fn parse_sessions(stdout: &[u8], max_count: usize) -> Result<Vec<DiscoveredAgent
             }
             sessions.push(DiscoveredAgentSession {
                 provider_session_id: validate_session_reference(&session.session_id)?,
-                title: session.title.map(|title| safe_agent_text(&title)),
+                title: session.title.as_deref().and_then(safe_agent_label),
                 workspace_path: Some(envelope.cwd.clone()),
                 created_at: None,
                 updated_at: session.updated_at,
@@ -230,7 +260,7 @@ impl AgentAdapter for KiroAdapter {
             ),
             non_interactive_mode: Self::stable("headless chat mode"),
             structured_output: Self::stable("stream-JSON headless output"),
-            acp: Self::partial(
+            acp: Self::unavailable(
                 "the headless event stream uses ACP events; no standalone ACP server is exposed",
             ),
             mcp: Self::stable("Kiro CLI supports configured MCP servers"),
@@ -248,30 +278,34 @@ impl AgentAdapter for KiroAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut command = self.base_command(None);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut command = self.base_command(None)?;
         command.arg("--version");
-        match run_probe(command, PROBE_TIMEOUT) {
+        match run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT) {
             Ok(output) if output.success => {
-                let auth_state = agent_home
-                    .map(|home| self.auth_status(home))
-                    .transpose()?
-                    .unwrap_or(AuthState::Unknown);
+                let mut message =
+                    String::from("Kiro CLI detected; KIRO_HOME does not isolate its OS credential");
+                let auth_state = advisory_auth_state(
+                    agent_home.map(|home| self.auth_status(home)),
+                    &mut message,
+                );
                 Ok(AgentHealth {
                     agent_id: self.id().into(),
                     installed: true,
-                    executable: Some(self.executable.clone()),
+                    executable: self.executable.reported_path(),
                     version: Some(safe_agent_text(
                         String::from_utf8_lossy(&output.stdout).trim(),
                     )),
                     auth_state,
-                    message: "Kiro CLI detected; KIRO_HOME does not isolate its OS credential"
-                        .into(),
+                    message,
                 })
             }
             Ok(output) => Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if output.timed_out {
@@ -294,21 +328,12 @@ impl AgentAdapter for KiroAdapter {
     }
 
     fn auth_status(&self, agent_home: &Path) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.args(["whoami", "--format", "json"]);
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
+        let output = run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT).map_err(|error| {
             ContextWakeError::Provider(format!("could not query Kiro CLI authentication: {error}"))
         })?;
-        if output.timed_out {
-            return Ok(AuthState::Unknown);
-        }
-        if !output.success {
-            return Ok(AuthState::SignedOut);
-        }
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).map_err(|error| {
-            ContextWakeError::Provider(format!("Kiro CLI returned invalid auth JSON: {error}"))
-        })?;
-        Ok(AuthState::SignedIn)
+        Ok(parse_whoami(&output))
     }
 
     fn initialize_profile_home(&self, agent_home: &Path) -> Result<()> {
@@ -336,7 +361,7 @@ impl AgentAdapter for KiroAdapter {
             ));
         }
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("login")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -367,20 +392,7 @@ impl AgentAdapter for KiroAdapter {
         workspace: &Path,
         max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
-        let mut command = self.base_command(Some(agent_home));
-        command
-            .current_dir(workspace)
-            .args(["chat", "--list-sessions", "--format", "json"]);
-        let output = run_probe(command, DISCOVERY_TIMEOUT).map_err(|error| {
-            ContextWakeError::Provider(format!("could not list Kiro CLI sessions: {error}"))
-        })?;
-        if !output.success {
-            return Err(ContextWakeError::Provider(format!(
-                "Kiro CLI session listing failed: {}",
-                safe_probe_diagnostic(&output)
-            )));
-        }
-        parse_sessions(&output.stdout, max_count)
+        self.list_sessions_bounded(agent_home, workspace, max_count, MAX_LISTING_OUTPUT)
     }
 
     fn available_models(
@@ -389,27 +401,25 @@ impl AgentAdapter for KiroAdapter {
         workspace: Option<&Path>,
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         if let Some(workspace) = workspace {
             command.current_dir(workspace);
         }
         command.args(["chat", "--list-models", "--format", "json"]);
-        let output = run_probe(command, DISCOVERY_TIMEOUT).map_err(|error| {
-            ContextWakeError::Provider(format!("could not list Kiro CLI models: {error}"))
-        })?;
-        if !output.success {
-            return Err(ContextWakeError::Provider(format!(
-                "Kiro CLI model listing failed: {}",
-                safe_probe_diagnostic(&output)
-            )));
-        }
-        parse_models(&output.stdout)
+        let stdout = run_listing(
+            command,
+            DISCOVERY_TIMEOUT,
+            MAX_LISTING_OUTPUT,
+            "Kiro CLI model listing",
+            None,
+        )?;
+        parse_models(&stdout)
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .current_dir(workspace)
             .args(["chat", "--resume-id"])
             .arg(session_id)
@@ -443,7 +453,7 @@ impl AgentAdapter for KiroAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command
             .current_dir(workspace)
             .arg("chat")
@@ -479,6 +489,7 @@ impl AgentAdapter for KiroAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::common::tests::fake_agent;
 
     #[test]
     fn session_json_is_normalized_and_sanitized() {
@@ -545,5 +556,96 @@ mod tests {
         assert!(!health.installed);
         assert_eq!(health.auth_state, AuthState::Unknown);
         assert!(health.message.contains("could not be found"));
+    }
+
+    #[test]
+    fn whoami_output_that_is_not_json_is_unknown() {
+        let output = |success: bool, stdout: &str| ProbeOutput {
+            success,
+            stdout: stdout.as_bytes().to_vec(),
+            ..ProbeOutput::default()
+        };
+        assert_eq!(
+            parse_whoami(&output(true, r#"{"accountType":"builder-id"}"#)),
+            AuthState::SignedIn
+        );
+        assert_eq!(
+            parse_whoami(&output(false, "Not logged in")),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            parse_whoami(&output(true, "A new version of Kiro CLI is available\n")),
+            AuthState::Unknown
+        );
+        assert_eq!(parse_whoami(&output(true, "")), AuthState::Unknown);
+    }
+
+    #[test]
+    fn detection_survives_an_unparsable_whoami() {
+        // `detect` used to propagate the parse error, which aborted
+        // `ctx status`, `ctx agent detect` and `ctx profile use`.
+        let directory = tempfile::tempdir().expect("tempdir");
+        let adapter = KiroAdapter {
+            executable: AgentExecutable::Available(fake_agent(
+                directory.path(),
+                "if \"%1\"==\"--version\" (echo kiro-cli 1.2.3& exit /b 0)\nif \"%1\"==\"whoami\" (echo A new version of Kiro CLI is available& exit /b 0)\nexit /b 2",
+                r#"case "$1" in --version) echo "kiro-cli 1.2.3";; whoami) echo "A new version of Kiro CLI is available";; *) exit 2;; esac"#,
+            )),
+        };
+        let health = adapter.detect(Some(directory.path())).expect("detection");
+        assert!(health.installed, "{}", health.message);
+        assert_eq!(health.version.as_deref(), Some("kiro-cli 1.2.3"));
+        assert_eq!(health.auth_state, AuthState::Unknown);
+    }
+
+    #[test]
+    fn large_listings_are_parsed_and_oversized_ones_reported() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let sessions = (0..1_000)
+            .map(|index| {
+                format!(
+                    r#"{{"sessionId":"5c247f0f-fa37-4a95-a4a6-{index:012}","source":"v2","title":"Session {index}","updatedAt":"2026-09-11T01:46:54.631Z","messageCount":2}}"#
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let fixture =
+            format!(r#"[{{"cwd":"/workspace","sessions":[{sessions}],"complete":true}}]"#);
+        assert!(fixture.len() > 2 * MAX_PROBE_OUTPUT, "{}", fixture.len());
+        std::fs::write(directory.path().join("sessions.json"), &fixture).expect("fixture");
+        let adapter = KiroAdapter {
+            executable: AgentExecutable::Available(fake_agent(
+                directory.path(),
+                r#"type "%~dp0sessions.json""#,
+                r#"cat "$(dirname "$0")/sessions.json""#,
+            )),
+        };
+        // Kiro has no provider-side limit; the old 64 KiB cap failed every
+        // sync once the listing grew past it, whatever --max-count was.
+        let listed = adapter
+            .list_sessions(directory.path(), directory.path(), 100)
+            .expect("large listing");
+        assert_eq!(listed.len(), 100);
+
+        let error = adapter
+            .list_sessions_bounded(directory.path(), directory.path(), 100, 8 * 1024)
+            .expect_err("over the limit");
+        assert!(error.to_string().contains("8 KiB"), "{error}");
+    }
+
+    #[test]
+    fn empty_titles_are_omitted_and_acp_is_not_advertised() {
+        let sessions = parse_sessions(
+            br#"[{"cwd":"/workspace","sessions":[{"sessionId":"a","title":""},{"sessionId":"b","title":"  "}]}]"#,
+            10,
+        )
+        .expect("sessions");
+        assert!(sessions.iter().all(|session| session.title.is_none()));
+        assert!(
+            !KiroAdapter::with_executable("unused")
+                .capabilities()
+                .acp
+                .is_available()
+        );
     }
 }

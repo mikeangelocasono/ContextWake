@@ -12,9 +12,11 @@ use crate::model::{
     DiscoveredAgentSession, ModelProvider,
 };
 use crate::provider::common::{
-    contained_existing_path, ensure_profile_directory, read_file_bounded, run_probe,
-    safe_agent_text, safe_probe_diagnostic,
+    MAX_PROBE_OUTPUT, WorkspaceMatcher, advisory_auth_state, contained_existing_path,
+    ensure_profile_directory, read_file_bounded, run_probe, safe_agent_label, safe_agent_text,
+    safe_probe_diagnostic,
 };
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::provider::{AcpTransport, AgentAdapter};
 use crate::security::{validate_external_reference, validate_session_reference};
 
@@ -23,10 +25,15 @@ const SESSION_INDEX_LIMIT: usize = 8 * 1024 * 1024;
 const SESSION_STATE_LIMIT: usize = 131_072;
 const PROVIDER_RESULT_LIMIT: usize = 500;
 
+const BINARY: AgentBinary = AgentBinary {
+    name: "Kimi Code CLI",
+    install_hint: "Install the official `kimi` CLI",
+    variables: &["CONTEXTWAKE_KIMI_BIN"],
+};
+
 #[derive(Clone, Debug)]
 pub struct KimiAdapter {
-    launcher: PathBuf,
-    script: Option<PathBuf>,
+    executable: AgentExecutable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,33 +46,35 @@ struct KimiSessionIndex {
 
 impl KimiAdapter {
     pub fn discover() -> Self {
-        if let Some(executable) = std::env::var_os("CONTEXTWAKE_KIMI_BIN") {
-            return Self::with_executable(executable);
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            executable: BINARY.resolve(
+                context,
+                |wrapper, context| {
+                    npm_script_launcher(context, wrapper.parent()?, &|candidate: &Path| {
+                        candidate.is_file()
+                    })
+                },
+                default_launcher,
+            ),
         }
-        let (launcher, script) = default_launcher();
-        Self { launcher, script }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            launcher: executable.into(),
-            script: None,
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.launcher);
-        if let Some(script) = &self.script {
-            command.arg(script);
-        }
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("KIMI_CODE_HOME", home);
         }
-        command
-    }
-
-    fn reported_executable(&self) -> PathBuf {
-        self.script.clone().unwrap_or_else(|| self.launcher.clone())
+        Ok(command)
     }
 
     fn partial(detail: &str) -> Capability {
@@ -93,52 +102,48 @@ impl KimiAdapter {
     }
 }
 
-fn default_launcher() -> (PathBuf, Option<PathBuf>) {
-    #[cfg(windows)]
-    {
-        discover_windows_launcher()
-            .unwrap_or_else(|| (PathBuf::from(r"C:\__contextwake_missing__\kimi.exe"), None))
+#[cfg(windows)]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    if let Some(direct) = context.find_on_path("kimi.exe") {
+        return Some(Launcher::direct(direct));
     }
-    #[cfg(not(windows))]
-    {
-        (
-            super::find_safe_on_path("kimi")
-                .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/kimi")),
-            None,
-        )
-    }
+    context.search_path().iter().find_map(|directory| {
+        if !context.is_safe_file(&directory.join("kimi.cmd")) {
+            return None;
+        }
+        npm_script_launcher(context, directory, &|candidate: &Path| {
+            context.is_safe_file(candidate)
+        })
+    })
 }
 
-#[cfg(windows)]
-fn discover_windows_launcher() -> Option<(PathBuf, Option<PathBuf>)> {
-    let path = std::env::var_os("PATH")?;
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let directories = std::env::split_paths(&path)
-        .filter(|directory| directory.is_absolute())
-        .collect::<Vec<_>>();
-    for directory in &directories {
-        let direct = directory.join("kimi.exe");
-        if super::safe_executable_candidate(&direct, &current) {
-            return Some((direct, None));
-        }
-    }
-    let node = directories.iter().find_map(|directory| {
-        let candidate = directory.join("node.exe");
-        super::safe_executable_candidate(&candidate, &current).then_some(candidate)
-    })?;
-    for directory in directories {
-        let shim = directory.join("kimi.cmd");
-        let script = kimi_script_candidate(&directory);
-        if super::safe_executable_candidate(&shim, &current)
-            && super::safe_executable_candidate(&script, &current)
-        {
-            return Some((node.clone(), Some(script)));
-        }
-    }
-    None
+#[cfg(not(windows))]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context.find_on_path("kimi").map(Launcher::direct)
 }
 
-#[cfg(windows)]
+/// `node.exe <main.mjs>` for the npm installation whose `kimi.cmd` lives in
+/// `npm_prefix`, started the way the shim starts it: with the `node.exe` next
+/// to the shim when there is one, otherwise the first safe `node.exe` on
+/// `PATH`. The shim itself is never run.
+fn npm_script_launcher(
+    context: &DiscoveryContext,
+    npm_prefix: &Path,
+    accept_script: &dyn Fn(&Path) -> bool,
+) -> Option<Launcher> {
+    let script = kimi_script_candidate(npm_prefix);
+    if !accept_script(&script) {
+        return None;
+    }
+    let local_node = npm_prefix.join("node.exe");
+    let node = if context.is_safe_executable(&local_node) {
+        local_node
+    } else {
+        context.find_on_path("node.exe")?
+    };
+    Some(Launcher::script(node, script))
+}
+
 fn kimi_script_candidate(directory: &Path) -> PathBuf {
     directory
         .join("node_modules")
@@ -180,11 +185,12 @@ fn parse_session_state(
     let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
         ContextWakeError::Provider(format!("Kimi session state is not valid JSON: {error}"))
     })?;
+    // An empty or invisible title stays absent; the UI shows its own
+    // "untitled" label instead of a provider diagnostic string.
     let title = value
         .get("title")
         .and_then(serde_json::Value::as_str)
-        .map(safe_agent_text)
-        .filter(|title| !title.is_empty());
+        .and_then(safe_agent_label);
     let created_at =
         value_datetime(&value, "createdAt").or_else(|| value_datetime(&value, "created_at"));
     let updated_at =
@@ -281,11 +287,7 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
-        let mut transport = AcpTransport::new(&self.launcher);
-        if let Some(script) = &self.script {
-            transport = transport.argument(script.as_os_str());
-        }
-        transport = transport.argument("acp");
+        let mut transport = self.executable.launcher()?.acp_transport().argument("acp");
         if let Some(home) = agent_home {
             transport = transport.environment("KIMI_CODE_HOME", home.as_os_str());
         }
@@ -293,9 +295,12 @@ impl AgentAdapter for KimiAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut version_command = self.base_command(None);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut version_command = self.base_command(None)?;
         version_command.arg("--version");
-        let version = run_probe(version_command, PROBE_TIMEOUT);
+        let version = run_probe(version_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         let Ok(version) = version else {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
@@ -310,7 +315,7 @@ impl AgentAdapter for KimiAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.reported_executable()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if version.timed_out {
@@ -321,9 +326,9 @@ impl AgentAdapter for KimiAdapter {
             });
         }
         let version_text = output_text(&version.stdout, &version.stderr);
-        let mut help_command = self.base_command(None);
+        let mut help_command = self.base_command(None)?;
         help_command.arg("--help");
-        let help = run_probe(help_command, PROBE_TIMEOUT);
+        let help = run_probe(help_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         if !help.as_ref().is_ok_and(|output| {
             output.success
                 && has_kimi_signature(&version_text, &output_text(&output.stdout, &output.stderr))
@@ -331,7 +336,7 @@ impl AgentAdapter for KimiAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.reported_executable()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message:
@@ -339,17 +344,17 @@ impl AgentAdapter for KimiAdapter {
                         .into(),
             });
         }
-        let auth_state = agent_home
-            .map(|home| self.auth_status(home))
-            .transpose()?
-            .unwrap_or(AuthState::Unknown);
+        let mut message =
+            String::from("Kimi Code CLI detected; authentication remains provider-owned");
+        let auth_state =
+            advisory_auth_state(agent_home.map(|home| self.auth_status(home)), &mut message);
         Ok(AgentHealth {
             agent_id: self.id().into(),
             installed: true,
-            executable: Some(self.reported_executable()),
+            executable: self.executable.reported_path(),
             version: Some(safe_agent_text(&version_text)),
             auth_state,
-            message: "Kimi Code CLI detected; authentication remains provider-owned".into(),
+            message,
         })
     }
 
@@ -363,7 +368,7 @@ impl AgentAdapter for KimiAdapter {
 
     fn login(&self, agent_home: &Path, _device_auth: bool) -> Result<AuthState> {
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("login")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -391,7 +396,7 @@ impl AgentAdapter for KimiAdapter {
     fn list_sessions(
         &self,
         agent_home: &Path,
-        _workspace: &Path,
+        workspace: &Path,
         max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
         let index_path = agent_home.join("session_index.jsonl");
@@ -399,6 +404,7 @@ impl AgentAdapter for KimiAdapter {
             return Ok(Vec::new());
         }
         let bytes = read_file_bounded(&index_path, SESSION_INDEX_LIMIT)?;
+        let mut workspace = WorkspaceMatcher::new(workspace);
         let mut seen = HashSet::new();
         let mut sessions = Vec::new();
         for line in bytes.split(|byte| *byte == b'\n') {
@@ -409,6 +415,12 @@ impl AgentAdapter for KimiAdapter {
                 continue;
             };
             if !seen.insert(session_id.clone()) {
+                continue;
+            }
+            // Other workspaces' sessions are dropped before the limit applies
+            // (and before their state is read), so they cannot crowd out
+            // this workspace's sessions.
+            if !workspace.matches(&record.work_dir) {
                 continue;
             }
             let Some(session_directory) = session_directory(agent_home, &record.session_dir) else {
@@ -439,7 +451,7 @@ impl AgentAdapter for KimiAdapter {
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .current_dir(workspace)
             .arg("--session")
             .arg(session_id)
@@ -473,11 +485,11 @@ impl AgentAdapter for KimiAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
+        let mut command = self.base_command(Some(agent_home))?;
         eprintln!(
             "ContextWake mounted the portable handoff. In Kimi, ask it to read: {}",
             context_path.display()
         );
-        let mut command = self.base_command(Some(agent_home));
         command
             .current_dir(workspace)
             .arg("--add-dir")
@@ -521,10 +533,21 @@ mod tests {
         ));
     }
 
+    fn index_line(session_id: &str, session: &Path, work_dir: &Path) -> String {
+        format!(
+            "{{\"sessionId\":{},\"sessionDir\":{},\"workDir\":{}}}\n",
+            serde_json::to_string(session_id).expect("id JSON"),
+            serde_json::to_string(session).expect("path JSON"),
+            serde_json::to_string(work_dir).expect("path JSON")
+        )
+    }
+
     #[test]
     fn session_index_stays_inside_provider_home() {
         let directory = tempfile::tempdir().expect("tempdir");
         let home = directory.path().join("home");
+        let repository = directory.path().join("repo");
+        std::fs::create_dir_all(&repository).expect("workspace");
         let session = home.join("sessions/wd_fixture/session_123");
         std::fs::create_dir_all(&session).expect("session");
         std::fs::write(
@@ -534,14 +557,11 @@ mod tests {
         .expect("state");
         std::fs::write(
             home.join("session_index.jsonl"),
-            format!(
-                "{{\"sessionId\":\"session_123\",\"sessionDir\":{},\"workDir\":\"C:/work/repo\"}}\n",
-                serde_json::to_string(&session).expect("path JSON")
-            ),
+            index_line("session_123", &session, &repository),
         )
         .expect("index");
         let sessions = KimiAdapter::with_executable("unused")
-            .list_sessions(&home, Path::new("C:/work/repo"), 10)
+            .list_sessions(&home, &repository, 10)
             .expect("sessions");
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].provider_session_id, "session_123");
@@ -592,6 +612,79 @@ mod tests {
             .detect(None)
             .expect("health");
         assert!(!health.installed);
+    }
+
+    #[test]
+    fn empty_titles_stay_empty_instead_of_a_diagnostic() {
+        for state in [
+            r#"{"title":"","createdAt":"2026-09-01T00:00:00Z"}"#,
+            r#"{"title":"   ","createdAt":"2026-09-01T00:00:00Z"}"#,
+            r#"{"title":"\u001b[31m\u001b[0m","createdAt":"2026-09-01T00:00:00Z"}"#,
+        ] {
+            let (title, created_at, _) = parse_session_state(state.as_bytes()).expect("state");
+            assert_eq!(title, None, "{state}");
+            assert!(created_at.is_some());
+        }
+    }
+
+    #[test]
+    fn sessions_of_other_workspaces_cannot_crowd_out_this_one() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let home = directory.path().join("home");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::create_dir_all(&first).expect("first workspace");
+        std::fs::create_dir_all(&second).expect("second workspace");
+        let mut index = String::new();
+        for (id, work_dir, updated) in [
+            ("second-1", &second, "2026-09-05T00:00:00Z"),
+            ("second-2", &second, "2026-09-06T00:00:00Z"),
+            ("second-3", &second, "2026-09-07T00:00:00Z"),
+            ("first-1", &first, "2026-09-01T00:00:00Z"),
+            ("first-2", &first, "2026-09-02T00:00:00Z"),
+        ] {
+            let session = home.join("sessions").join(id);
+            std::fs::create_dir_all(&session).expect("session");
+            std::fs::write(
+                session.join("state.json"),
+                format!(r#"{{"title":"{id}","updatedAt":"{updated}"}}"#),
+            )
+            .expect("state");
+            index.push_str(&index_line(id, &session, work_dir));
+        }
+        std::fs::write(home.join("session_index.jsonl"), index).expect("index");
+        let adapter = KimiAdapter::with_executable("unused");
+        // The old listing kept the 2 newest sessions overall, both from the
+        // second workspace, before `session sync` filtered by workspace.
+        let sessions = adapter.list_sessions(&home, &first, 2).expect("sessions");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.provider_session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first-2", "first-1"]
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_install_uses_the_node_next_to_its_shim_like_npm_does() {
+        use crate::provider::discovery::tests::executable;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let other_node = home.join("other-node");
+        executable(&other_node.join("node.exe"));
+        let prefix = home.join("npm");
+        std::fs::create_dir_all(&prefix).expect("prefix");
+        std::fs::write(prefix.join("kimi.cmd"), b"shim").expect("shim");
+        let node = executable(&prefix.join("node.exe"));
+        let script = executable(&kimi_script_candidate(&prefix));
+        let context = DiscoveryContext::new(Some(&home), Some(&home), [other_node, prefix]);
+        let adapter = KimiAdapter::discover_in(&context);
+        let launcher = adapter.executable.launcher().expect("npm install found");
+        assert_eq!(launcher.program(), node);
+        assert_eq!(launcher.reported_path(), script);
     }
 
     #[cfg(windows)]
