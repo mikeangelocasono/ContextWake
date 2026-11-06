@@ -2452,6 +2452,46 @@ mod tests {
         );
     }
 
+    /// Rows written by older builds hold the verbatim `\\?\` form; registering
+    /// the directory again must update that row (keeping its id, trust,
+    /// sessions and checkpoints) instead of inserting a duplicate.
+    #[cfg(windows)]
+    #[test]
+    fn rows_stored_with_another_spelling_are_updated_not_duplicated() {
+        let root = tempfile::tempdir().expect("root");
+        let app = application(root.path(), GitClient::new(Duration::from_secs(10)));
+        let project = directory(root.path().join("project"));
+        let verbatim = project.canonicalize().expect("verbatim path");
+        assert!(verbatim.to_string_lossy().starts_with(r"\\?\"));
+        let now = Utc::now();
+        let stored = Workspace {
+            id: Uuid::new_v4(),
+            path: verbatim,
+            display_name: "project".into(),
+            trust_state: TrustState::Trusted,
+            preferred_agent_id: None,
+            preferred_model_provider_id: None,
+            preferred_model: None,
+            preferred_profile_id: None,
+            last_session_id: None,
+            git_root: None,
+            created_at: now,
+            last_opened_at: now,
+        };
+        app.store.upsert_workspace(&stored).expect("legacy row");
+
+        let registered = app
+            .register_workspace(&project, TrustState::Untrusted, false)
+            .expect("registration");
+        assert_eq!(registered.id, stored.id);
+        assert_eq!(
+            registered.path, project,
+            "callers get the conventional form"
+        );
+        assert_eq!(registered.trust_state, TrustState::Trusted);
+        assert_eq!(app.store.list_workspaces().expect("workspaces").len(), 1);
+    }
+
     #[test]
     fn git_work_tree_rooted_at_home_is_not_chosen_implicitly() {
         let root = tempfile::tempdir().expect("root");

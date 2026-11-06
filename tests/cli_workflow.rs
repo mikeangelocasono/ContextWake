@@ -1299,3 +1299,52 @@ fn ordinary_directories_stay_usable_without_git() {
     assert_eq!(status["workspace"]["id"], added["id"]);
     assert!(status["git"].is_null());
 }
+
+#[test]
+fn a_local_handoff_continues_only_in_its_own_workspace() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("state");
+    let project_a = root.path().join("project-a");
+    let project_b = root.path().join("project-b");
+    std::fs::create_dir_all(&project_a).expect("project A");
+    std::fs::create_dir_all(&project_b).expect("project B");
+    json_output(&home, &["profile", "add", "Personal", "--agent", "codex"]);
+    let checkpoint = json_output(
+        &home,
+        &[
+            "checkpoint",
+            "create",
+            "--objective",
+            "Continue A",
+            "--workspace",
+            &text(&project_a),
+        ],
+    );
+    let handoff = json_output(
+        &home,
+        &[
+            "handoff",
+            "create",
+            checkpoint["id"].as_str().expect("checkpoint id"),
+        ],
+    );
+
+    // --workspace used to be ignored silently for a local handoff; launching
+    // somewhere other than the handoff's workspace is refused instead.
+    let refused = json_error(
+        &command(&home)
+            .args([
+                "--json",
+                "handoff",
+                "continue",
+                handoff["id"].as_str().expect("handoff id"),
+                "--workspace",
+                &text(&project_b),
+            ])
+            .output()
+            .expect("continue in another workspace"),
+    );
+    let message = refused["message"].as_str().expect("message");
+    assert!(message.contains("project-a"), "{message}");
+    assert!(message.contains("continues there"), "{message}");
+}
