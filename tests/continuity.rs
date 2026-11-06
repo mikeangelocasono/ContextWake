@@ -73,7 +73,9 @@ fn failed_handoff_keeps_previous_profile_active() {
         created_at: now,
         last_opened_at: now,
     };
-    std::fs::create_dir_all(&workspace.path).expect("workspace");
+    // The workspace directory was removed after registration, so creating the switch
+    // checkpoint fails. (A missing Git alone no longer fails: the directory is then an
+    // ordinary workspace.)
     store.upsert_workspace(&workspace).expect("register");
 
     let broken_git =

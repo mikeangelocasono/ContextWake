@@ -318,7 +318,14 @@ mod tests {
                 ..CheckpointInput::default()
             },
         );
-        // Missing Git is actionable rather than silently swallowed.
-        assert!(matches!(result, Err(ContextWakeError::Git(_))));
+        // Without Git the workspace is an ordinary directory; doctor reports the missing Git.
+        let checkpoint = result.expect("checkpoint without Git");
+        assert!(checkpoint.git.is_none() && checkpoint.files_changed.is_empty());
+        assert!(
+            !checkpoint
+                .objective
+                .contains("sk-abcdefghijklmnopqrstuvwxyz")
+        );
+        assert_eq!(checkpoint.redaction_status, RedactionStatus::Redacted);
     }
 }
