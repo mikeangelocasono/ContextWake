@@ -1455,6 +1455,14 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// Removes a handoff index row, for rolling back a handoff whose creating
+    /// operation (a profile switch) failed afterwards.
+    pub fn delete_handoff_index(&self, id: Uuid) -> Result<()> {
+        let connection = self.connection()?;
+        connection.execute("DELETE FROM handoffs WHERE id = ?1", [id.to_string()])?;
+        Ok(())
+    }
+
     pub fn usage_summary(&self) -> Result<UsageSummary> {
         let connection = self.connection()?;
         let metric = |name: &str| -> rusqlite::Result<u64> {

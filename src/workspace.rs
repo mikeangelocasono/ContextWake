@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
 use crate::model::{TrustState, Workspace};
+use crate::paths::{canonicalize_simplified, simplify_path};
 use crate::security::{sanitize_terminal, validate_local_name};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -46,15 +47,29 @@ impl Default for ProjectConfig {
     }
 }
 
+/// Project metadata read where a broken repository file must not stop the
+/// command (registration, `ctx status`, the TUI, checkpoint capture).
+#[derive(Clone, Debug, Default)]
+pub struct ProjectMetadata {
+    /// The trusted project configuration, when it exists and is valid.
+    pub config: Option<ProjectConfig>,
+    /// Why the project configuration was ignored, when it was.
+    pub warning: Option<String>,
+}
+
+/// Inspects `path` as a workspace: the top level of the Git work tree that
+/// contains it, or the directory itself. Paths are canonical and in the
+/// conventional (non-verbatim) form that agents, Git and people expect.
+///
+/// Git is optional. When it cannot be run, the directory is registered as an
+/// ordinary workspace and status/checkpoints report Git as unavailable.
 pub fn detect_workspace(path: &Path, git: &GitClient, trust: TrustState) -> Result<Workspace> {
-    let canonical = path.canonicalize().at(path)?;
-    if !canonical.is_dir() {
-        return Err(ContextWakeError::UnsafePath(format!(
-            "{} is not a directory",
-            canonical.display()
-        )));
-    }
-    let git_root = git.repository_root(&canonical)?;
+    let canonical = canonical_workspace_directory(path)?;
+    let git_root = git
+        .repository_root(&canonical)
+        .ok()
+        .flatten()
+        .map(|root| canonicalize_simplified(&root).unwrap_or_else(|_| simplify_path(&root)));
     let root = git_root.clone().unwrap_or(canonical);
     let display_name = root
         .file_name()
@@ -77,6 +92,61 @@ pub fn detect_workspace(path: &Path, git: &GitClient, trust: TrustState) -> Resu
         created_at: now,
         last_opened_at: now,
     })
+}
+
+/// Canonical, conventional form of an existing directory, with a specific
+/// error when it does not exist (a mistyped path, a deleted or renamed
+/// project, or an unplugged drive).
+pub fn canonical_workspace_directory(path: &Path) -> Result<PathBuf> {
+    let canonical = match canonicalize_simplified(path) {
+        Ok(canonical) => canonical,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(ContextWakeError::WorkspaceNotFound(format!(
+                "directory {} does not exist or is not reachable",
+                sanitize_terminal(&path.display().to_string())
+            )));
+        }
+        Err(source) => {
+            return Err(ContextWakeError::Io {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    if !canonical.is_dir() {
+        return Err(ContextWakeError::UnsafePath(format!(
+            "{} is not a directory",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
+}
+
+/// Reads trusted project metadata without failing: an invalid, unsafe or
+/// unreadable `project.toml` is reported as a warning and ignored. Explicit
+/// validation (`ctx workspace validate`, `checkpoint create --validate`)
+/// keeps using the strict [`load_project_config`].
+pub fn read_project_metadata(workspace: &Workspace) -> ProjectMetadata {
+    if workspace.trust_state != TrustState::Trusted {
+        return ProjectMetadata::default();
+    }
+    match load_project_config(workspace) {
+        Ok(config) => ProjectMetadata {
+            config,
+            warning: None,
+        },
+        Err(error) => ProjectMetadata {
+            config: None,
+            warning: Some(ignored_project_config_warning(&error)),
+        },
+    }
+}
+
+fn ignored_project_config_warning(error: &ContextWakeError) -> String {
+    format!(
+        "ignored the trusted project configuration ({}). Fix it, then run 'ctx workspace validate' to check it.",
+        sanitize_terminal(&error.to_string())
+    )
 }
 
 pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig>> {
@@ -157,16 +227,44 @@ pub fn load_project_config(workspace: &Workspace) -> Result<Option<ProjectConfig
     Ok(Some(config))
 }
 
+/// Trusted project instructions captured into new checkpoints.
+///
+/// A broken `project.toml` or an unusable instructions file never blocks
+/// checkpoint creation or profile switching: nothing is captured, and
+/// [`read_project_instructions`] reports why. Nothing outside the workspace,
+/// and no symlink, is ever read.
 pub fn load_project_instructions(workspace: &Workspace) -> Result<Option<String>> {
+    Ok(read_project_instructions(workspace).0)
+}
+
+/// Like [`load_project_instructions`], plus a warning that explains why no
+/// instructions were captured when the trusted configuration or the
+/// instructions file could not be used.
+pub fn read_project_instructions(workspace: &Workspace) -> (Option<String>, Option<String>) {
     if workspace.trust_state != TrustState::Trusted {
-        return Ok(None);
+        return (None, None);
     }
-    let Some(config) = load_project_config(workspace)? else {
-        return Ok(None);
+    let config = match load_project_config(workspace) {
+        Ok(Some(config)) => config,
+        Ok(None) => return (None, None),
+        Err(error) => return (None, Some(ignored_project_config_warning(&error))),
     };
     let Some(relative) = config.instructions_file else {
-        return Ok(None);
+        return (None, None);
     };
+    match read_instructions_file(workspace, &relative) {
+        Ok(instructions) => (Some(instructions), None),
+        Err(error) => (
+            None,
+            Some(format!(
+                "project instructions were not captured ({})",
+                sanitize_terminal(&error.to_string())
+            )),
+        ),
+    }
+}
+
+fn read_instructions_file(workspace: &Workspace, relative: &Path) -> Result<String> {
     let path = workspace.path.join(relative);
     let metadata = std::fs::symlink_metadata(&path).at(&path)?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -189,7 +287,7 @@ pub fn load_project_instructions(workspace: &Workspace) -> Result<Option<String>
             path.display()
         )));
     }
-    std::fs::read_to_string(&path).at(&path).map(Some)
+    std::fs::read_to_string(&path).at(&path)
 }
 
 #[cfg(test)]
@@ -246,6 +344,95 @@ mod tests {
             .expect("legacy config")
             .expect("present");
         assert_eq!(config.name.as_deref(), Some("Legacy workspace"));
+    }
+
+    #[test]
+    fn detected_paths_are_conventional_and_canonical() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let repository = root.path().join("repo with spaces");
+        std::fs::create_dir_all(repository.join("src")).expect("repository");
+        let status = std::process::Command::new("git")
+            .current_dir(&repository)
+            .args(["init", "--quiet"])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .expect("Git must be installed for workspace tests");
+        assert!(status.success());
+        let git = GitClient::new(std::time::Duration::from_secs(10));
+
+        let workspace = detect_workspace(&repository.join("src"), &git, TrustState::Untrusted)
+            .expect("workspace");
+        let expected = canonicalize_simplified(&repository).expect("canonical");
+        assert_eq!(workspace.path, expected);
+        assert_eq!(workspace.git_root.as_deref(), Some(expected.as_path()));
+        let ordinary = detect_workspace(root.path(), &git, TrustState::Untrusted).expect("plain");
+        for path in [&workspace.path, &ordinary.path] {
+            assert!(
+                !path.to_string_lossy().starts_with(r"\\?\"),
+                "verbatim path {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn missing_workspace_directory_has_a_specific_error() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let git = GitClient::new(std::time::Duration::from_secs(1));
+        assert!(matches!(
+            detect_workspace(&root.path().join("renamed"), &git, TrustState::Untrusted),
+            Err(ContextWakeError::WorkspaceNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn unusable_project_files_never_block_instruction_capture() {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir(root.path().join(".contextwake")).expect("config directory");
+        let config = root.path().join(".contextwake/project.toml");
+        let git = GitClient::new(std::time::Duration::from_secs(1));
+        let workspace =
+            detect_workspace(root.path(), &git, TrustState::Trusted).expect("workspace");
+
+        std::fs::write(&config, "schema_version = 1\nfuture_setting = true\n")
+            .expect("newer config");
+        assert_eq!(
+            load_project_instructions(&workspace).expect("capture"),
+            None
+        );
+        let (instructions, warning) = read_project_instructions(&workspace);
+        assert!(instructions.is_none());
+        assert!(warning.is_some_and(|warning| warning.contains("future_setting")));
+        assert!(
+            read_project_metadata(&workspace)
+                .warning
+                .is_some_and(|warning| warning.contains("future_setting"))
+        );
+        assert!(
+            load_project_config(&workspace).is_err(),
+            "explicit validation stays strict"
+        );
+
+        std::fs::write(
+            &config,
+            "schema_version = 1\ninstructions_file = \"AGENTS.md\"\n",
+        )
+        .expect("config");
+        let (instructions, warning) = read_project_instructions(&workspace);
+        assert!(instructions.is_none());
+        assert!(warning.is_some_and(|warning| warning.contains("not captured")));
+
+        std::fs::write(root.path().join("AGENTS.md"), vec![b'x'; 65_537]).expect("large");
+        let (instructions, warning) = read_project_instructions(&workspace);
+        assert!(instructions.is_none());
+        assert!(warning.is_some_and(|warning| warning.contains("64 KiB")));
+
+        let untrusted = Workspace {
+            trust_state: TrustState::Untrusted,
+            ..workspace
+        };
+        assert_eq!(read_project_instructions(&untrusted), (None, None));
+        assert!(read_project_metadata(&untrusted).config.is_none());
     }
 
     #[test]

@@ -55,8 +55,10 @@ pub enum Command {
 
 #[derive(Clone, Debug, Args)]
 pub struct StatusArgs {
-    #[arg(default_value = ".")]
-    pub path: PathBuf,
+    /// Directory to inspect. Defaults to the workspace that contains the
+    /// current directory; from the home directory or a drive root, the active
+    /// workspace is shown with a warning.
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -86,6 +88,10 @@ pub enum ProfileCommand {
         model_provider: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// Allow another profile for an agent that cannot keep separate sign-ins
+        /// per profile (Kiro CLI, Cursor CLI). Such profiles share one identity.
+        #[arg(long)]
+        allow_shared_identity: bool,
     },
     List,
     Show {
@@ -98,6 +104,9 @@ pub enum ProfileCommand {
         handoff: bool,
         #[arg(long)]
         objective: Option<String>,
+        /// Workspace for the handoff. Defaults to the registered workspace or Git
+        /// work tree that contains the current directory (never the last active
+        /// workspace); the home directory and drive roots require this option.
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -128,6 +137,8 @@ pub struct WorkspaceArgs {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum WorkspaceCommand {
+    /// Register a directory (or the Git work tree containing it) and make it the
+    /// active workspace.
     Add {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -149,6 +160,8 @@ pub enum WorkspaceCommand {
     },
     /// Run trusted project validation commands after an explicit user action.
     Validate {
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -164,8 +177,12 @@ pub struct SessionArgs {
 pub enum SessionCommand {
     /// Discover supported provider sessions and index those for one workspace.
     Sync {
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Index at most this many of the workspace's most recent sessions (1-500).
+        /// Sessions of other workspaces do not count toward the limit.
         #[arg(long, default_value_t = 100, value_parser = parse_session_count)]
         max_count: usize,
     },
@@ -187,6 +204,11 @@ pub enum SessionCommand {
     Resume {
         /// `ContextWake` session UUID or provider session UUID/name.
         session: String,
+        /// Workspace for a provider session that `ContextWake` has not indexed;
+        /// defaults to the workspace of the current directory. Indexed sessions
+        /// always resume in their recorded workspace.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     Archive {
         session: String,
@@ -221,6 +243,9 @@ pub enum CheckpointCommand {
         task: Option<String>,
         #[arg(long)]
         notes: Option<String>,
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory (never the last active workspace); the home directory
+        /// and drive roots require this option.
         #[arg(long)]
         workspace: Option<PathBuf>,
         #[arg(long = "completed")]
