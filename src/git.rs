@@ -200,6 +200,11 @@ impl GitClient {
         self.session().is_ok()
     }
 
+    /// Why no Git executable can be used, or `None` when one can. Nothing is started.
+    pub fn unavailable_reason(&self) -> Option<String> {
+        self.session().err()
+    }
+
     pub fn version(&self) -> Result<String> {
         let session = self.session().map_err(ContextWakeError::Git)?;
         let output = session.run(None, &[], &["--version"])?;

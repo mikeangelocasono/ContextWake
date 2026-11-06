@@ -9,7 +9,7 @@ use clap::CommandFactory;
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::checkpoint::{CheckpointInput, CheckpointService};
+use crate::checkpoint::{CheckpointInput, CheckpointService, LatestCheckpoint};
 use crate::cli::{
     AgentCommand, CheckpointCommand, Cli, Command, ConfigCommand, HandoffCommand, ModelCommand,
     ProfileCommand, SessionCommand, WorkspaceCommand,
@@ -288,7 +288,17 @@ impl Application {
                     .update_profile_auth(profile.id, agent.auth_state)?;
             }
         }
+        // Without a usable Git executable the workspace is an ordinary
+        // directory (snapshot() returns no state); say so instead of showing
+        // a workspace without Git state as if it had none.
         let mut git_unavailable = false;
+        if let Some(reason) = self.git.unavailable_reason() {
+            git_unavailable = true;
+            warnings.push(format!(
+                "Git state is unavailable: {}",
+                terminal_line(&reason)
+            ));
+        }
         let (git, changed_files) = match self.git.snapshot(&workspace.path) {
             Ok(git) => {
                 let changed_files =
@@ -312,16 +322,30 @@ impl Application {
                 (None, Vec::new())
             }
         };
-        let latest_checkpoint = self
+        let latest = self
             .checkpoints()
-            .latest_for_workspace(workspace.id)
+            .latest_for_workspace_with_unreadable(workspace.id)
             .unwrap_or_else(|error| {
                 warnings.push(format!(
                     "checkpoints could not be read ({}). 'ctx checkpoint list' shows them, and 'ctx checkpoint delete <id> --yes' removes an unreadable one.",
                     safe_message(&error)
                 ));
-                None
+                LatestCheckpoint::default()
             });
+        if !latest.unreadable.is_empty() {
+            // A newer checkpoint that cannot be read must not silently make an
+            // older one look like the latest saved state.
+            let ids = latest
+                .unreadable
+                .iter()
+                .map(|entry| entry.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            warnings.push(format!(
+                "checkpoints could not be read ({ids}); status uses the newest readable checkpoint. 'ctx checkpoint list' shows them, and 'ctx checkpoint delete <id> --yes' removes an unreadable one."
+            ));
+        }
+        let latest_checkpoint = latest.checkpoint;
         let continuity_guardian = assess(
             latest_checkpoint.as_ref(),
             git.as_ref(),
