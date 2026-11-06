@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string]$InstallDir = $env:CONTEXTWAKE_INSTALL_DIR
+    [string]$InstallDir = $env:CONTEXTWAKE_INSTALL_DIR,
+    # Leave the user PATH unchanged, for example when its registry value cannot be edited safely. The
+    # installer-owned entry and its marker stay, so a later uninstall without this switch removes both.
+    [switch]$NoPathUpdate
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +14,8 @@ $PathMarkerName = ".contextwake-path-added"
 $UserEnvironmentKeyPath = "Environment"
 $TestEnvironmentKeyPattern = '^Software\\ContextWakeInstallerTests\\[0-9A-Za-z_-]{1,64}$'
 $TransactionFilePattern = '^\.(ctx|ctxwake)\.exe\.[0-9a-f]{32}\.(new\.exe|backup)$'
+# A previous binary that a failed update could not restore (install.ps1 keeps it under this name).
+$PreviousBinaryPattern = '^\.(ctx|ctxwake)\.exe\.[0-9a-f]{32}\.previous\.exe$'
 
 function Test-FullyQualifiedPath {
     # True for X:\... and \\server\share\... ; false for relative (bin, .\bin), drive-relative (C:bin) and
@@ -76,12 +81,16 @@ function Remove-FileBestEffort {
 function Remove-StaleTransactionFiles {
     # Windows can rename a running executable but cannot delete it, so the backup of a binary that was
     # still running during an earlier update stays behind. Delete those leftovers once they are free.
-    param([Parameter(Mandatory = $true)][string]$Directory)
+    # Returns the names of matching files that are still in use.
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [string]$Pattern = $TransactionFilePattern
+    )
 
     $remaining = @()
     if (Test-Path -LiteralPath $Directory -PathType Container) {
         foreach ($item in @(Get-ChildItem -LiteralPath $Directory -Force -File)) {
-            if ($item.Name -cmatch $TransactionFilePattern -and -not (Remove-FileBestEffort -Path $item.FullName)) {
+            if ($item.Name -cmatch $Pattern -and -not (Remove-FileBestEffort -Path $item.FullName)) {
                 $remaining += $item.Name
             }
         }
@@ -121,8 +130,8 @@ function Test-SamePathEntry {
 }
 
 function Remove-PathEntry {
-    # Removes the last entry naming Directory (the one install.ps1 appended) together with one adjacent
-    # separator; -All removes every such entry. All other characters of PathValue are kept unchanged.
+    # Removes the entry install.ps1 appended, together with one adjacent separator; -All removes every entry
+    # naming Directory. All other characters of PathValue are kept unchanged.
     param(
         [AllowEmptyString()][string]$PathValue,
         [Parameter(Mandatory = $true)][string]$Directory,
@@ -131,18 +140,30 @@ function Remove-PathEntry {
 
     $entries = New-Object System.Collections.Generic.List[string]
     $entries.AddRange([string[]]$PathValue.Split([char[]]@(';')))
-    $removed = $false
+    $targets = @()
     for ($index = $entries.Count - 1; $index -ge 0; $index--) {
         if (Test-SamePathEntry -Entry $entries[$index] -Directory $Directory) {
-            $entries.RemoveAt($index)
-            $removed = $true
-            if (-not $All) {
-                break
-            }
+            $targets += $index
         }
     }
-    if (-not $removed) {
+    if ($targets.Count -eq 0) {
         return $PathValue
+    }
+    if (-not $All) {
+        # install.ps1 appends Directory verbatim, so the last entry with exactly that text (ignoring case) is
+        # the installer's. Another spelling of the same directory, such as a %VARIABLE% form, is the user's own
+        # and is removed only when no verbatim entry is left.
+        $verbatim = @($targets | Where-Object { [string]::Equals($entries[$_], $Directory, [StringComparison]::OrdinalIgnoreCase) })
+        if ($verbatim.Count -gt 0) {
+            $targets = @($verbatim[0])
+        }
+        else {
+            $targets = @($targets[0])
+        }
+    }
+    # Indexes are in descending order, so removing one does not shift the others.
+    foreach ($index in $targets) {
+        $entries.RemoveAt($index)
     }
     return ($entries -join ';')
 }
@@ -179,7 +200,7 @@ function Get-UserPathValue {
         $kind = $key.GetValueKind("Path")
         if ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString -and
             $kind -ne [Microsoft.Win32.RegistryValueKind]::String) {
-            throw "the user PATH (HKCU\$KeyPath\Path) has the unsupported registry type $kind; fix it manually or rerun with -NoPathUpdate"
+            throw "the user PATH (HKCU\$KeyPath\Path) has the unsupported registry type $kind; change it to REG_EXPAND_SZ or REG_SZ, or rerun with -NoPathUpdate to leave PATH unchanged"
         }
         return New-Object PSObject -Property @{
             Exists = $true
@@ -311,14 +332,16 @@ function Invoke-ContextWakeUninstall {
     }
 
     $pathMarker = Join-Path $directory $PathMarkerName
-    $removeOwnedPath = Test-Path -LiteralPath $pathMarker -PathType Leaf
-    $keyPath = Get-UserEnvironmentKeyPath
+    $ownsPathEntry = Test-Path -LiteralPath $pathMarker -PathType Leaf
+    $removeOwnedPath = $ownsPathEntry -and -not $NoPathUpdate
     if ($removeOwnedPath) {
+        $keyPath = Get-UserEnvironmentKeyPath
         # Fail before deleting anything if the user PATH cannot be updated safely.
         $null = Get-UserPathValue -KeyPath $keyPath
     }
 
     $inUse = @(Remove-StaleTransactionFiles -Directory $directory)
+    $inUse += @(Remove-StaleTransactionFiles -Directory $directory -Pattern $PreviousBinaryPattern)
     foreach ($name in @("ctx.exe", "ctxwake.exe")) {
         $leftover = Remove-InstalledBinary -Directory $directory -Name $name
         if ($null -ne $leftover) {
@@ -351,6 +374,9 @@ function Invoke-ContextWakeUninstall {
     }
     if ($removeOwnedPath) {
         Write-Host "The installer-owned user PATH entry was removed."
+    }
+    elseif ($ownsPathEntry) {
+        Write-Host "The user PATH was not changed (-NoPathUpdate). Rerun without -NoPathUpdate to remove the installer-owned entry and $directory."
     }
     Write-Host "Profiles, workspaces, sessions, checkpoints, handoffs, and configuration were preserved."
 }

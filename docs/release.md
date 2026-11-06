@@ -22,10 +22,11 @@ cargo build --locked --release
 ./scripts/test-windows-installer.ps1 -Archive dist/contextwake-v0.1.0-alpha.3-windows-x86_64.zip
 ```
 
-Run the suite with both `powershell.exe` (Windows PowerShell 5.1) and `pwsh` (PowerShell 7), as CI does. It needs `cargo` on `PATH`. It installs into a temporary directory from a temporary local release mirror. PATH changes go to a disposable `HKCU\Software\ContextWakeInstallerTests\<id>` key; it only reads the real `HKCU\Environment` PATH, before and after the run, to prove nothing changed. It covers:
+Run the suite with both `powershell.exe` (Windows PowerShell 5.1) and `pwsh` (PowerShell 7), as CI does. It needs `cargo` on `PATH`. It installs into a temporary directory from a temporary local release mirror. PATH changes go to a disposable `HKCU\Software\ContextWakeInstallerTests\<id>` key; the real `HKCU\Environment` PATH is only read. Before any case runs the scripts for real, the suite checks that every PATH write in them goes to the key the test hook selects, statically and by running both scripts' PATH code against a test key. It compares the real PATH with its starting value after every case and child process, stops at the first change, and prints the original value to restore. It covers:
 
-- PATH round trips (`REG_EXPAND_SZ`, `REG_SZ`, a missing value, an entry the user already had);
-- rollback after a binary fails verification post-swap;
+- PATH round trips (`REG_EXPAND_SZ`, `REG_SZ`, a missing value, an entry the user already had, a respelled entry the user added);
+- an unsupported PATH value type and `uninstall.ps1 -NoPathUpdate`;
+- rollback after a binary fails verification post-swap, and a previous binary that cannot be restored surviving later installs;
 - updating and uninstalling while `ctx.exe` is running;
 - rejection of relative install directories, checksum mismatches, and unexpected archive entries;
 - the README scriptblock invocation;
@@ -49,7 +50,7 @@ The release workflow only publishes builds that pass every gate:
 
 `installers.yml` runs the same suite against a package built from each pushed commit. It also exercises the current scripts against the live published release, including a raw-registry PATH round trip on the runner.
 
-Every third-party action is pinned to a full commit SHA, with the tag or branch in a trailing comment. Dependabot proposes updates for the tagged actions. `dtolnay/rust-toolchain` publishes no tags, so its pin is a commit of its `master` branch, which needs the explicit `toolchain` input. Update it by hand: resolve the new commit with `git ls-remote https://github.com/dtolnay/rust-toolchain refs/heads/master`, review the diff, and replace the SHA in every workflow. To resolve a tag, use `git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>*'`. For an annotated tag, pin the commit from the `^{}` line.
+Every third-party action is pinned to a full commit SHA, with the tag it was resolved from in a trailing comment, so Dependabot (`.github/dependabot.yml`) can track every pin; the installer regression suite fails on a pin without a version-tag comment. `dtolnay/rust-toolchain` publishes a single moving `v1` tag, which points at the same commit as its `master` branch, and needs the explicit `toolchain` input. If Dependabot does not propose an update after `v1` moves, resolve it with `git ls-remote https://github.com/dtolnay/rust-toolchain refs/tags/v1`, review the diff, and replace the SHA in every workflow. To resolve a tag, use `git ls-remote https://github.com/<owner>/<repo> 'refs/tags/<tag>*'`. For an annotated tag, pin the commit from the `^{}` line.
 
 ## Signing and notarization
 
@@ -71,10 +72,10 @@ reporting success. Rerunning an installer is the supported alpha update path.
 
 On Windows:
 
-- **PATH.** The installer reads the user PATH raw, with `%VARIABLE%` references unexpanded, from `HKCU\Environment`. It appends only the install directory and writes the value back with its original registry type (`REG_EXPAND_SZ` stays `REG_EXPAND_SZ`). Then it broadcasts `WM_SETTINGCHANGE` so new terminals see the change. If the directory is already present, compared case-insensitively and ignoring trailing separators, PATH is left untouched. The `.contextwake-path-added` marker records that the installer added the entry; `scripts/uninstall.ps1` removes only that entry, so every other entry survives byte for byte.
+- **PATH.** The installer reads the user PATH raw, with `%VARIABLE%` references unexpanded, from `HKCU\Environment`. It appends only the install directory and writes the value back with its original registry type (`REG_EXPAND_SZ` stays `REG_EXPAND_SZ`). Then it broadcasts `WM_SETTINGCHANGE` so new terminals see the change. If the directory is already present, compared case-insensitively and ignoring trailing separators, PATH is left untouched. The `.contextwake-path-added` marker records that the installer added the entry. `scripts/uninstall.ps1` removes only that entry, the one spelled exactly as the installer appended it, so every other entry survives byte for byte, including the user's own `%VARIABLE%` spelling of the same directory. A PATH value of any type other than `REG_EXPAND_SZ` or `REG_SZ` stops both scripts before they change anything; `-NoPathUpdate` skips the PATH step. For uninstall, the entry and its marker then stay, so a later uninstall without the switch removes both.
 - **Install directory.** `-InstallDir` and `CONTEXTWAKE_INSTALL_DIR` must be absolute paths such as `C:\Tools\ContextWake`. Relative, drive-relative, and root-relative paths are rejected before anything is written.
 - **Updating while running.** Windows can rename a running executable but cannot delete it. When you update while `ctx` is running, the old binary is renamed aside and the update succeeds. The leftover file is deleted by the next install or uninstall after that process exits. Uninstalling while `ctx` is running works the same way: rerun it later to delete the leftover and the empty directory.
-- **Failure report.** A failed version check reports the exit code and output of the binary.
+- **Failed updates.** A new binary that fails its version check is removed and the previous binaries are restored. The error reports the binary's exit code and output. If a previous binary cannot be restored, it is kept as `.<name>.<id>.previous.exe` and the warning names that file. Later installs never delete it; uninstall removes it with the other binaries.
 
 Test hooks:
 
@@ -89,7 +90,15 @@ Test hooks:
 README commands use an immutable commit URL for installer code. A release does
 not need a new binary merely because the repository adds or updates installation
 tooling compatible with its existing archive layout. Any future archive-layout
-change must update installer validation and may require a new release. After
-installer fixes land, update the README and release-note URLs to a commit that
-contains them; until then the documented one-liners keep running the pinned
-older installer.
+change must update installer validation and may require a new release.
+
+The one-liners in `README.md` and `docs/releases/v0.1.0-alpha.3.md` still pin
+commit `28922ba`. Its `install.ps1` predates the Windows fixes above: it rewrites
+the user PATH with `%VARIABLE%` entries expanded and as `REG_SZ`, resolves a
+relative `-InstallDir` against the process directory, and reports a failed
+update while `ctx` is running. The README therefore does not describe those
+fixes yet. Once a commit
+that contains them is public, re-pin every one-liner to it. Then state in the
+README's Windows section that the installer leaves every other PATH entry,
+including unexpanded `%VARIABLE%` references, unchanged, and that updating
+works while `ctx` is running.
