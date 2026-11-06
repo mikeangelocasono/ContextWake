@@ -15,15 +15,18 @@ use crate::cli::{
     ProfileCommand, SessionCommand, WorkspaceCommand,
 };
 use crate::config::AppConfig;
-use crate::continuity::{SwitchOutcome, switch_profile};
+use crate::continuity::{
+    ContinueNotice, ContinueOutcome, ContinueRequest, SwitchOutcome, SwitchRequest,
+    continue_with_handoff, switch_profile_with,
+};
 use crate::doctor::{CheckStatus, DoctorReport, run_doctor, run_doctor_without_state};
 use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
 use crate::guardian::assess;
 use crate::handoff::HandoffService;
 use crate::model::{
-    AgentHealth, AuthState, CapabilitySupport, ContinuityKind, Profile, ResumeCapability, Session,
-    TrustState, Workspace,
+    AgentHealth, AuthState, CapabilitySupport, Checkpoint, ContinuityKind, ConversationExcerpt,
+    Profile, ResumeCapability, Session, TrustState, Workspace,
 };
 use crate::paths::{
     AppPaths, canonicalize_simplified, path_is_within, paths_equivalent, simplify_path,
@@ -820,6 +823,11 @@ impl Application {
         }))
     }
 
+    /// Switches the active profile. With `create_handoff`, the switch
+    /// checkpoint also stores the recent conversation of the currently active
+    /// profile's agent in the workspace (unless disabled in the
+    /// configuration); a transcript that cannot be read is mentioned in the
+    /// outcome message and never blocks the switch.
     pub fn switch_active_profile(
         &self,
         target_reference: &str,
@@ -828,7 +836,53 @@ impl Application {
         objective: Option<String>,
     ) -> Result<SwitchOutcome> {
         let target = self.validated_switch_target(target_reference)?;
-        self.switch_to_validated(&target, workspace, create_handoff, objective)
+        let (mut outcome, warnings) = self.switch_to_validated_with(
+            &target,
+            workspace,
+            SwitchRequest {
+                create_handoff,
+                objective,
+                ..SwitchRequest::default()
+            },
+            true,
+        )?;
+        for warning in warnings {
+            outcome.message.push(' ');
+            outcome.message.push_str(&warning);
+        }
+        Ok(outcome)
+    }
+
+    /// The recent conversation of `profile`'s agent in `workspace`, for a new
+    /// checkpoint, plus a warning when a transcript could not be read. Nothing
+    /// is read when `capture` is false or the configuration switches excerpts
+    /// off, and agents without readable transcripts are skipped silently.
+    pub fn conversation_for_checkpoint(
+        &self,
+        profile: Option<&Profile>,
+        workspace: &Workspace,
+        capture: bool,
+    ) -> (Option<ConversationExcerpt>, Option<String>) {
+        let Some(profile) =
+            profile.filter(|_| capture && self.config.capture_conversation_excerpts)
+        else {
+            return (None, None);
+        };
+        let Ok(adapter) = self.agents.get(&profile.agent_id) else {
+            return (None, None);
+        };
+        match adapter.conversation_excerpt(&profile.agent_home, &workspace.path, None) {
+            Ok(excerpt) => (excerpt, None),
+            Err(ContextWakeError::CapabilityUnavailable(_)) => (None, None),
+            Err(error) => (
+                None,
+                Some(format!(
+                    "The recent {} conversation could not be read, so the checkpoint has no conversation excerpt: {}",
+                    adapter.display_name(),
+                    safe_message(&error)
+                )),
+            ),
+        }
     }
 
     /// Looks up the target profile and confirms that its agent is installed,
@@ -847,34 +901,122 @@ impl Application {
         Ok(target)
     }
 
-    fn switch_to_validated(
+    /// Switches to a validated target. With a handoff and `capture`, the
+    /// source (currently active) profile's recent conversation is captured
+    /// first; the returned warnings explain a transcript that could not be
+    /// read.
+    fn switch_to_validated_with(
         &self,
         target: &Profile,
         workspace: Option<&Workspace>,
-        create_handoff: bool,
-        objective: Option<String>,
-    ) -> Result<SwitchOutcome> {
-        if create_handoff && let Some(workspace) = workspace {
+        mut request: SwitchRequest,
+        capture: bool,
+    ) -> Result<(SwitchOutcome, Vec<String>)> {
+        let mut warnings = Vec::new();
+        if request.create_handoff
+            && let Some(workspace) = workspace
+        {
             ensure_workspace_directory(workspace)?;
+            let source = self.store.active_profile()?;
+            let would_switch = source.as_ref().is_none_or(|source| source.id != target.id);
+            if would_switch || request.refresh_when_active {
+                let (conversation, warning) =
+                    self.conversation_for_checkpoint(source.as_ref(), workspace, capture);
+                request.conversation = conversation;
+                warnings.extend(warning);
+            }
         }
-        switch_profile(
+        let outcome = switch_profile_with(
             &self.store,
             &self.checkpoints(),
             &self.handoffs(),
             &target.id.to_string(),
             workspace,
-            create_handoff,
-            objective,
-        )
+            request,
+        )?;
+        Ok((outcome, warnings))
     }
 
+    /// Continues from a handoff in the active profile's agent, resuming the
+    /// profile's own session in the workspace when possible (see
+    /// [`Self::continue_handoff_in`]).
     pub fn continue_handoff(&self, handoff: &str, workspace_path: Option<&Path>) -> Result<()> {
+        self.continue_handoff_in(handoff, workspace_path, false)
+            .map(|_| ())
+    }
+
+    /// The continue flow: validates the handoff, decides between resuming
+    /// the active profile's own session in the handoff's workspace and a new
+    /// session ([`plan_launch`]; `new_session` forces a new one), prints the
+    /// decision, launches the agent with `ContextWake`'s bounded launch prompt,
+    /// and afterwards records only what the agent's transcript confirms
+    /// ([`record_launch`]).
+    pub fn continue_handoff_in(
+        &self,
+        handoff: &str,
+        workspace_path: Option<&Path>,
+        new_session: bool,
+    ) -> Result<ContinueOutcome> {
+        self.continue_handoff_reporting(handoff, workspace_path, new_session, false)
+    }
+
+    /// [`Self::continue_handoff_in`]; with `progress_to_stderr` the progress
+    /// lines go to standard error so that standard output carries only JSON.
+    fn continue_handoff_reporting(
+        &self,
+        handoff: &str,
+        workspace_path: Option<&Path>,
+        new_session: bool,
+        progress_to_stderr: bool,
+    ) -> Result<ContinueOutcome> {
         let service = self.handoffs();
-        let checkpoints = self.checkpoints();
         let record = self.store.handoff(handoff)?;
-        let (workspace, chosen_explicitly) = match checkpoints
-            .read(&record.checkpoint_id.to_string())
-        {
+        let (workspace, checkpoint, chosen_explicitly) =
+            self.continue_target(handoff, &record, workspace_path)?;
+        ensure_workspace_directory(&workspace)?;
+        let profile = self.store.active_profile()?.ok_or_else(|| {
+            ContextWakeError::InvalidData(
+                "an active profile is required; run 'ctx profile use <name>'".into(),
+            )
+        })?;
+        // Validate the manifest and every referenced content digest immediately before launch.
+        let verified = service.verify(handoff)?;
+        let adapter = self.agents.get(&profile.agent_id)?;
+        let outcome = continue_with_handoff(
+            &ContinueRequest {
+                store: &self.store,
+                handoffs: &service,
+                adapter,
+                profile: &profile,
+                workspace: &workspace,
+                workspace_label: &workspace_label(&workspace),
+                handoff: &verified,
+                checkpoint: checkpoint.as_ref(),
+                new_session,
+            },
+            &mut |notice| match notice {
+                ContinueNotice::Progress(line) if progress_to_stderr => eprintln!("{line}"),
+                ContinueNotice::Progress(line) => println!("{line}"),
+                ContinueNotice::Warning(line) => warn(&line),
+            },
+        )?;
+        if chosen_explicitly {
+            self.select_after_success(&workspace);
+        }
+        Ok(outcome)
+    }
+
+    /// The workspace a handoff continues in (that of its checkpoint, or
+    /// `--workspace` for an imported handoff), its checkpoint, and whether the
+    /// workspace was chosen explicitly.
+    fn continue_target(
+        &self,
+        handoff: &str,
+        record: &crate::model::HandoffRecord,
+        workspace_path: Option<&Path>,
+    ) -> Result<(Workspace, Option<Checkpoint>, bool)> {
+        let checkpoints = self.checkpoints();
+        match checkpoints.read(&record.checkpoint_id.to_string()) {
             Ok(checkpoint) => {
                 let workspace = with_conventional_path(
                     self.store.workspace(&checkpoint.workspace_id.to_string())?,
@@ -888,64 +1030,26 @@ impl Application {
                         )));
                     }
                 }
-                (workspace, false)
+                Ok((workspace, Some(checkpoint), false))
             }
-            Err(ContextWakeError::CheckpointNotFound(_)) => {
+            Err(ContextWakeError::CheckpointNotFound(_)) if record.checkpoint_id.is_nil() => {
                 let path = workspace_path.ok_or_else(|| {
                     ContextWakeError::InvalidData(
                         "this imported handoff has no local checkpoint; pass --workspace".into(),
                     )
                 })?;
-                (self.workspace_for_command(Some(path))?, true)
+                Ok((self.workspace_for_command(Some(path))?, None, true))
             }
-            Err(error) => return Err(error),
-        };
-        ensure_workspace_directory(&workspace)?;
-        let profile = self
-            .store
-            .active_profile()?
-            .ok_or_else(|| ContextWakeError::InvalidData("an active profile is required".into()))?;
-
-        // Validate the manifest and every referenced content digest immediately before launch.
-        let _ = service.validate(handoff)?;
-        let adapter = self.agents.get(&profile.agent_id)?;
-        println!(
-            "Starting {} in workspace {} with handoff {handoff}.",
-            adapter.display_name(),
-            workspace_label(&workspace)
-        );
-        adapter.start_with_handoff(
-            &profile.agent_home,
-            &workspace.path,
-            &record.storage_path,
-            profile.model_provider_id.as_deref(),
-            profile.model_preference.as_deref(),
-        )?;
-        if chosen_explicitly {
-            self.select_after_success(&workspace);
+            Err(ContextWakeError::CheckpointNotFound(_)) => {
+                let path = workspace_path.ok_or_else(|| {
+                    ContextWakeError::InvalidData(format!(
+                        "the checkpoint of handoff {handoff} is missing, so its workspace is unknown; pass --workspace"
+                    ))
+                })?;
+                Ok((self.workspace_for_command(Some(path))?, None, true))
+            }
+            Err(error) => Err(error),
         }
-        let now = Utc::now();
-        self.store.insert_session(&Session {
-            id: Uuid::new_v4(),
-            provider_session_id: None,
-            title: None,
-            workspace_id: workspace.id,
-            profile_id: Some(profile.id),
-            agent_id: profile.agent_id.clone(),
-            model_provider_id: profile.model_provider_id.clone(),
-            model: profile.model_preference.clone(),
-            started_at: now,
-            last_seen_at: now,
-            resume_capability: ResumeCapability::Unknown,
-            archived: false,
-            continuity: ContinuityKind::RestoredFromHandoff,
-        })?;
-        println!(
-            "Restored from Handoff: started a new {} session in workspace {} using handoff {handoff}. This was not a native session resume.",
-            adapter.display_name(),
-            workspace_label(&workspace)
-        );
-        Ok(())
     }
 
     pub fn resume_session(&self, session_reference: &str) -> Result<()> {
@@ -1158,7 +1262,21 @@ impl Application {
                 handoff,
                 objective,
                 workspace,
+                launch,
+                new_session,
+                no_conversation,
             } => {
+                if launch && !handoff {
+                    return Err(ContextWakeError::InvalidData(
+                        "--launch starts the agent from the handoff that this switch creates; pass --handoff --launch".into(),
+                    ));
+                }
+                if new_session && !launch {
+                    return Err(ContextWakeError::InvalidData(
+                        "--new-session applies to --launch; pass --handoff --launch --new-session"
+                            .into(),
+                    ));
+                }
                 // Validate the target (it exists and its agent is installed)
                 // before a workspace is chosen or registered, so a typo changes
                 // nothing.
@@ -1167,7 +1285,7 @@ impl Application {
                     .store
                     .active_profile()?
                     .is_some_and(|active| active.id == target.id);
-                let workspace = if handoff && !already_active {
+                let workspace = if handoff && (!already_active || launch) {
                     let (workspace, registration_warning) =
                         self.command_workspace(workspace.as_deref())?;
                     for warning in capture_warnings(&workspace, registration_warning) {
@@ -1177,8 +1295,20 @@ impl Application {
                 } else {
                     None
                 };
-                let outcome =
-                    self.switch_to_validated(&target, workspace.as_ref(), handoff, objective)?;
+                let (outcome, warnings) = self.switch_to_validated_with(
+                    &target,
+                    workspace.as_ref(),
+                    SwitchRequest {
+                        create_handoff: handoff,
+                        objective,
+                        conversation: None,
+                        refresh_when_active: launch,
+                    },
+                    !no_conversation,
+                )?;
+                for warning in &warnings {
+                    warn(warning);
+                }
                 let handoff_workspace = workspace.filter(|_| outcome.handoff.is_some());
                 if let Some(workspace) = &handoff_workspace {
                     self.select_after_success(workspace);
@@ -1190,15 +1320,7 @@ impl Application {
                 {
                     warn(&warning);
                 }
-                if json {
-                    print_json(&serde_json::json!({
-                        "previous_profile": outcome.previous,
-                        "active_profile": outcome.active,
-                        "handoff": outcome.handoff,
-                        "message": outcome.message,
-                        "workspace": handoff_workspace,
-                    }));
-                } else {
+                if !json {
                     println!("Active profile: {}", outcome.active.display_name);
                     println!("{}", outcome.message);
                     if let Some(handoff) = &outcome.handoff {
@@ -1207,6 +1329,28 @@ impl Application {
                     if let Some(workspace) = &handoff_workspace {
                         println!("Workspace: {}", workspace_label(workspace));
                     }
+                }
+                let launched = match (&outcome.handoff, launch) {
+                    (Some(record), true) => Some(self.continue_handoff_reporting(
+                        &record.id.to_string(),
+                        None,
+                        new_session,
+                        json,
+                    )?),
+                    _ => None,
+                };
+                if json {
+                    let mut value = serde_json::json!({
+                        "previous_profile": outcome.previous,
+                        "active_profile": outcome.active,
+                        "handoff": outcome.handoff,
+                        "message": outcome.message,
+                        "workspace": handoff_workspace,
+                    });
+                    if let Some(launched) = launched {
+                        value["launch"] = serde_json::to_value(launched).unwrap_or_default();
+                    }
+                    print_json(&value);
                 }
             }
             ProfileCommand::Remove { profile, yes } => {
@@ -1548,6 +1692,7 @@ impl Application {
                 pending,
                 known_issues,
                 validate,
+                no_conversation,
             } => {
                 let (workspace, registration_warning) =
                     self.command_workspace(workspace.as_deref())?;
@@ -1560,7 +1705,15 @@ impl Application {
                 } else {
                     Vec::new()
                 };
-                let checkpoint = service.create(
+                let (conversation, conversation_warning) = self.conversation_for_checkpoint(
+                    profile.as_ref(),
+                    &workspace,
+                    !no_conversation,
+                );
+                if let Some(warning) = &conversation_warning {
+                    warn(warning);
+                }
+                let checkpoint = service.create_with_conversation(
                     &workspace,
                     profile.as_ref(),
                     None,
@@ -1574,11 +1727,23 @@ impl Application {
                         user_notes: notes,
                         validation_results,
                     },
+                    conversation,
                 )?;
                 self.select_after_success(&workspace);
                 output_value(&checkpoint, json, || {
+                    let conversation =
+                        checkpoint
+                            .conversation
+                            .as_ref()
+                            .map_or_else(String::new, |excerpt| {
+                                format!(
+                                    "\nIncluded the recent {} conversation excerpt (session {}).",
+                                    crate::handoff::agent_label(&excerpt.agent_id),
+                                    terminal_line(&excerpt.provider_session_id)
+                                )
+                            });
                     format!(
-                        "Created checkpoint {} for workspace {} (redaction: {})",
+                        "Created checkpoint {} for workspace {} (redaction: {}){conversation}",
                         checkpoint.id,
                         workspace_label(&workspace),
                         checkpoint.redaction_status.as_str()
@@ -1586,20 +1751,33 @@ impl Application {
                 });
             }
             CheckpointCommand::List => {
-                let checkpoints = service.list()?;
+                let listing = service.list_with_unreadable()?;
                 if json {
-                    print_json(&checkpoints);
-                } else if checkpoints.is_empty() {
+                    // The JSON shape stays a list of checkpoints; unreadable
+                    // entries are reported on standard error.
+                    print_json(&listing.checkpoints);
+                } else if listing.checkpoints.is_empty() && listing.unreadable.is_empty() {
                     println!(
                         "No checkpoints. Create one with 'ctx checkpoint create --objective ...'."
                     );
                 } else {
-                    for checkpoint in checkpoints {
+                    for checkpoint in &listing.checkpoints {
                         println!(
                             "{}  {}  {}",
-                            checkpoint.id, checkpoint.created_at, checkpoint.objective
+                            checkpoint.id,
+                            checkpoint.created_at,
+                            terminal_line(&checkpoint.objective)
                         );
                     }
+                }
+                for unreadable in &listing.unreadable {
+                    warn(&format!(
+                        "checkpoint {} ({}) cannot be read: {}. Remove the stale entry with '{}'.",
+                        unreadable.id,
+                        terminal_line(&unreadable.objective),
+                        terminal_line(&unreadable.reason),
+                        unreadable.recovery_command()
+                    ));
                 }
             }
             CheckpointCommand::Show { checkpoint } => {
@@ -1700,8 +1878,20 @@ impl Application {
                     )
                 });
             }
-            HandoffCommand::Continue { handoff, workspace } => {
-                self.continue_handoff(&handoff, workspace.as_deref())?;
+            HandoffCommand::Continue {
+                handoff,
+                workspace,
+                new_session,
+            } => {
+                let outcome = self.continue_handoff_reporting(
+                    &handoff,
+                    workspace.as_deref(),
+                    new_session,
+                    json,
+                )?;
+                if json {
+                    print_json(&outcome);
+                }
             }
         }
         Ok(())
@@ -1983,6 +2173,7 @@ fn config_command(
             update_check,
             git_timeout_ms,
             validation_timeout_ms,
+            capture_conversation_excerpts,
         } => {
             if telemetry.is_none()
                 && retention_days.is_none()
@@ -1990,6 +2181,7 @@ fn config_command(
                 && update_check.is_none()
                 && git_timeout_ms.is_none()
                 && validation_timeout_ms.is_none()
+                && capture_conversation_excerpts.is_none()
             {
                 return Err(ContextWakeError::Configuration(
                     "config set requires at least one setting".into(),
@@ -2013,6 +2205,9 @@ fn config_command(
             }
             if let Some(value) = git_timeout_ms {
                 config.git_timeout_ms = value;
+            }
+            if let Some(value) = capture_conversation_excerpts {
+                config.capture_conversation_excerpts = value;
             }
             if let Some(value) = validation_timeout_ms {
                 config.validation_timeout_ms = value;

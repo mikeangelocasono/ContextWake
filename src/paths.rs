@@ -542,6 +542,7 @@ mod tests {
             validation_results: Vec::new(),
             created_at: now,
             redaction_status: RedactionStatus::Clean,
+            conversation: None,
         };
         let checkpoint_file = legacy
             .checkpoints_dir()

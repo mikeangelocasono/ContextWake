@@ -1473,3 +1473,85 @@ fn a_local_handoff_continues_only_in_its_own_workspace() {
     assert!(message.contains("project-a"), "{message}");
     assert!(message.contains("continues there"), "{message}");
 }
+
+#[test]
+fn launch_flags_explain_what_they_need_before_anything_changes() {
+    let home = tempfile::tempdir().expect("home");
+    for (args, needle) in [
+        (
+            vec!["profile", "use", "nobody", "--launch"],
+            "pass --handoff --launch",
+        ),
+        (
+            vec!["profile", "use", "nobody", "--handoff", "--new-session"],
+            "--new-session applies to --launch",
+        ),
+    ] {
+        let output = command(home.path()).args(&args).output().expect("run ctx");
+        assert!(!output.status.success(), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(needle), "{args:?}: {stderr}");
+    }
+    let profiles = json_output(home.path(), &["profile", "list"]);
+    assert_eq!(profiles, serde_json::json!([]));
+}
+
+#[test]
+fn conversation_capture_can_be_switched_off() {
+    let home = tempfile::tempdir().expect("home");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let config = json_output(
+        home.path(),
+        &["config", "set", "--capture-conversation-excerpts", "false"],
+    );
+    assert_eq!(config["capture_conversation_excerpts"], false);
+    let checkpoint = json_in(
+        home.path(),
+        workspace.path(),
+        &[
+            "checkpoint",
+            "create",
+            "--objective",
+            "Ship it",
+            "--no-conversation",
+        ],
+    );
+    assert_eq!(checkpoint["schema_version"], 3);
+    assert!(checkpoint.get("conversation").is_none());
+}
+
+#[test]
+fn checkpoint_list_reports_unreadable_entries_with_their_recovery_command() {
+    let home = tempfile::tempdir().expect("home");
+    let workspace = tempfile::tempdir().expect("workspace");
+    let kept = json_in(
+        home.path(),
+        workspace.path(),
+        &["checkpoint", "create", "--objective", "Kept"],
+    );
+    let broken = json_in(
+        home.path(),
+        workspace.path(),
+        &["checkpoint", "create", "--objective", "Broken"],
+    );
+    let broken_id = broken["id"].as_str().expect("id");
+    let file = contextwake::paths::AppPaths::from_root(home.path())
+        .checkpoints_dir()
+        .join(format!("{broken_id}.json"));
+    std::fs::write(&file, "{ not json").expect("corrupt the checkpoint");
+
+    let output = command(home.path())
+        .args(["checkpoint", "list"])
+        .output()
+        .expect("run ctx");
+    assert!(output.status.success());
+    assert!(stdout(&output).contains(kept["id"].as_str().expect("id")));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("ctx checkpoint delete {broken_id} --yes")),
+        "{stderr}"
+    );
+    // The JSON shape stays a list of readable checkpoints.
+    let json = json_output(home.path(), &["checkpoint", "list"]);
+    assert_eq!(json.as_array().map(Vec::len), Some(1));
+}

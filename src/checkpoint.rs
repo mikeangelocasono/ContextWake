@@ -7,16 +7,24 @@ use uuid::Uuid;
 
 use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
-use crate::model::{Checkpoint, Profile, RedactionStatus, Session, ValidationResult, Workspace};
+use crate::model::{
+    Checkpoint, ConversationExcerpt, Profile, RedactionStatus, Session, ValidationResult, Workspace,
+};
 use crate::paths::{AppPaths, simplify_path};
-use crate::security::{SecretScanner, sanitize_terminal};
+use crate::security::{SecretScanner, sanitize_terminal, sanitize_untrusted_label};
 use crate::store::Store;
 use crate::workspace::load_project_instructions;
 
-/// `maxLength` of free-text fields in `schemas/checkpoint-v2.schema.json`.
+/// Schema version of the checkpoints this build writes. Version 3 added the
+/// optional `conversation` excerpt; readers accept versions 1 to 3.
+pub const CHECKPOINT_SCHEMA_VERSION: u32 = 3;
+/// `maxLength` of free-text fields in `schemas/checkpoint-v3.schema.json`.
 const TEXT_FIELD_MAX_CHARS: usize = 65_536;
-/// `maxLength` of validation command items in the checkpoint v2 schema.
+/// `maxLength` of validation command items in the checkpoint schema.
 const COMMAND_ITEM_MAX_CHARS: usize = 4_096;
+/// `maxLength` of the excerpt's session id and title in the checkpoint schema.
+const EXCERPT_SESSION_ID_MAX_CHARS: usize = 256;
+const EXCERPT_TITLE_MAX_CHARS: usize = 200;
 
 #[derive(Clone, Debug, Default)]
 pub struct CheckpointInput {
@@ -138,6 +146,21 @@ impl CheckpointService {
         session: Option<&Session>,
         input: CheckpointInput,
     ) -> Result<Checkpoint> {
+        self.create_with_conversation(workspace, profile, session, input, None)
+    }
+
+    /// Like [`Self::create`], and also stores `conversation`, the recent
+    /// conversation of the source agent in this workspace. The excerpt comes
+    /// from a provider transcript, so it is sanitized, redacted and bounded
+    /// again here like every other free-text field.
+    pub fn create_with_conversation(
+        &self,
+        workspace: &Workspace,
+        profile: Option<&Profile>,
+        session: Option<&Session>,
+        input: CheckpointInput,
+        conversation: Option<ConversationExcerpt>,
+    ) -> Result<Checkpoint> {
         if input.objective.trim().is_empty() {
             return Err(ContextWakeError::InvalidData(
                 "checkpoint objective cannot be empty".into(),
@@ -222,8 +245,9 @@ impl CheckpointService {
             snapshot
         });
         let files_changed = self.git.changed_files(&workspace.path)?;
+        let conversation = conversation.and_then(|excerpt| clean_conversation(excerpt, &mut clean));
         let checkpoint = Checkpoint {
-            schema_version: 2,
+            schema_version: CHECKPOINT_SCHEMA_VERSION,
             id: Uuid::new_v4(),
             workspace_id: workspace.id,
             session_id: session.map(|value| value.id),
@@ -248,6 +272,7 @@ impl CheckpointService {
             } else {
                 RedactionStatus::Clean
             },
+            conversation,
         };
         let path = self
             .paths
@@ -301,7 +326,7 @@ impl CheckpointService {
         let checkpoint: Checkpoint = serde_json::from_str(&content).map_err(|error| {
             ContextWakeError::InvalidData(format!("invalid checkpoint {}: {error}", path.display()))
         })?;
-        if !matches!(checkpoint.schema_version, 1 | 2) {
+        if !(1..=CHECKPOINT_SCHEMA_VERSION).contains(&checkpoint.schema_version) {
             return Err(ContextWakeError::InvalidData(format!(
                 "checkpoint {reference} uses unsupported schema version {}; it may have been written by a newer ContextWake",
                 checkpoint.schema_version
@@ -429,6 +454,56 @@ impl CheckpointService {
         atomic_write(destination, &content, overwrite)?;
         Ok(destination.to_path_buf())
     }
+}
+
+/// Re-sanitizes a provider-supplied conversation excerpt with the checkpoint's
+/// field cleaner and enforces the excerpt limits. An excerpt without a usable
+/// agent or session id, or without any visible text, is dropped.
+fn clean_conversation(
+    excerpt: ConversationExcerpt,
+    clean: &mut impl FnMut(String, usize) -> String,
+) -> Option<ConversationExcerpt> {
+    let agent_id = crate::security::validate_external_reference(&excerpt.agent_id).ok()?;
+    let provider_session_id =
+        sanitize_untrusted_label(&excerpt.provider_session_id, EXCERPT_SESSION_ID_MAX_CHARS)?;
+    let mut truncated = excerpt.truncated;
+    let mut user_requests = excerpt
+        .user_requests
+        .into_iter()
+        .map(|request| {
+            let cleaned = clean(request, ConversationExcerpt::MAX_REQUEST_CHARS);
+            truncated |= cleaned.contains("[... truncated by ContextWake:");
+            cleaned
+        })
+        .filter(|request| !request.is_empty())
+        .collect::<Vec<_>>();
+    let older = user_requests
+        .len()
+        .saturating_sub(ConversationExcerpt::MAX_USER_REQUESTS);
+    if older > 0 {
+        truncated = true;
+        user_requests.drain(..older);
+    }
+    let last_agent_message = excerpt
+        .last_agent_message
+        .map(|message| clean(message, ConversationExcerpt::MAX_AGENT_MESSAGE_CHARS))
+        .filter(|message| !message.is_empty());
+    if user_requests.is_empty() && last_agent_message.is_none() {
+        return None;
+    }
+    Some(ConversationExcerpt {
+        agent_id,
+        provider_session_id,
+        session_title: excerpt
+            .session_title
+            .as_deref()
+            .and_then(|title| sanitize_untrusted_label(title, EXCERPT_TITLE_MAX_CHARS)),
+        captured_at: excerpt.captured_at,
+        last_activity_at: excerpt.last_activity_at,
+        user_requests,
+        last_agent_message,
+        truncated,
+    })
 }
 
 /// Cuts `text` to at most `max_bytes` bytes on a character boundary and, when
@@ -871,5 +946,174 @@ mod tests {
                 .contains("sk-abcdefghijklmnopqrstuvwxyz")
         );
         assert_eq!(checkpoint.redaction_status, RedactionStatus::Redacted);
+    }
+
+    fn excerpt(requests: Vec<String>) -> ConversationExcerpt {
+        ConversationExcerpt {
+            agent_id: "claude".into(),
+            provider_session_id: "session\n42".into(),
+            session_title: Some("Fix\tparser".into()),
+            captured_at: Utc::now(),
+            last_activity_at: None,
+            user_requests: requests,
+            last_agent_message: Some(format!(
+                "done with password=hunter2hunter2 {}",
+                "y".repeat(5_000)
+            )),
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn conversation_excerpts_are_redacted_bounded_and_written_as_schema_v3() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, store, workspace) = service(root.path());
+        let requests = (1..=7)
+            .map(|index| format!("request {index}"))
+            .chain([
+                "token=super-secret-value \u{1b}[31mred".to_string(),
+                "   ".into(),
+            ])
+            .collect();
+        let checkpoint = service
+            .create_with_conversation(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Ship the parser".into(),
+                    ..CheckpointInput::default()
+                },
+                Some(excerpt(requests)),
+            )
+            .expect("checkpoint");
+        assert_eq!(checkpoint.schema_version, CHECKPOINT_SCHEMA_VERSION);
+        assert_eq!(checkpoint.redaction_status, RedactionStatus::Redacted);
+        let conversation = checkpoint.conversation.as_ref().expect("excerpt kept");
+        assert_eq!(conversation.provider_session_id, "session 42");
+        assert_eq!(conversation.session_title.as_deref(), Some("Fix parser"));
+        assert_eq!(
+            conversation.user_requests.len(),
+            ConversationExcerpt::MAX_USER_REQUESTS
+        );
+        assert_eq!(conversation.user_requests[0], "request 4");
+        let newest = conversation.user_requests.last().expect("newest");
+        assert!(newest.contains("[REDACTED]") && !newest.contains('\u{1b}'));
+        let answer = conversation.last_agent_message.as_deref().expect("answer");
+        assert!(answer.chars().count() <= ConversationExcerpt::MAX_AGENT_MESSAGE_CHARS);
+        assert!(!answer.contains("hunter2hunter2"));
+        assert!(conversation.truncated);
+
+        let persisted = std::fs::read_to_string(
+            store
+                .checkpoint_path(&checkpoint.id.to_string())
+                .expect("path"),
+        )
+        .expect("file");
+        assert!(persisted.contains("\"schema_version\": 3"));
+        assert!(!persisted.contains("super-secret-value"));
+        assert_eq!(
+            service.read(&checkpoint.id.to_string()).expect("read back"),
+            checkpoint
+        );
+
+        // An excerpt without any visible text, or without a usable id, is dropped.
+        for unusable in [
+            ConversationExcerpt {
+                last_agent_message: None,
+                ..excerpt(vec!["  ".into()])
+            },
+            ConversationExcerpt {
+                provider_session_id: "  ".into(),
+                ..excerpt(vec!["request".into()])
+            },
+            ConversationExcerpt {
+                agent_id: "--bad agent".into(),
+                ..excerpt(vec!["request".into()])
+            },
+        ] {
+            let checkpoint = service
+                .create_with_conversation(
+                    &workspace,
+                    None,
+                    None,
+                    CheckpointInput {
+                        objective: "Ship".into(),
+                        ..CheckpointInput::default()
+                    },
+                    Some(unusable),
+                )
+                .expect("checkpoint");
+            assert!(checkpoint.conversation.is_none());
+        }
+    }
+
+    #[test]
+    fn readers_accept_checkpoint_schemas_one_to_three_only() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, store, workspace) = service(root.path());
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Versioned".into(),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        assert!(checkpoint.conversation.is_none());
+        let path = store
+            .checkpoint_path(&checkpoint.id.to_string())
+            .expect("path");
+        let original: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("file")).expect("json");
+        assert!(
+            original.get("conversation").is_none(),
+            "absent when not captured"
+        );
+        for version in [1, 2, 3, 4] {
+            let mut value = original.clone();
+            value["schema_version"] = serde_json::json!(version);
+            std::fs::write(&path, serde_json::to_vec(&value).expect("encode")).expect("write");
+            let result = service.read(&checkpoint.id.to_string());
+            if version <= 3 {
+                assert_eq!(result.expect("supported").schema_version, version);
+            } else {
+                assert!(
+                    matches!(result, Err(ContextWakeError::InvalidData(message)) if message.contains("unsupported schema version 4"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn seeding_never_carries_an_earlier_conversation_excerpt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, _, workspace) = service(root.path());
+        let earlier = service
+            .create_with_conversation(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Earlier".into(),
+                    ..CheckpointInput::default()
+                },
+                Some(excerpt(vec!["old request".into()])),
+            )
+            .expect("earlier");
+        assert!(earlier.conversation.is_some());
+        let seeded = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput::from_checkpoint(&earlier),
+            )
+            .expect("seeded");
+        assert_eq!(seeded.objective, "Earlier");
+        assert!(seeded.conversation.is_none());
     }
 }

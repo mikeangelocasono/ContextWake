@@ -9,7 +9,8 @@ use contextwake::continuity::switch_profile;
 use contextwake::git::GitClient;
 use contextwake::handoff::HandoffService;
 use contextwake::model::{
-    AuthState, Profile, TrustState, ValidationResult, ValidationStatus, Workspace,
+    AuthState, ConversationExcerpt, Profile, TrustState, ValidationResult, ValidationStatus,
+    Workspace,
 };
 use contextwake::paths::AppPaths;
 use contextwake::store::Store;
@@ -40,9 +41,15 @@ fn published_awhf_schema_is_valid_json_and_current() {
 
 #[test]
 fn published_checkpoint_schema_is_valid_json_and_current() {
-    let schema: Value = serde_json::from_str(include_str!("../schemas/checkpoint-v2.schema.json"))
-        .expect("checkpoint schema JSON");
-    assert_eq!(schema["properties"]["schema_version"]["const"], 2);
+    let previous: Value =
+        serde_json::from_str(include_str!("../schemas/checkpoint-v2.schema.json"))
+            .expect("checkpoint v2 schema JSON");
+    assert_eq!(previous["properties"]["schema_version"]["const"], 2);
+    let schema = checkpoint_schema();
+    assert_eq!(
+        schema["properties"]["schema_version"]["const"],
+        contextwake::checkpoint::CHECKPOINT_SCHEMA_VERSION
+    );
     assert!(
         schema["required"]
             .as_array()
@@ -50,6 +57,29 @@ fn published_checkpoint_schema_is_valid_json_and_current() {
             .iter()
             .any(|field| field == "agent_id")
     );
+    let conversation = &schema["properties"]["conversation"];
+    assert_eq!(
+        conversation["properties"]["user_requests"]["maxItems"],
+        contextwake::model::ConversationExcerpt::MAX_USER_REQUESTS
+    );
+    assert_eq!(
+        conversation["properties"]["user_requests"]["items"]["maxLength"],
+        contextwake::model::ConversationExcerpt::MAX_REQUEST_CHARS
+    );
+    assert_eq!(
+        conversation["properties"]["last_agent_message"]["maxLength"],
+        contextwake::model::ConversationExcerpt::MAX_AGENT_MESSAGE_CHARS
+    );
+    // Every v2 field is still described by v3.
+    for field in previous["required"].as_array().expect("v2 required") {
+        assert!(
+            schema["required"]
+                .as_array()
+                .expect("required")
+                .contains(field),
+            "{field}"
+        );
+    }
 }
 
 fn awhf_schema() -> Value {
@@ -57,7 +87,7 @@ fn awhf_schema() -> Value {
 }
 
 fn checkpoint_schema() -> Value {
-    serde_json::from_str(include_str!("../schemas/checkpoint-v2.schema.json"))
+    serde_json::from_str(include_str!("../schemas/checkpoint-v3.schema.json"))
         .expect("checkpoint schema")
 }
 
@@ -475,4 +505,39 @@ fn created_checkpoints_conform_to_the_published_checkpoint_schema() {
     let persisted: Value =
         serde_json::from_slice(&fs::read(path).expect("checkpoint file")).expect("JSON");
     assert_conforms(&checkpoint_schema(), &persisted, "checkpoint");
+
+    // With an oversized excerpt from a provider transcript.
+    let with_excerpt = checkpoints
+        .create_with_conversation(
+            &ordinary,
+            None,
+            None,
+            CheckpointInput {
+                objective: "Continue the parser".into(),
+                ..CheckpointInput::default()
+            },
+            Some(ConversationExcerpt {
+                agent_id: "claude".into(),
+                provider_session_id: "s".repeat(400),
+                session_title: Some("t".repeat(400)),
+                captured_at: Utc::now(),
+                last_activity_at: Some(Utc::now()),
+                user_requests: vec!["r".repeat(2_000); 9],
+                last_agent_message: Some("a".repeat(9_000)),
+                truncated: false,
+            }),
+        )
+        .expect("checkpoint with excerpt");
+    assert!(with_excerpt.conversation.is_some());
+    let persisted: Value = serde_json::from_slice(
+        &fs::read(
+            store
+                .checkpoint_path(&with_excerpt.id.to_string())
+                .expect("path"),
+        )
+        .expect("checkpoint file"),
+    )
+    .expect("JSON");
+    assert!(persisted.get("conversation").is_some());
+    assert_conforms(&checkpoint_schema(), &persisted, "checkpoint with excerpt");
 }

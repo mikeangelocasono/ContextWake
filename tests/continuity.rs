@@ -823,7 +823,7 @@ fn unreadable_checkpoints_are_skipped_reported_and_deletable() {
     let mut future: Value =
         serde_json::from_str(&fs::read_to_string(path_of(&beta_future)).expect("read"))
             .expect("checkpoint JSON");
-    future["schema_version"] = json!(3);
+    future["schema_version"] = json!(4);
     fs::write(
         path_of(&beta_future),
         serde_json::to_vec_pretty(&future).expect("encode"),
@@ -860,7 +860,7 @@ fn unreadable_checkpoints_are_skipped_reported_and_deletable() {
     assert!(
         reported(beta_future.id)
             .reason
-            .contains("unsupported schema version 3")
+            .contains("unsupported schema version 4")
     );
 
     let latest = local
