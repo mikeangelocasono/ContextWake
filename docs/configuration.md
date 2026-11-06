@@ -91,7 +91,9 @@ act on your normal agent login (the one you also use outside ContextWake); both
 print a notice first, and logout requires `--yes`. `ctx profile remove` only
 deletes ContextWake's metadata and never touches either kind of home. If the
 agent's home variable changes after the profile was created, `ctx doctor` warns
-that the recorded home no longer matches. Profiles created before state schema
+that the recorded home no longer matches; inside an agent that ContextWake
+launched for a profile with a separate sign-in, it reports that comparison as
+not checked instead. Profiles created before state schema
 v6 keep separate sign-ins.
 
 ## Workspaces and project configuration

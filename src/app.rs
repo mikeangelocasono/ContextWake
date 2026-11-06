@@ -1006,17 +1006,17 @@ impl Application {
         };
         let id = Uuid::new_v4();
         let (agent_home, home_mode, auth_state) = if let Some(home) = default_home {
-            // The agent's own home is only read (through the adapter's status
-            // probe); a probe failure leaves the state unknown.
-            let auth_state = adapter.auth_status(&home).unwrap_or(AuthState::Unknown);
-            (home, ProfileHomeMode::AgentDefault, auth_state)
+            // The sign-in state is probed only after the insert succeeds, so a
+            // request that fails (for example on a taken name) never runs the
+            // agent's status command against the user's normal sign-in.
+            (home, ProfileHomeMode::AgentDefault, AuthState::Unknown)
         } else {
             let agent_home = self.paths.agent_home(&agent_id, &id);
             adapter.initialize_profile_home(&agent_home)?;
             (agent_home, ProfileHomeMode::Isolated, AuthState::SignedOut)
         };
         let now = Utc::now();
-        let profile = Profile {
+        let mut profile = Profile {
             id,
             name,
             display_name,
@@ -1040,6 +1040,17 @@ impl Application {
                 let _ = std::fs::remove_dir_all(&profile.agent_home);
             }
             return Err(error);
+        }
+        if profile.home_mode == ProfileHomeMode::AgentDefault {
+            // The agent's own home is only read (through the adapter's status
+            // probe); a probe failure leaves the state unknown.
+            let auth_state = adapter
+                .auth_status(&profile.agent_home)
+                .unwrap_or(AuthState::Unknown);
+            if auth_state != AuthState::Unknown {
+                self.store.update_profile_auth(profile.id, auth_state)?;
+                profile.auth_state = auth_state;
+            }
         }
         let became_active = self.store.active_profile()?.is_none();
         let profile = if became_active {
@@ -3353,7 +3364,7 @@ pub(crate) mod profile_tests {
         let root = tempfile::tempdir().expect("root");
         let home = user_home(root.path());
         let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
-        let app = application_with(root.path(), agent);
+        let app = application_with(root.path(), agent.clone());
         app.add_profile(&request("Work", ProfileHomeChoice::Isolated))
             .expect("isolated");
 
@@ -3363,6 +3374,9 @@ pub(crate) mod profile_tests {
                 .is_err()
         );
         assert_untouched(&home);
+        // The failed request never ran the agent's status command against
+        // the user's normal sign-in.
+        assert!(agent.calls("auth_status").is_empty());
     }
 
     #[test]
