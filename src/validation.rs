@@ -248,11 +248,31 @@ mod tests {
             .expect("result");
         assert_eq!(results[0].status, ValidationStatus::Failed);
         assert_eq!(results[0].summary, "timed out after 200 ms");
-        // The 30-second command was killed and reaped, not waited for.
+        // The 30-second command was killed, not merely abandoned: without the
+        // kill, the bounded reap alone would take the full REAP_TIMEOUT.
+        assert!(started.elapsed() < REAP_TIMEOUT, "{:?}", started.elapsed());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_stops_the_direct_child_on_unix() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // The shell writes the marker only if it survives the timeout.
+        let runner = ValidationRunner::new(Duration::from_millis(300));
+        let results = runner
+            .run(
+                &workspace(root.path(), TrustState::Trusted),
+                &[CommandSpec {
+                    executable: "sh".into(),
+                    args: vec!["-c".into(), "sleep 2; touch child-marker.txt".into()],
+                }],
+            )
+            .expect("result");
+        assert_eq!(results[0].summary, "timed out after 300 ms");
+        std::thread::sleep(Duration::from_secs(3));
         assert!(
-            started.elapsed() < Duration::from_secs(15),
-            "{:?}",
-            started.elapsed()
+            !root.path().join("child-marker.txt").exists(),
+            "the timed-out command kept running"
         );
     }
 
