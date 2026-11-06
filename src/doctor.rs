@@ -200,6 +200,26 @@ pub(crate) fn run_doctor_with_agent_results(
         },
     });
 
+    if let Some(warning) = paths.permission_warning() {
+        checks.push(DoctorCheck {
+            name: "State permissions".into(),
+            status: CheckStatus::Warning,
+            summary: sanitize_terminal(&warning),
+            action: Some(
+                "Move CONTEXTWAKE_HOME inside your user profile, or remove inherited access to that folder (see docs/configuration.md).".into(),
+            ),
+        });
+    }
+    let reserved_settings = config.reserved_setting_notices();
+    if !reserved_settings.is_empty() {
+        checks.push(DoctorCheck {
+            name: "Reserved settings".into(),
+            status: CheckStatus::Warning,
+            summary: sanitize_terminal(&reserved_settings.join("; ")),
+            action: Some("Remove these settings from config.toml; they have no effect.".into()),
+        });
+    }
+
     checks.push(DoctorCheck {
         name: "Credential boundary".into(),
         status: CheckStatus::Pass,

@@ -24,6 +24,10 @@ pub enum ContextWakeError {
     CheckpointNotFound(String),
     #[error("handoff not found: {0}")]
     HandoffNotFound(String),
+    /// A name or other non-unique reference matched several records. The
+    /// message lists the candidates; nothing was changed.
+    #[error("ambiguous reference: {0}")]
+    AmbiguousReference(String),
     #[error("coding-agent capability unavailable: {0}")]
     CapabilityUnavailable(String),
     #[error("coding-agent command failed: {0}")]
