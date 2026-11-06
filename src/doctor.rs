@@ -254,7 +254,7 @@ fn build_report(
         },
     });
 
-    if let Some(warning) = paths.permission_warning() {
+    if let Some(warning) = state.paths.and_then(AppPaths::permission_warning) {
         checks.push(DoctorCheck {
             name: "State permissions".into(),
             status: CheckStatus::Warning,
@@ -264,7 +264,10 @@ fn build_report(
             ),
         });
     }
-    let reserved_settings = config.reserved_setting_notices();
+    let reserved_settings = match &state.config {
+        Loaded::Ready(config) => config.reserved_setting_notices(),
+        Loaded::Failed(_) | Loaded::NotChecked(_) => Vec::new(),
+    };
     if !reserved_settings.is_empty() {
         checks.push(DoctorCheck {
             name: "Reserved settings".into(),
