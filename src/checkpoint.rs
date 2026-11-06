@@ -1,7 +1,8 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::error::{ContextWakeError, IoContext, Result};
@@ -11,6 +12,11 @@ use crate::paths::AppPaths;
 use crate::security::{SecretScanner, sanitize_terminal};
 use crate::store::Store;
 use crate::workspace::load_project_instructions;
+
+/// `maxLength` of free-text fields in `schemas/checkpoint-v2.schema.json`.
+const TEXT_FIELD_MAX_CHARS: usize = 65_536;
+/// `maxLength` of validation command items in the checkpoint v2 schema.
+const COMMAND_ITEM_MAX_CHARS: usize = 4_096;
 
 #[derive(Clone, Debug, Default)]
 pub struct CheckpointInput {
@@ -25,6 +31,12 @@ pub struct CheckpointInput {
 }
 
 impl CheckpointInput {
+    /// Seeds a new checkpoint with an earlier checkpoint's explicit project
+    /// state (objective, tasks, decisions, issues and notes).
+    ///
+    /// Validation results are deliberately not carried over: they describe the
+    /// tree at the moment they were observed, while the new checkpoint captures
+    /// a new Git state, so a copied pass would read as current when it is not.
     pub fn from_checkpoint(checkpoint: &Checkpoint) -> Self {
         Self {
             objective: checkpoint.objective.clone(),
@@ -34,9 +46,77 @@ impl CheckpointInput {
             pending_tasks: checkpoint.pending_tasks.clone(),
             known_issues: checkpoint.known_issues.clone(),
             user_notes: checkpoint.user_notes.clone(),
-            validation_results: checkpoint.validation_results.clone(),
+            validation_results: Vec::new(),
         }
     }
+}
+
+/// A checkpoint index entry whose JSON file could not be used: it is missing,
+/// unreadable, corrupt, outside managed storage, a symlink, or written with an
+/// unsupported schema version. Listing skips such entries instead of failing,
+/// and reports them here so interfaces can show them with a recovery command.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct UnreadableCheckpoint {
+    pub id: Uuid,
+    /// Objective recorded in the index when the checkpoint was created.
+    pub objective: String,
+    pub created_at: DateTime<Utc>,
+    pub storage_path: PathBuf,
+    pub reason: String,
+}
+
+impl UnreadableCheckpoint {
+    fn new(
+        id: Uuid,
+        objective: &str,
+        storage_path: PathBuf,
+        created_at: DateTime<Utc>,
+        reason: &str,
+    ) -> Self {
+        Self {
+            id,
+            objective: sanitize_terminal(objective),
+            created_at,
+            storage_path,
+            reason: sanitize_terminal(reason),
+        }
+    }
+
+    fn from_error(
+        id: Uuid,
+        objective: &str,
+        storage_path: PathBuf,
+        created_at: DateTime<Utc>,
+        error: &ContextWakeError,
+    ) -> Self {
+        let reason = if matches!(error, ContextWakeError::CheckpointNotFound(_)) {
+            "checkpoint file is missing".to_string()
+        } else {
+            error.to_string()
+        };
+        Self::new(id, objective, storage_path, created_at, &reason)
+    }
+
+    /// The command that removes this stale index entry.
+    pub fn recovery_command(&self) -> String {
+        format!("ctx checkpoint delete {} --yes", self.id)
+    }
+}
+
+/// Every indexed checkpoint, split into readable checkpoints (newest first)
+/// and entries that could not be read.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct CheckpointListing {
+    pub checkpoints: Vec<Checkpoint>,
+    pub unreadable: Vec<UnreadableCheckpoint>,
+}
+
+/// The newest readable checkpoint of one workspace, plus any newer index
+/// entries of that workspace that could not be read.
+#[derive(Clone, Debug, Default, Serialize, PartialEq, Eq)]
+pub struct LatestCheckpoint {
+    pub checkpoint: Option<Checkpoint>,
+    pub unreadable: Vec<UnreadableCheckpoint>,
 }
 
 #[derive(Clone, Debug)]
@@ -65,37 +145,67 @@ impl CheckpointService {
         }
         let scanner = SecretScanner::new();
         let mut redacted = false;
-        let mut clean = |value: String| {
+        let mut clean = |value: String, max_chars: usize| {
             let safe = sanitize_terminal(&value);
             redacted |= safe != value;
             let report = scanner.redact(&safe);
             redacted |= report.redacted() || report.text.contains("[REDACTED]");
-            report.text.trim().to_string()
+            // Bound only after redaction, so a cut can never expose part of a
+            // secret; `fit_redacted` re-scans whatever it cuts.
+            let (text, cut_redacted) = fit_redacted(&scanner, report.text.trim(), max_chars);
+            redacted |= cut_redacted;
+            text
         };
-        let objective = clean(input.objective);
+        let objective = clean(input.objective, TEXT_FIELD_MAX_CHARS);
+        if objective.is_empty() {
+            return Err(ContextWakeError::InvalidData(
+                "checkpoint objective cannot be empty after terminal control data is removed"
+                    .into(),
+            ));
+        }
         let active_task = input
             .active_task
-            .map(&mut clean)
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
             .filter(|value| !value.is_empty());
-        let completed = input.completed.into_iter().map(&mut clean).collect();
-        let decisions = input.decisions.into_iter().map(&mut clean).collect();
-        let pending_tasks = input.pending_tasks.into_iter().map(&mut clean).collect();
-        let known_issues = input.known_issues.into_iter().map(&mut clean).collect();
+        let completed = input
+            .completed
+            .into_iter()
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
+            .collect();
+        let decisions = input
+            .decisions
+            .into_iter()
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
+            .collect();
+        let pending_tasks = input
+            .pending_tasks
+            .into_iter()
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
+            .collect();
+        let known_issues = input
+            .known_issues
+            .into_iter()
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
+            .collect();
         let user_notes = input
             .user_notes
-            .map(&mut clean)
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
             .filter(|value| !value.is_empty());
         let validation_results = input
             .validation_results
             .into_iter()
             .map(|mut result| {
-                result.command = result.command.into_iter().map(&mut clean).collect();
-                result.summary = clean(result.summary);
+                result.command = result
+                    .command
+                    .into_iter()
+                    .map(|value| clean(value, COMMAND_ITEM_MAX_CHARS))
+                    .collect();
+                result.summary = clean(result.summary, TEXT_FIELD_MAX_CHARS);
                 result
             })
             .collect();
         let project_instructions = load_project_instructions(workspace)?
-            .map(&mut clean)
+            .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
             .filter(|value| !value.is_empty());
 
         let git = self.git.snapshot(&workspace.path)?;
@@ -154,14 +264,38 @@ impl CheckpointService {
         Ok(checkpoint)
     }
 
+    /// Reads one checkpoint. An index entry whose file is missing yields
+    /// [`ContextWakeError::CheckpointNotFound`] with the recovery command.
     pub fn read(&self, reference: &str) -> Result<Checkpoint> {
         let path = self.store.checkpoint_path(reference)?;
-        ensure_managed_file(&path, &self.paths.checkpoints_dir())?;
-        let content = std::fs::read_to_string(&path).at(&path)?;
+        self.read_at(reference, &path)
+    }
+
+    fn read_at(&self, reference: &str, path: &Path) -> Result<Checkpoint> {
+        if let Err(error) = std::fs::symlink_metadata(path) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Err(ContextWakeError::CheckpointNotFound(format!(
+                    "{reference} (its file {} is missing; remove the stale index entry with `ctx checkpoint delete {reference} --yes`)",
+                    sanitize_terminal(&path.display().to_string())
+                )));
+            }
+            return Err(ContextWakeError::Io {
+                path: path.to_path_buf(),
+                source: error,
+            });
+        }
+        ensure_managed_file(path, &self.paths.checkpoints_dir())?;
+        let content = std::fs::read_to_string(path).at(path)?;
         let checkpoint: Checkpoint = serde_json::from_str(&content).map_err(|error| {
             ContextWakeError::InvalidData(format!("invalid checkpoint {}: {error}", path.display()))
         })?;
-        if !matches!(checkpoint.schema_version, 1 | 2) || checkpoint.id.to_string() != reference {
+        if !matches!(checkpoint.schema_version, 1 | 2) {
+            return Err(ContextWakeError::InvalidData(format!(
+                "checkpoint {reference} uses unsupported schema version {}; it may have been written by a newer ContextWake",
+                checkpoint.schema_version
+            )));
+        }
+        if checkpoint.id.to_string() != reference {
             return Err(ContextWakeError::InvalidData(format!(
                 "checkpoint index/content mismatch for {reference}"
             )));
@@ -169,25 +303,93 @@ impl CheckpointService {
         Ok(checkpoint)
     }
 
+    /// Readable checkpoints, newest first. Entries that cannot be read are
+    /// skipped; use [`Self::list_with_unreadable`] to report them.
     pub fn list(&self) -> Result<Vec<Checkpoint>> {
-        self.store
-            .list_checkpoint_paths()?
-            .into_iter()
-            .map(|(id, _, _, _)| self.read(&id.to_string()))
-            .collect()
+        Ok(self.list_with_unreadable()?.checkpoints)
     }
 
+    /// Every indexed checkpoint: one missing or corrupt file never hides the
+    /// others, and is reported in [`CheckpointListing::unreadable`].
+    pub fn list_with_unreadable(&self) -> Result<CheckpointListing> {
+        let mut listing = CheckpointListing::default();
+        for (id, objective, path, created_at) in self.store.list_checkpoint_paths()? {
+            match self.read_at(&id.to_string(), &path) {
+                Ok(checkpoint) => listing.checkpoints.push(checkpoint),
+                Err(error) => listing.unreadable.push(UnreadableCheckpoint::from_error(
+                    id, &objective, path, created_at, &error,
+                )),
+            }
+        }
+        Ok(listing)
+    }
+
+    /// The newest readable checkpoint of a workspace, skipping unreadable
+    /// entries (see [`Self::latest_for_workspace_with_unreadable`]).
     pub fn latest_for_workspace(&self, workspace_id: Uuid) -> Result<Option<Checkpoint>> {
         Ok(self
-            .list()?
-            .into_iter()
-            .find(|checkpoint| checkpoint.workspace_id == workspace_id))
+            .latest_for_workspace_with_unreadable(workspace_id)?
+            .checkpoint)
     }
 
+    /// Looks up the workspace's checkpoints through the index, newest first,
+    /// and normally reads a single file. Newer entries of the same workspace
+    /// that cannot be read are skipped and reported.
+    pub fn latest_for_workspace_with_unreadable(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<LatestCheckpoint> {
+        let mut latest = LatestCheckpoint::default();
+        for (id, objective, path, created_at) in self
+            .store
+            .list_checkpoint_paths_for_workspace(workspace_id)?
+        {
+            match self.read_at(&id.to_string(), &path) {
+                Ok(checkpoint) if checkpoint.workspace_id == workspace_id => {
+                    latest.checkpoint = Some(checkpoint);
+                    break;
+                }
+                Ok(_) => latest.unreadable.push(UnreadableCheckpoint::new(
+                    id,
+                    &objective,
+                    path,
+                    created_at,
+                    "checkpoint file belongs to a different workspace than its index entry",
+                )),
+                Err(error) => latest.unreadable.push(UnreadableCheckpoint::from_error(
+                    id, &objective, path, created_at, &error,
+                )),
+            }
+        }
+        Ok(latest)
+    }
+
+    /// Deletes a checkpoint file and its index entry. When the file is already
+    /// gone (deleted by hand, quarantined, or an earlier interrupted delete),
+    /// the stale index entry is still removed. Files outside managed storage
+    /// and symlinks are never deleted.
     pub fn delete(&self, reference: &str) -> Result<()> {
         let path = self.store.checkpoint_path(reference)?;
-        ensure_managed_file(&path, &self.paths.checkpoints_dir())?;
-        std::fs::remove_file(&path).at(&path)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                ensure_managed_file(&path, &self.paths.checkpoints_dir())?;
+                if let Err(error) = std::fs::remove_file(&path)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    return Err(ContextWakeError::Io {
+                        path,
+                        source: error,
+                    });
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ContextWakeError::Io {
+                    path,
+                    source: error,
+                });
+            }
+        }
         self.store.delete_checkpoint_index(reference)?;
         Ok(())
     }
@@ -205,6 +407,57 @@ impl CheckpointService {
         atomic_write(destination, &content, overwrite)?;
         Ok(destination.to_path_buf())
     }
+}
+
+/// Cuts `text` to at most `max_bytes` bytes on a character boundary and, when
+/// anything was removed, appends an explicit marker saying how much. Callers
+/// pass limits of at least a few hundred bytes so the marker fits.
+pub(crate) fn bounded_text(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let marker = |omitted: usize| {
+        format!(" [... truncated by ContextWake: {omitted} more bytes not included]")
+    };
+    let mut cut = max_bytes.saturating_sub(marker(text.len()).len());
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let mut bounded = String::with_capacity(max_bytes);
+    bounded.push_str(&text[..cut]);
+    bounded.push_str(&marker(text.len() - cut));
+    bounded
+}
+
+/// Like [`bounded_text`], but counts characters (JSON Schema `maxLength`).
+pub(crate) fn bounded_chars(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    let marker = |omitted: usize| {
+        format!(" [... truncated by ContextWake: {omitted} more characters not included]")
+    };
+    let keep = max_chars.saturating_sub(marker(total).chars().count());
+    let mut bounded = text.chars().take(keep).collect::<String>();
+    bounded.push_str(&marker(total - keep));
+    bounded
+}
+
+/// Bounds already-redacted text to `max_chars`, re-scanning the cut text and
+/// reporting whether that scan redacted anything.
+fn fit_redacted(scanner: &SecretScanner, text: &str, max_chars: usize) -> (String, bool) {
+    if text.chars().count() <= max_chars {
+        return (text.to_string(), false);
+    }
+    let report = scanner.redact(&bounded_chars(text, max_chars));
+    let redacted = report.redacted();
+    let fitted = if report.text.chars().count() <= max_chars {
+        report.text
+    } else {
+        report.text.chars().take(max_chars).collect()
+    };
+    (fitted, redacted)
 }
 
 pub(crate) fn atomic_write(path: &Path, content: &[u8], overwrite: bool) -> Result<()> {
@@ -262,7 +515,39 @@ fn ensure_managed_file(path: &Path, base: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::TrustState;
+    use crate::model::{TrustState, ValidationStatus};
+
+    fn service(root: &Path) -> (CheckpointService, Store, Workspace) {
+        let paths = AppPaths::from_root(root.join("state"));
+        paths.ensure().expect("paths");
+        let store = Store::open(paths.state_db()).expect("store");
+        // An ordinary (non-Git) directory keeps these tests independent of how
+        // a missing Git executable is reported.
+        let workspace_path = root.join("workspace");
+        std::fs::create_dir_all(&workspace_path).expect("workspace");
+        let now = Utc::now();
+        let workspace = Workspace {
+            id: Uuid::new_v4(),
+            path: workspace_path,
+            display_name: "test".into(),
+            trust_state: TrustState::Untrusted,
+            preferred_agent_id: None,
+            preferred_model_provider_id: None,
+            preferred_model: None,
+            preferred_profile_id: None,
+            last_session_id: None,
+            git_root: None,
+            created_at: now,
+            last_opened_at: now,
+        };
+        store.upsert_workspace(&workspace).expect("workspace");
+        let git = GitClient::new(std::time::Duration::from_secs(5));
+        (
+            CheckpointService::new(store.clone(), paths, git),
+            store,
+            workspace,
+        )
+    }
 
     #[test]
     fn atomic_write_refuses_accidental_overwrite() {
@@ -285,18 +570,134 @@ mod tests {
     #[test]
     fn checkpoint_redacts_secrets_before_persistence() {
         let root = tempfile::tempdir().expect("tempdir");
-        let paths = AppPaths::from_root(root.path());
+        let (service, store, workspace) = service(root.path());
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Do work with sk-abcdefghijklmnopqrstuvwxyz".into(),
+                    user_notes: Some("token=super-secret-value".into()),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        assert_eq!(checkpoint.redaction_status, RedactionStatus::Redacted);
+        assert!(checkpoint.objective.contains("[REDACTED]"));
+        let path = store
+            .checkpoint_path(&checkpoint.id.to_string())
+            .expect("indexed path");
+        let persisted = std::fs::read_to_string(path).expect("persisted checkpoint");
+        assert!(!persisted.contains("sk-abcdefghijklmnopqrstuvwxyz"));
+        assert!(!persisted.contains("super-secret-value"));
+    }
+
+    #[test]
+    fn free_text_is_bounded_to_the_published_schema_limits() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, _, workspace) = service(root.path());
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "x".repeat(TEXT_FIELD_MAX_CHARS + 10_000),
+                    completed: vec!["é".repeat(TEXT_FIELD_MAX_CHARS * 2)],
+                    validation_results: vec![ValidationResult {
+                        command: vec!["tool".into(), "a".repeat(COMMAND_ITEM_MAX_CHARS * 3)],
+                        status: ValidationStatus::Passed,
+                        observed_at: Utc::now(),
+                        summary: "exit status 0".into(),
+                    }],
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        assert!(checkpoint.objective.chars().count() <= TEXT_FIELD_MAX_CHARS);
+        assert!(
+            checkpoint
+                .objective
+                .ends_with("more characters not included]")
+        );
+        assert!(checkpoint.completed[0].chars().count() <= TEXT_FIELD_MAX_CHARS);
+        let argument = &checkpoint.validation_results[0].command[1];
+        assert!(argument.chars().count() <= COMMAND_ITEM_MAX_CHARS);
+        assert!(argument.contains("[... truncated by ContextWake:"));
+    }
+
+    #[test]
+    fn objective_of_only_terminal_control_data_is_rejected() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, store, workspace) = service(root.path());
+        let result = service.create(
+            &workspace,
+            None,
+            None,
+            CheckpointInput {
+                objective: "\u{1b}[31m\u{7}".into(),
+                ..CheckpointInput::default()
+            },
+        );
+        assert!(matches!(result, Err(ContextWakeError::InvalidData(_))));
+        assert!(store.list_checkpoint_paths().expect("index").is_empty());
+    }
+
+    #[test]
+    fn seeding_from_a_checkpoint_does_not_carry_validation_results() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, _, workspace) = service(root.path());
+        let validated = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Ship CSV export".into(),
+                    pending_tasks: vec!["Quoting".into()],
+                    validation_results: vec![ValidationResult {
+                        command: vec!["cargo".into(), "test".into()],
+                        status: ValidationStatus::Passed,
+                        observed_at: Utc::now(),
+                        summary: "exit status 0".into(),
+                    }],
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("validated checkpoint");
+        assert_eq!(validated.validation_results.len(), 1);
+
+        let seeded = CheckpointInput::from_checkpoint(&validated);
+        assert_eq!(seeded.objective, "Ship CSV export");
+        assert_eq!(seeded.pending_tasks, ["Quoting"]);
+        assert!(seeded.validation_results.is_empty());
+    }
+
+    #[test]
+    fn bounded_helpers_respect_limits_and_char_boundaries() {
+        assert_eq!(bounded_text("short", 1024), "short");
+        let text = "é".repeat(4_000);
+        let bounded = bounded_text(&text, 1_000);
+        assert!(bounded.len() <= 1_000);
+        assert!(bounded.ends_with("more bytes not included]"));
+        let chars = bounded_chars(&text, 500);
+        assert_eq!(chars.chars().count(), 500);
+        assert!(chars.ends_with("more characters not included]"));
+    }
+
+    #[test]
+    fn checkpoint_without_a_git_executable_has_no_git_state() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = AppPaths::from_root(root.path().join("state"));
         paths.ensure().expect("paths");
         let store = Store::open(paths.state_db()).expect("store");
-        let git = GitClient::with_executable(
-            "definitely-missing-git",
-            std::time::Duration::from_millis(10),
-        );
-        let service = CheckpointService::new(store.clone(), paths, git);
+        let workspace_path = root.path().join("workspace");
+        std::fs::create_dir_all(&workspace_path).expect("workspace");
         let now = Utc::now();
         let workspace = Workspace {
             id: Uuid::new_v4(),
-            path: root.path().to_path_buf(),
+            path: workspace_path,
             display_name: "test".into(),
             trust_state: TrustState::Untrusted,
             preferred_agent_id: None,
@@ -309,17 +710,23 @@ mod tests {
             last_opened_at: now,
         };
         store.upsert_workspace(&workspace).expect("workspace");
-        let result = service.create(
-            &workspace,
-            None,
-            None,
-            CheckpointInput {
-                objective: "Do work with sk-abcdefghijklmnopqrstuvwxyz".into(),
-                ..CheckpointInput::default()
-            },
+        let git = GitClient::with_executable(
+            "definitely-missing-git",
+            std::time::Duration::from_millis(10),
         );
+        let service = CheckpointService::new(store, paths, git);
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Do work with sk-abcdefghijklmnopqrstuvwxyz".into(),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint without Git");
         // Without Git the workspace is an ordinary directory; doctor reports the missing Git.
-        let checkpoint = result.expect("checkpoint without Git");
         assert!(checkpoint.git.is_none() && checkpoint.files_changed.is_empty());
         assert!(
             !checkpoint
