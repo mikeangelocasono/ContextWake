@@ -148,6 +148,167 @@ impl AppPaths {
     }
 }
 
+/// Returns `path` in its conventional form, without the Windows verbatim
+/// prefix (`\\?\C:\dir` becomes `C:\dir`, `\\?\UNC\server\share\dir` becomes
+/// `\\server\share\dir`).
+///
+/// `std::fs::canonicalize` returns verbatim paths on Windows. Coding agents,
+/// Git, shells and people expect the conventional form, and agents key their
+/// local session stores by the working directory string, so a verbatim path
+/// passed as an argument or compared with an agent-recorded `cwd` silently
+/// breaks session discovery and native resume.
+///
+/// The input is returned unchanged on other platforms, for non-verbatim
+/// paths, and whenever the conventional form could name a different file:
+/// reserved device names, `.`/`..` components, trailing dots or spaces,
+/// characters that are invalid in Win32 paths, or a length at or beyond the
+/// classic `MAX_PATH` limit.
+#[must_use]
+pub fn simplify_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(simplified) = simplify_verbatim(path) {
+            return simplified;
+        }
+    }
+    path.to_path_buf()
+}
+
+/// Canonicalizes `path` (resolving symlinks and `..`) and returns the
+/// conventional, non-verbatim form. See [`simplify_path`].
+pub fn canonicalize_simplified(path: &Path) -> std::io::Result<PathBuf> {
+    path.canonicalize()
+        .map(|canonical| simplify_path(&canonical))
+}
+
+/// Compares two paths the way the host filesystem does for already-resolved
+/// paths: after removing Windows verbatim prefixes, Windows comparisons treat
+/// `/` and `\` as equivalent and ignore ASCII case (the NTFS default); other
+/// platforms compare exactly. Neither path is touched on disk.
+#[must_use]
+pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let normalize = |path: &Path| {
+            simplify_path(path)
+                .to_string_lossy()
+                .replace('/', "\\")
+                .trim_end_matches('\\')
+                .to_ascii_lowercase()
+        };
+        normalize(left) == normalize(right)
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+/// True when `path` is `root` or lies inside it, using the same comparison
+/// rules as [`paths_equivalent`]. Both paths should already be resolved.
+#[must_use]
+pub fn path_is_within(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let normalize = |path: &Path| {
+            let mut value = simplify_path(path)
+                .to_string_lossy()
+                .replace('/', "\\")
+                .to_ascii_lowercase();
+            if !value.ends_with('\\') {
+                value.push('\\');
+            }
+            value
+        };
+        normalize(path).starts_with(&normalize(root))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
+#[cfg(windows)]
+fn simplify_verbatim(path: &Path) -> Option<PathBuf> {
+    use std::path::{Component, Prefix};
+
+    // Conventional Win32 paths at or beyond MAX_PATH need the verbatim form
+    // unless long-path support is enabled machine-wide, so keep them verbatim.
+    const MAX_PATH: usize = 260;
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return None;
+    };
+    let mut simplified = match prefix.kind() {
+        Prefix::VerbatimDisk(drive) if drive.is_ascii_alphabetic() => {
+            format!("{}:", char::from(drive))
+        }
+        Prefix::VerbatimUNC(server, share) => {
+            let server = server.to_str()?;
+            let share = share.to_str()?;
+            if !is_conventional_component(server) || !is_conventional_component(share) {
+                return None;
+            }
+            format!(r"\\{server}\{share}")
+        }
+        _ => return None,
+    };
+    let mut has_root = false;
+    for component in components {
+        match component {
+            Component::RootDir => has_root = true,
+            Component::Normal(part) => {
+                let part = part.to_str()?;
+                if !is_conventional_component(part) {
+                    return None;
+                }
+                simplified.push('\\');
+                simplified.push_str(part);
+            }
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => return None,
+        }
+    }
+    if !has_root {
+        return None;
+    }
+    if !simplified.contains('\\') || simplified.ends_with(':') {
+        // A bare drive root such as `\\?\C:\` becomes `C:\`.
+        simplified.push('\\');
+    }
+    (simplified.len() < MAX_PATH).then(|| PathBuf::from(simplified))
+}
+
+#[cfg(windows)]
+fn is_conventional_component(part: &str) -> bool {
+    const RESERVED: [&str; 24] = [
+        "con", "prn", "aux", "nul", "conin$", "conout$", "com1", "com2", "com3", "com4", "com5",
+        "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7",
+        "lpt8", "lpt9",
+    ];
+    if part.is_empty() || part.ends_with('.') || part.ends_with(' ') {
+        return false;
+    }
+    if part
+        .chars()
+        .any(|character| character < ' ' || r#"<>:"/\|?*"#.contains(character))
+    {
+        return false;
+    }
+    let stem = part
+        .split('.')
+        .next()
+        .unwrap_or(part)
+        .trim_end()
+        .to_ascii_lowercase();
+    let superscript_device = (stem.starts_with("com") || stem.starts_with("lpt"))
+        && stem.len() > 3
+        && stem[3..]
+            .chars()
+            .all(|character| matches!(character, '¹' | '²' | '³'));
+    !RESERVED.contains(&stem.as_str()) && !superscript_device
+}
+
 fn ensure_managed_directory(path: &Path) -> Result<()> {
     std::fs::create_dir_all(path).at(path)?;
     let metadata = std::fs::symlink_metadata(path).at(path)?;
@@ -202,6 +363,82 @@ mod tests {
             std::fs::read_to_string(current.config_file()).expect("preserved config"),
             "legacy = true\n"
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_paths_are_simplified_only_when_lossless() {
+        let cases = [
+            (
+                r"\\?\D:\Mike Angelo Work Files\ContextWake",
+                r"D:\Mike Angelo Work Files\ContextWake",
+            ),
+            (r"\\?\C:\", r"C:\"),
+            (r"\\?\UNC\server\share\repo", r"\\server\share\repo"),
+            (r"C:\already\conventional", r"C:\already\conventional"),
+            (r"relative\path", r"relative\path"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                simplify_path(Path::new(input)),
+                PathBuf::from(expected),
+                "{input}"
+            );
+        }
+        for lossy in [
+            r"\\?\C:\dir\CON",
+            r"\\?\C:\dir\nul.txt",
+            r"\\?\C:\dir\COM¹",
+            r"\\?\C:\trailing-dot.",
+            r"\\?\C:\trailing-space ",
+            r"\\?\C:\dir\..\other",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1",
+        ] {
+            assert_eq!(
+                simplify_path(Path::new(lossy)),
+                PathBuf::from(lossy),
+                "{lossy}"
+            );
+        }
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(simplify_path(Path::new(&long)), PathBuf::from(&long));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_path_comparison_ignores_verbatim_prefix_case_and_separators() {
+        assert!(paths_equivalent(
+            Path::new(r"\\?\D:\Work\Repo"),
+            Path::new(r"d:/work/repo/")
+        ));
+        assert!(!paths_equivalent(
+            Path::new(r"D:\Work\Repo"),
+            Path::new(r"D:\Work\Repo2")
+        ));
+        assert!(path_is_within(
+            Path::new(r"\\?\D:\Work\Repo\bin\x.exe"),
+            Path::new(r"d:\work\repo")
+        ));
+        assert!(path_is_within(
+            Path::new(r"D:\Work\Repo"),
+            Path::new(r"D:\Work\Repo")
+        ));
+        assert!(!path_is_within(
+            Path::new(r"D:\Work\Repository"),
+            Path::new(r"D:\Work\Repo")
+        ));
+    }
+
+    #[test]
+    fn canonicalized_paths_are_conventional() {
+        let root = tempfile::tempdir().expect("root");
+        let canonical = canonicalize_simplified(root.path()).expect("canonical");
+        assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
+        assert!(paths_equivalent(
+            &canonical,
+            &simplify_path(&root.path().canonicalize().expect("raw"))
+        ));
+        assert!(path_is_within(&canonical.join("child"), &canonical));
     }
 
     #[cfg(unix)]
