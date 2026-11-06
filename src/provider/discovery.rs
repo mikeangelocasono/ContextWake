@@ -283,6 +283,8 @@ pub(crate) struct DiscoveryContext {
     search_path: Vec<PathBuf>,
     protected_roots: Vec<PathBuf>,
     overrides: Overrides,
+    /// The user's home directory, the base of agents' default homes.
+    home: Option<PathBuf>,
     /// `%LOCALAPPDATA%`, where Cursor's Windows installer puts its bundle.
     #[cfg(windows)]
     local_app_data: Option<PathBuf>,
@@ -324,6 +326,9 @@ impl DiscoveryContext {
                 .collect(),
             protected_roots: protected_roots(working_directory, home),
             overrides: Overrides::Fixed(BTreeMap::new()),
+            home: home
+                .filter(|path| path.is_absolute())
+                .map(Path::to_path_buf),
             #[cfg(windows)]
             local_app_data: None,
         }
@@ -360,6 +365,39 @@ impl DiscoveryContext {
     #[cfg(windows)]
     pub(crate) fn local_app_data(&self) -> Option<&Path> {
         self.local_app_data.as_deref()
+    }
+
+    /// The configuration home an agent uses when `ContextWake` sets no
+    /// override: the absolute directory named by `variable` (for example
+    /// `CLAUDE_CONFIG_DIR`) when it is set, else `directory` inside the
+    /// user's home (the home itself when `directory` is empty). Like the
+    /// executable overrides, `variable` comes from the process environment
+    /// only in contexts built by [`Self::from_environment`].
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "wave 2: used by the Claude, Codex and Gemini default homes"
+        )
+    )]
+    pub(crate) fn agent_default_home(&self, variable: &str, directory: &str) -> Option<PathBuf> {
+        let configured = match &self.overrides {
+            Overrides::Process => std::env::var_os(variable),
+            Overrides::Fixed(values) => values.get(variable).cloned(),
+        }
+        .map(strip_wrapping_quotes)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+        configured.or_else(|| {
+            self.home.as_ref().map(|home| {
+                if directory.is_empty() {
+                    home.clone()
+                } else {
+                    home.join(directory)
+                }
+            })
+        })
     }
 
     /// First non-empty override among `variables`. On Windows, quotes copied
@@ -545,6 +583,36 @@ fn is_within(path: &Path, root: &Path) -> bool {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn agent_default_homes_prefer_an_absolute_variable_then_the_user_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let home = root.path().join("home");
+        let configured = root.path().join("claude-config");
+        let context = DiscoveryContext::new(Some(root.path()), Some(&home), Vec::new());
+        assert_eq!(
+            context.agent_default_home("CLAUDE_CONFIG_DIR", ".claude"),
+            Some(home.join(".claude"))
+        );
+        assert_eq!(
+            context.agent_default_home("GEMINI_CLI_HOME", ""),
+            Some(home.clone())
+        );
+        let configured_context = DiscoveryContext::new(Some(root.path()), Some(&home), Vec::new())
+            .with_override("CLAUDE_CONFIG_DIR", configured.as_os_str())
+            .with_override("CODEX_HOME", "relative-codex-home");
+        assert_eq!(
+            configured_context.agent_default_home("CLAUDE_CONFIG_DIR", ".claude"),
+            Some(configured)
+        );
+        // A relative value is not a usable home; the default applies.
+        assert_eq!(
+            configured_context.agent_default_home("CODEX_HOME", ".codex"),
+            Some(home.join(".codex"))
+        );
+        let homeless = DiscoveryContext::new(Some(root.path()), None, Vec::new());
+        assert_eq!(homeless.agent_default_home("CODEX_HOME", ".codex"), None);
+    }
 
     /// Creates `path` (and its parents) as a file that discovery accepts as an
     /// executable on every platform.
