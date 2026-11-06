@@ -93,7 +93,7 @@ Silicon.
 ### Windows PowerShell
 
 ```powershell
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1)))
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikeangelocasono/ContextWake/1615bbd6a009ebbbb1836d94b7942ff3e013216e/scripts/install.ps1)))
 ```
 
 The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
@@ -108,7 +108,7 @@ Redistributable (x64), which most developer machines already have.
 ### Windows Command Prompt
 
 ```bat
-powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/28922bab55ae49f95ef25a8381fb7a70e0e99d3c/scripts/install.ps1')))"
+powershell -NoProfile -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/mikeangelocasono/ContextWake/1615bbd6a009ebbbb1836d94b7942ff3e013216e/scripts/install.ps1')))"
 ```
 
 Open a new Command Prompt if the installer added `ctx` to `PATH`.
