@@ -319,6 +319,13 @@ impl AgentRegistry {
         }
     }
 
+    /// A registry of exactly these adapters, for tests of code that looks
+    /// agents up through the registry.
+    #[cfg(test)]
+    pub(crate) fn from_adapters(adapters: Vec<Arc<dyn AgentAdapter>>) -> Self {
+        Self { adapters }
+    }
+
     pub fn get(&self, id: &str) -> Result<&dyn AgentAdapter> {
         self.adapters
             .iter()

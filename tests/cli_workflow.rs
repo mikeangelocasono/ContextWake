@@ -1496,8 +1496,12 @@ fn launch_flags_explain_what_they_need_before_anything_changes() {
     assert_eq!(profiles, serde_json::json!([]));
 }
 
+/// The command-line surface of the switches: the configuration key and the
+/// `--no-conversation` flag are accepted and the checkpoint is schema v3.
+/// That each switch alone stops the capture, from the source profile's
+/// agent, is tested in `app::tests::conversation_capture`.
 #[test]
-fn conversation_capture_can_be_switched_off() {
+fn conversation_capture_switches_are_accepted_on_the_command_line() {
     let home = tempfile::tempdir().expect("home");
     let workspace = tempfile::tempdir().expect("workspace");
     let config = json_output(

@@ -2930,4 +2930,283 @@ mod tests {
         assert!(shown.contains("-name"));
         assert_eq!(terminal_line("Calculator"), "Calculator");
     }
+
+    mod conversation_capture {
+        use std::sync::Arc;
+
+        use super::*;
+        use crate::model::{
+            AgentCapabilities, DiscoveredAgentSession, ModelProvider, ProfileHomeMode,
+        };
+        use crate::provider::{AgentAdapter, CursorAdapter};
+
+        /// What a fake agent's `conversation_excerpt` returns.
+        #[derive(Clone, Copy)]
+        enum Transcript {
+            /// An excerpt of session `<agent id>-session`.
+            Readable,
+            /// The agent cannot read transcripts at all.
+            Unsupported,
+            /// Reading failed.
+            Broken,
+        }
+
+        struct ExcerptAgent {
+            id: &'static str,
+            transcript: Transcript,
+        }
+
+        impl AgentAdapter for ExcerptAgent {
+            fn id(&self) -> &'static str {
+                self.id
+            }
+            fn display_name(&self) -> &'static str {
+                self.id
+            }
+            fn model_providers(&self) -> Vec<ModelProvider> {
+                Vec::new()
+            }
+            fn capabilities(&self) -> AgentCapabilities {
+                CursorAdapter::with_executable("unused-agent").capabilities()
+            }
+            fn detect(&self, _agent_home: Option<&Path>) -> Result<AgentHealth> {
+                Err(ContextWakeError::CapabilityUnavailable("fake".into()))
+            }
+            fn auth_status(&self, _agent_home: &Path) -> Result<AuthState> {
+                Ok(AuthState::Unknown)
+            }
+            fn initialize_profile_home(&self, _agent_home: &Path) -> Result<()> {
+                Ok(())
+            }
+            fn login(&self, _agent_home: &Path, _device_auth: bool) -> Result<AuthState> {
+                Err(ContextWakeError::CapabilityUnavailable("fake".into()))
+            }
+            fn logout(&self, _agent_home: &Path) -> Result<()> {
+                Err(ContextWakeError::CapabilityUnavailable("fake".into()))
+            }
+            fn list_sessions(
+                &self,
+                _agent_home: &Path,
+                _workspace: &Path,
+                _max_count: usize,
+            ) -> Result<Vec<DiscoveredAgentSession>> {
+                Ok(Vec::new())
+            }
+            fn resume(
+                &self,
+                _agent_home: &Path,
+                _workspace: &Path,
+                _session_id: &str,
+            ) -> Result<()> {
+                Err(ContextWakeError::CapabilityUnavailable("fake".into()))
+            }
+            fn start_with_handoff(
+                &self,
+                _agent_home: &Path,
+                _workspace: &Path,
+                _handoff_directory: &Path,
+                _model_provider: Option<&str>,
+                _model: Option<&str>,
+            ) -> Result<()> {
+                Err(ContextWakeError::CapabilityUnavailable("fake".into()))
+            }
+            fn conversation_excerpt(
+                &self,
+                _agent_home: &Path,
+                _workspace: &Path,
+                _provider_session_id: Option<&str>,
+            ) -> Result<Option<ConversationExcerpt>> {
+                match self.transcript {
+                    Transcript::Readable => Ok(Some(ConversationExcerpt {
+                        agent_id: self.id.into(),
+                        provider_session_id: format!("{}-session", self.id),
+                        session_title: None,
+                        captured_at: Utc::now(),
+                        last_activity_at: None,
+                        user_requests: vec![format!("request in {}", self.id)],
+                        last_agent_message: Some("done".into()),
+                        truncated: false,
+                    })),
+                    Transcript::Unsupported => Err(ContextWakeError::CapabilityUnavailable(
+                        "no transcripts".into(),
+                    )),
+                    Transcript::Broken => {
+                        Err(ContextWakeError::Provider("transcript is corrupt".into()))
+                    }
+                }
+            }
+        }
+
+        struct Fixture {
+            _root: tempfile::TempDir,
+            app: Application,
+            workspace: Workspace,
+        }
+
+        fn fixture(agents: &[(&'static str, Transcript)]) -> Fixture {
+            let root = tempfile::tempdir().expect("root");
+            let mut app = application(root.path(), GitClient::new(Duration::from_secs(10)));
+            app.agents = AgentRegistry::from_adapters(
+                agents
+                    .iter()
+                    .map(|&(id, transcript)| {
+                        Arc::new(ExcerptAgent { id, transcript }) as Arc<dyn AgentAdapter>
+                    })
+                    .collect(),
+            );
+            let directory = directory(root.path().join("work space"));
+            let workspace = app
+                .register_workspace(&directory, TrustState::Untrusted, false)
+                .expect("workspace");
+            Fixture {
+                _root: root,
+                app,
+                workspace,
+            }
+        }
+
+        fn add_profile(app: &Application, name: &str, agent_id: &str) -> Profile {
+            let now = Utc::now();
+            let id = Uuid::new_v4();
+            let profile = Profile {
+                id,
+                name: name.into(),
+                display_name: name.into(),
+                agent_id: agent_id.into(),
+                model_provider_id: None,
+                model_preference: None,
+                description: None,
+                agent_home: app.paths.agent_home(agent_id, &id),
+                home_mode: ProfileHomeMode::Isolated,
+                account_fingerprint: None,
+                auth_state: AuthState::SignedOut,
+                created_at: now,
+                updated_at: now,
+                last_used_at: None,
+            };
+            app.store.insert_profile(&profile).expect("profile");
+            profile
+        }
+
+        #[test]
+        fn checkpoint_capture_reads_the_profiles_agent_unless_switched_off() {
+            let mut fixture = fixture(&[("readable", Transcript::Readable)]);
+            let profile = add_profile(&fixture.app, "source", "readable");
+            let (excerpt, warning) =
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&profile), &fixture.workspace, true);
+            assert_eq!(
+                excerpt.expect("captured by default").provider_session_id,
+                "readable-session"
+            );
+            assert_eq!(warning, None);
+
+            // `--no-conversation` alone switches it off.
+            assert_eq!(
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&profile), &fixture.workspace, false),
+                (None, None)
+            );
+            // The configuration alone switches it off.
+            fixture.app.config.capture_conversation_excerpts = false;
+            assert_eq!(
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&profile), &fixture.workspace, true),
+                (None, None)
+            );
+        }
+
+        #[test]
+        fn unreadable_transcripts_never_block_a_checkpoint() {
+            let fixture = fixture(&[
+                ("unsupported", Transcript::Unsupported),
+                ("broken", Transcript::Broken),
+            ]);
+            let unsupported = add_profile(&fixture.app, "plain", "unsupported");
+            assert_eq!(
+                fixture.app.conversation_for_checkpoint(
+                    Some(&unsupported),
+                    &fixture.workspace,
+                    true
+                ),
+                (None, None),
+                "an agent without readable transcripts is skipped silently"
+            );
+            let broken = add_profile(&fixture.app, "broken", "broken");
+            let (excerpt, warning) =
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&broken), &fixture.workspace, true);
+            assert_eq!(excerpt, None);
+            let warning = warning.expect("a read failure is a warning");
+            assert!(warning.contains("transcript is corrupt"), "{warning}");
+        }
+
+        fn switch_checkpoint(fixture: &Fixture, target: &Profile) -> (Checkpoint, Vec<String>) {
+            let (outcome, warnings) = fixture
+                .app
+                .switch_to_validated_with(
+                    target,
+                    Some(&fixture.workspace),
+                    SwitchRequest {
+                        create_handoff: true,
+                        ..SwitchRequest::default()
+                    },
+                    true,
+                )
+                .expect("switch");
+            let handoff = outcome.handoff.expect("handoff");
+            let checkpoint = fixture
+                .app
+                .checkpoints()
+                .read(&handoff.checkpoint_id.to_string())
+                .expect("switch checkpoint");
+            (checkpoint, warnings)
+        }
+
+        #[test]
+        fn switch_checkpoint_carries_the_source_profiles_conversation_not_the_targets() {
+            let fixture = fixture(&[
+                ("source-agent", Transcript::Readable),
+                ("target-agent", Transcript::Readable),
+            ]);
+            let source = add_profile(&fixture.app, "source", "source-agent");
+            let target = add_profile(&fixture.app, "target", "target-agent");
+            fixture
+                .app
+                .store
+                .set_active_profile(source.id)
+                .expect("activate");
+            let (checkpoint, warnings) = switch_checkpoint(&fixture, &target);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            let excerpt = checkpoint.conversation.expect("source excerpt");
+            assert_eq!(excerpt.agent_id, "source-agent");
+            assert_eq!(excerpt.provider_session_id, "source-agent-session");
+        }
+
+        #[test]
+        fn switch_with_an_unreadable_source_transcript_warns_and_still_hands_off() {
+            let fixture = fixture(&[
+                ("broken", Transcript::Broken),
+                ("target-agent", Transcript::Readable),
+            ]);
+            let source = add_profile(&fixture.app, "source", "broken");
+            let target = add_profile(&fixture.app, "target", "target-agent");
+            fixture
+                .app
+                .store
+                .set_active_profile(source.id)
+                .expect("activate");
+            let (checkpoint, warnings) = switch_checkpoint(&fixture, &target);
+            assert_eq!(checkpoint.conversation, None);
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(
+                warnings[0].contains("transcript is corrupt"),
+                "{warnings:?}"
+            );
+        }
+    }
 }
