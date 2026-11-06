@@ -344,10 +344,13 @@ struct RolloutMeta {
 
 /// Up to `limit` rollout files, walking the newest date directories first,
 /// ordered by modification time, newest first. A home without a `sessions`
-/// directory has none; symlinks are never followed.
+/// directory has none; symlinks and junctions are never followed, the
+/// `sessions` directory itself included.
 fn rollout_files(agent_home: &Path, limit: usize) -> Result<Vec<Rollout>> {
     let root = agent_home.join("sessions");
-    if !root.is_dir() {
+    if !std::fs::symlink_metadata(&root)
+        .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    {
         return Ok(Vec::new());
     }
     let mut rollouts = Vec::new();
@@ -1182,20 +1185,17 @@ impl AgentAdapter for CodexAdapter {
                     .map(|meta| (rollout, meta))
             })
             .collect::<Vec<_>>();
+        // Only the marker identifies the launched session. A new session
+        // without it may be one the user started from another terminal while
+        // the launched Codex failed before writing its rollout; reporting it
+        // would record someone else's session as this launch's and later
+        // offer to resume it.
         let delivered = started
             .iter()
             .position(|(rollout, _)| marker_delivered(&rollout.path, marker, since, true));
-        let chosen = match delivered {
-            Some(index) => Some((started.swap_remove(index), true)),
-            // Exactly one new session: it is the launched one, but the
-            // prompt was not found in it.
-            None if started.len() == 1 => started.pop().map(|session| (session, false)),
-            // Nothing was created, or several sessions and none holds the
-            // marker: the launched session cannot be told apart.
-            None => None,
-        };
-        Ok(chosen.map(|((rollout, meta), delivered)| {
-            Self::launched(agent_home, rollout, meta, delivered)
+        Ok(delivered.map(|index| {
+            let (rollout, meta) = started.swap_remove(index);
+            Self::launched(agent_home, rollout, meta, true)
         }))
     }
 }
@@ -1871,6 +1871,54 @@ mod tests {
         assert!(names.iter().any(|name| name.contains(SESSION_B)));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_junction_for_the_sessions_directory_is_not_followed() {
+        let fixture = fixture();
+        let cli = json!("cli");
+        // Real rollouts elsewhere, reachable only through the junction.
+        let elsewhere = fixture.other.join("elsewhere home");
+        let meta = [meta_line(SESSION_A, &fixture.workspace, 0, &cli)];
+        write_rollout(&elsewhere, "2026/11/05", SESSION_A, &meta, 0);
+        let created = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(fixture.home.join("sessions"))
+            .arg(elsewhere.join("sessions"))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !created {
+            eprintln!("skipping the junction case: mklink /J is unavailable");
+            return;
+        }
+        assert!(
+            rollout_files(&fixture.home, 10)
+                .expect("rollouts")
+                .is_empty()
+        );
+        assert_eq!(rollout_files(&elsewhere, 10).expect("rollouts").len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_for_the_sessions_directory_is_not_followed() {
+        let fixture = fixture();
+        let cli = json!("cli");
+        let elsewhere = fixture.other.join("elsewhere home");
+        let meta = [meta_line(SESSION_A, &fixture.workspace, 0, &cli)];
+        write_rollout(&elsewhere, "2026/11/05", SESSION_A, &meta, 0);
+        std::os::unix::fs::symlink(elsewhere.join("sessions"), fixture.home.join("sessions"))
+            .expect("symlink");
+        assert!(
+            rollout_files(&fixture.home, 10)
+                .expect("rollouts")
+                .is_empty()
+        );
+        assert_eq!(rollout_files(&elsewhere, 10).expect("rollouts").len(), 1);
+    }
+
     #[test]
     fn oversized_first_lines_are_skipped() {
         let fixture = fixture();
@@ -2123,18 +2171,20 @@ mod tests {
             None
         );
 
-        // The launched session, without the prompt yet: found, not delivered.
+        // A single new session of this workspace without the marker is not
+        // claimed: it may be one the user started from another terminal.
         let mut lines = vec![meta_line(SESSION_C, &fixture.workspace, 1, &cli)];
         lines.extend(injected_lines(1, &fixture.workspace));
         write_rollout(&fixture.home, "2026/11/05", SESSION_C, &lines, 2);
-        let launched = adapter
-            .launched_session(&fixture.home, &fixture.workspace, &record)
-            .expect("lookup")
-            .expect("one new session");
-        assert_eq!(launched.provider_session_id, SESSION_C);
-        assert!(!launched.prompt_delivered);
+        assert_eq!(
+            adapter
+                .launched_session(&fixture.home, &fixture.workspace, &record)
+                .expect("lookup"),
+            None
+        );
 
-        // A second new session makes it ambiguous until one holds the marker.
+        // Another new session without the marker changes nothing until one
+        // holds it.
         let lines = [
             meta_line(SESSION_D, &fixture.workspace, 3, &cli),
             user_line(4, "unrelated"),
