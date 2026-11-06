@@ -51,9 +51,13 @@ const CREDENTIAL_CACHES: [&str; 2] = ["oauth_creds.json", "gemini-credentials.js
 const INTERACTIVE_DEFAULTS: [&str; 2] = ["--extensions=none", "--approval-mode=default"];
 /// A truthy `CI` or `GITHUB_ACTIONS` turns a Gemini CLI launch headless.
 const HEADLESS_VARIABLES: [&str; 2] = ["CI", "GITHUB_ACTIONS"];
-/// The prompt travels on the command line (32,767 UTF-16 units on Windows);
-/// `ContextWake` caps its launch prompts at 12,000 characters.
-const MAX_PROMPT_CHARS: usize = 20_000;
+/// The prompt travels on the command line, which Windows limits to 32,767
+/// UTF-16 units including the program, the other options and the quoting.
+/// The prompt's share is measured in UTF-16 units plus one unit for every
+/// `"` and `\` (the most quoting can add); the rest stays for the other
+/// arguments. `ContextWake`'s own launch prompts (at most 12,000 characters)
+/// always fit.
+const MAX_PROMPT_COMMAND_LINE_UNITS: usize = 30_000;
 
 const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
 const MAX_PROJECT_ROOT_BYTES: usize = 8 * 1024;
@@ -92,11 +96,21 @@ fn parse_version_output(stdout: &[u8]) -> String {
         )
 }
 
+/// Where Gemini CLI's default home comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DefaultHomeSource {
+    /// The user's home directory (no usable `GEMINI_CLI_HOME`).
+    UserHome,
+    /// An absolute `GEMINI_CLI_HOME`.
+    Variable,
+}
+
 #[derive(Clone, Debug)]
 pub struct GeminiAdapter {
     executable: AgentExecutable,
     /// Gemini CLI's home when `ContextWake` sets no `GEMINI_CLI_HOME`.
     default_home: Option<PathBuf>,
+    default_home_source: DefaultHomeSource,
 }
 
 impl GeminiAdapter {
@@ -105,6 +119,16 @@ impl GeminiAdapter {
     }
 
     pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        let default_home = context.agent_default_home(HOME_VARIABLE, "");
+        // An absolute variable is used as is whatever the directory argument
+        // says; the user's home is joined with it.
+        let default_home_source = if default_home.is_some()
+            && context.agent_default_home(HOME_VARIABLE, STATE_DIRECTORY) == default_home
+        {
+            DefaultHomeSource::Variable
+        } else {
+            DefaultHomeSource::UserHome
+        };
         Self {
             executable: BINARY.resolve(
                 context,
@@ -115,7 +139,8 @@ impl GeminiAdapter {
                 },
                 default_launcher,
             ),
-            default_home: context.agent_default_home(HOME_VARIABLE, ""),
+            default_home,
+            default_home_source,
         }
     }
 
@@ -123,6 +148,7 @@ impl GeminiAdapter {
         Self {
             executable: AgentExecutable::direct(executable),
             default_home: None,
+            default_home_source: DefaultHomeSource::UserHome,
         }
     }
 
@@ -131,6 +157,7 @@ impl GeminiAdapter {
         Self {
             executable: AgentExecutable::Available(launcher),
             default_home,
+            default_home_source: DefaultHomeSource::UserHome,
         }
     }
 
@@ -140,13 +167,30 @@ impl GeminiAdapter {
             .is_some_and(|default| same_directory(agent_home, default))
     }
 
-    /// The agent command for `agent_home`. `GEMINI_CLI_HOME` is set only for
-    /// a home other than Gemini CLI's default, so a profile that uses the
-    /// existing sign-in runs Gemini CLI exactly as the user's own shell does.
+    /// The agent command for `agent_home`. `ContextWake` points
+    /// `GEMINI_CLI_HOME` at a home of its own only for a home other than
+    /// Gemini CLI's default. A profile that uses the existing sign-in must
+    /// reach the same home `ContextWake` reads, so an inherited value the
+    /// default ignores (a relative path) is removed when the default is the
+    /// user's home, and a configured absolute value is passed on as read
+    /// (without quotes that may wrap it in the environment).
     fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
         let mut command = self.executable.command()?;
-        if let Some(home) = agent_home.filter(|home| !self.is_default_home(home)) {
-            command.env(HOME_VARIABLE, simplify_path(home));
+        match agent_home {
+            None => {}
+            Some(home) if self.is_default_home(home) => match self.default_home_source {
+                DefaultHomeSource::UserHome => {
+                    command.env_remove(HOME_VARIABLE);
+                }
+                DefaultHomeSource::Variable => {
+                    if let Some(default) = &self.default_home {
+                        command.env(HOME_VARIABLE, default);
+                    }
+                }
+            },
+            Some(home) => {
+                command.env(HOME_VARIABLE, simplify_path(home));
+            }
         }
         Ok(command)
     }
@@ -253,14 +297,6 @@ impl GeminiAdapter {
         Ok(command)
     }
 
-    fn stable(detail: &str) -> Capability {
-        Capability {
-            support: CapabilitySupport::Verified,
-            maturity: CapabilityMaturity::Stable,
-            detail: detail.into(),
-        }
-    }
-
     fn partial(detail: &str) -> Capability {
         Capability {
             support: CapabilitySupport::Partial,
@@ -342,15 +378,26 @@ fn is_gemini_session_id(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
 }
 
+/// An upper bound of the prompt's share of a Windows command line: its
+/// UTF-16 units plus the escape that quoting can add before each `"` and
+/// `\`.
+fn prompt_command_line_units(prompt: &str) -> usize {
+    prompt.encode_utf16().count()
+        + prompt
+            .chars()
+            .filter(|character| matches!(character, '"' | '\\'))
+            .count()
+}
+
 fn validate_prompt(prompt: &str) -> Result<()> {
     if prompt.trim().is_empty() || prompt.contains('\0') {
         return Err(ContextWakeError::InvalidData(
             "the Gemini CLI launch prompt is empty or contains a NUL character".into(),
         ));
     }
-    if prompt.chars().count() > MAX_PROMPT_CHARS {
+    if prompt_command_line_units(prompt) > MAX_PROMPT_COMMAND_LINE_UNITS {
         return Err(ContextWakeError::InvalidData(format!(
-            "the Gemini CLI launch prompt exceeds {MAX_PROMPT_CHARS} characters and would not fit on the command line"
+            "the Gemini CLI launch prompt is too long for the command line (at most {MAX_PROMPT_COMMAND_LINE_UNITS} UTF-16 units, quotes and backslashes counting twice)"
         )));
     }
     Ok(())
@@ -1045,8 +1092,8 @@ impl AgentAdapter for GeminiAdapter {
 
     fn capabilities(&self) -> AgentCapabilities {
         AgentCapabilities {
-            installation_detection: Self::stable("`gemini --version`"),
-            version_detection: Self::stable("`gemini --version`"),
+            installation_detection: Self::documented("`gemini --version`"),
+            version_detection: Self::documented("`gemini --version`"),
             auth_status: Self::heuristic(
                 "heuristic: a cached Google sign-in file (.gemini\\oauth_creds.json or gemini-credentials.json) exists in the profile home; its contents are never read, and without one the state is unknown (API-key, Vertex AI and keychain sign-ins leave no such file)",
             ),
@@ -1595,6 +1642,8 @@ mod tests {
             );
         }
         for capability in [
+            &capabilities.installation_detection,
+            &capabilities.version_detection,
             &capabilities.portable_handoff,
             &capabilities.model_selection,
             &capabilities.multiple_profiles,
@@ -1670,12 +1719,17 @@ mod tests {
             adapter
                 .interactive_command(&fixture.home, None)
                 .expect("login"),
-            // Version probes never carry a home.
-            adapter.base_command(None).expect("probe"),
         ];
+        // The default is the user's home, so an inherited GEMINI_CLI_HOME
+        // (one the default ignores, such as a relative path) is removed.
         for command in &commands {
-            assert_eq!(environment(command, HOME_VARIABLE), Variable::Inherited);
+            assert_eq!(environment(command, HOME_VARIABLE), Variable::Removed);
         }
+        // Version probes never carry a home.
+        assert_eq!(
+            environment(&adapter.base_command(None).expect("probe"), HOME_VARIABLE),
+            Variable::Inherited
+        );
         #[cfg(windows)]
         {
             // The same directory spelled differently is still the default home.
@@ -1685,7 +1739,7 @@ mod tests {
                 let command = adapter.base_command(Some(&home)).expect("base");
                 assert_eq!(
                     environment(&command, HOME_VARIABLE),
-                    Variable::Inherited,
+                    Variable::Removed,
                     "{}",
                     home.display()
                 );
@@ -1707,6 +1761,55 @@ mod tests {
                 HOME_VARIABLE
             ),
             Variable::Set(fixture.home.clone().into_os_string())
+        );
+    }
+
+    #[test]
+    fn existing_sign_in_launch_uses_the_home_contextwake_reads() {
+        let fixture = fixture();
+        let user_home = fixture.base.join("user");
+        std::fs::create_dir_all(&user_home).expect("user home");
+        let context = DiscoveryContext::new(Some(&fixture.base), Some(&user_home), Vec::new());
+        let discovered = |context: &DiscoveryContext| GeminiAdapter {
+            executable: AgentExecutable::Available(Launcher::direct("contextwake-test-gemini")),
+            ..GeminiAdapter::discover_in(context)
+        };
+        let launch_environment = |adapter: &GeminiAdapter, home: &Path| {
+            let command = adapter
+                .handoff_command(
+                    home,
+                    &fixture.workspace,
+                    &fixture.handoff,
+                    None,
+                    None,
+                    "ContextWake handoff test",
+                )
+                .expect("launch");
+            environment(&command, HOME_VARIABLE)
+        };
+
+        // A relative GEMINI_CLI_HOME is ignored by the default home, so the
+        // child must not inherit it either (it would resolve it against the
+        // workspace and keep its sessions there).
+        let relative = discovered(&context.clone().with_override(HOME_VARIABLE, "relative"));
+        assert_eq!(relative.default_home(), Some(user_home.clone()));
+        assert_eq!(launch_environment(&relative, &user_home), Variable::Removed);
+        let unset = discovered(&context);
+        assert_eq!(launch_environment(&unset, &user_home), Variable::Removed);
+
+        // A quoted absolute value is read without its quotes; the child gets
+        // that same value, not the quoted one it would inherit.
+        let quoted = format!("\"{}\"", fixture.home.display());
+        let configured = discovered(&context.with_override(HOME_VARIABLE, quoted));
+        assert_eq!(configured.default_home(), Some(fixture.home.clone()));
+        assert_eq!(
+            launch_environment(&configured, &fixture.home),
+            Variable::Set(fixture.home.clone().into_os_string())
+        );
+        // Another home is still set explicitly.
+        assert_eq!(
+            launch_environment(&configured, &user_home),
+            Variable::Set(user_home.into_os_string())
         );
     }
 
@@ -1842,12 +1945,20 @@ mod tests {
         let comma = fixture.base.join("hand,off");
         std::fs::create_dir_all(&comma).expect("comma directory");
         let missing = fixture.base.join("missing");
-        let long_prompt = format!("ContextWake handoff {}", "x".repeat(MAX_PROMPT_CHARS));
+        let long_prompt = format!(
+            "ContextWake handoff {}",
+            "x".repeat(MAX_PROMPT_COMMAND_LINE_UNITS)
+        );
+        // 15,000 characters, but twice as many units once quoted or encoded
+        // as UTF-16.
+        let quoted_prompt = format!("ContextWake handoff {}", "\"".repeat(15_000));
+        let backslash_prompt = format!("ContextWake handoff {}", "\\".repeat(15_000));
+        let emoji_prompt = format!("ContextWake handoff {}", "\u{1F600}".repeat(15_000));
         let prompt = "ContextWake handoff x";
         let workspace = fixture.workspace.as_path();
         let handoff = fixture.handoff.as_path();
         let before = commands_built_on_this_thread();
-        let cases: [(&Path, &Path, Option<&str>, Option<&str>, &str); 10] = [
+        let cases: [(&Path, &Path, Option<&str>, Option<&str>, &str); 13] = [
             (workspace, &comma, None, None, prompt),
             (workspace, &missing, None, None, prompt),
             (&missing, handoff, None, None, prompt),
@@ -1858,6 +1969,9 @@ mod tests {
             (workspace, handoff, None, None, "   \n"),
             (workspace, handoff, None, None, "ContextWake\0handoff"),
             (workspace, handoff, None, None, &long_prompt),
+            (workspace, handoff, None, None, &quoted_prompt),
+            (workspace, handoff, None, None, &backslash_prompt),
+            (workspace, handoff, None, None, &emoji_prompt),
         ];
         for (index, (workspace, handoff, model, resume, prompt)) in cases.into_iter().enumerate() {
             assert!(
@@ -1880,6 +1994,30 @@ mod tests {
             Err(ContextWakeError::InvalidData(_))
         ));
         assert_eq!(commands_built_on_this_thread(), before);
+    }
+
+    #[test]
+    fn launch_prompts_of_contextwake_size_fit_the_command_line() {
+        let fixture = fixture();
+        let adapter = adapter(None);
+        // ContextWake caps its launch prompts at 12,000 characters; the worst
+        // of them (all quotes, backslashes or non-BMP characters) still fits.
+        for filler in ["\"", "\\", "\u{1F600}", "x"] {
+            let prompt = format!("ContextWake handoff {}", filler.repeat(11_980));
+            assert!(
+                adapter
+                    .handoff_command(
+                        &fixture.home,
+                        &fixture.workspace,
+                        &fixture.handoff,
+                        None,
+                        None,
+                        &prompt
+                    )
+                    .is_ok(),
+                "{filler}"
+            );
+        }
     }
 
     #[cfg(windows)]
