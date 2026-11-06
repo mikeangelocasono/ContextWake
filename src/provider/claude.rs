@@ -1600,7 +1600,13 @@ mod tests {
         // user later configured another directory: the profile keeps its
         // home without the variable; the configured home gets its value.
         let configured = home.join("Claude Config");
-        let quoted = format!("\"{}\"", configured.display());
+        // Windows users copy quotes into `set CLAUDE_CONFIG_DIR="..."`, and they
+        // are removed there; on Unix quotes are ordinary path characters.
+        let quoted = if cfg!(windows) {
+            format!("\"{}\"", configured.display())
+        } else {
+            configured.display().to_string()
+        };
         let configured_context = context
             .clone()
             .with_override(CONFIG_DIR_VARIABLE, quoted.as_str());

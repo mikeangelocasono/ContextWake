@@ -1494,7 +1494,11 @@ mod tests {
             "prompt length"
         );
         assert!(!launch.prompt.starts_with('-'));
-        let context = launch.handoff_directory.join("context.md");
+        // The prompt names the resolved path (a CI temp directory can be an
+        // 8.3 short name such as C:\Users\RUNNER~1\...).
+        let context =
+            crate::paths::canonicalize_simplified(&launch.handoff_directory.join("context.md"))
+                .expect("context path");
         assert!(context.is_file());
         assert!(
             launch.prompt.contains(&context.display().to_string()),
