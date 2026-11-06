@@ -304,7 +304,9 @@ pub fn plan_launch(
     }
 }
 
-fn recorded_session(
+/// The newest provider session `ContextWake` recorded for `profile` in
+/// `workspace` (from launches, resumes and `ctx session sync`).
+pub(crate) fn recorded_session(
     store: &Store,
     profile: &Profile,
     workspace: &Workspace,

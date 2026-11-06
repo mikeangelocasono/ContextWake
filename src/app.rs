@@ -17,7 +17,7 @@ use crate::cli::{
 use crate::config::AppConfig;
 use crate::continuity::{
     ContinueNotice, ContinueOutcome, ContinueRequest, SwitchOutcome, SwitchRequest,
-    continue_with_handoff, switch_profile_with,
+    continue_with_handoff, recorded_session, switch_profile_with,
 };
 use crate::doctor::{CheckStatus, DoctorReport, run_doctor, run_doctor_without_state};
 use crate::error::{ContextWakeError, IoContext, Result};
@@ -1146,7 +1146,20 @@ impl Application {
         let Ok(adapter) = self.agents.get(&profile.agent_id) else {
             return (None, None);
         };
-        match adapter.conversation_excerpt(&profile.agent_home, &workspace.path, None) {
+        // The agent's newest session in the workspace, and the session that
+        // ContextWake launched or resumed for this profile there. An agent's
+        // own lookup can leave the latter out (Codex skips non-interactive
+        // `codex exec` sessions, for example), and the user may have worked
+        // in a newer native session since; the most recently active one wins.
+        let newest = adapter.conversation_excerpt(&profile.agent_home, &workspace.path, None);
+        let recorded = recorded_session(&self.store, profile, workspace).map(|session| {
+            adapter.conversation_excerpt(
+                &profile.agent_home,
+                &workspace.path,
+                Some(&session.provider_session_id),
+            )
+        });
+        match most_recent_excerpt(newest, recorded) {
             Ok(excerpt) => (excerpt, None),
             Err(ContextWakeError::CapabilityUnavailable(_)) => (None, None),
             Err(error) => (
@@ -2433,6 +2446,30 @@ impl Application {
 /// opened or migrated, unusable state directories), so the diagnostics and
 /// repair commands that error messages point to keep working. Other commands
 /// report `startup_error`.
+/// The excerpt of whichever session was active most recently. A session with
+/// a known last activity is newer than one without; on a tie the recorded
+/// session wins. A failed read only matters when no excerpt could be read.
+fn most_recent_excerpt(
+    newest: Result<Option<ConversationExcerpt>>,
+    recorded: Option<Result<Option<ConversationExcerpt>>>,
+) -> Result<Option<ConversationExcerpt>> {
+    let Some(recorded) = recorded else {
+        return newest;
+    };
+    match (newest, recorded) {
+        (Ok(Some(newest)), Ok(Some(recorded))) => Ok(Some(
+            if recorded.last_activity_at >= newest.last_activity_at {
+                recorded
+            } else {
+                newest
+            },
+        )),
+        (Ok(Some(excerpt)), _) | (_, Ok(Some(excerpt))) => Ok(Some(excerpt)),
+        (Ok(None), Ok(None)) => Ok(None),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
 pub fn run_without_state(cli: Cli, startup_error: ContextWakeError) -> Result<i32> {
     match cli.command {
         Some(Command::Doctor(args)) => {
@@ -3273,6 +3310,9 @@ mod tests {
             Unsupported,
             /// Reading failed.
             Broken,
+            /// Like Codex's non-interactive sessions: the agent's newest-session
+            /// lookup finds nothing, but the recorded session reads by its ID.
+            RecordedOnly,
         }
 
         struct ExcerptAgent {
@@ -3338,7 +3378,7 @@ mod tests {
                 &self,
                 _agent_home: &Path,
                 _workspace: &Path,
-                _provider_session_id: Option<&str>,
+                provider_session_id: Option<&str>,
             ) -> Result<Option<ConversationExcerpt>> {
                 match self.transcript {
                     Transcript::Readable => Ok(Some(ConversationExcerpt {
@@ -3356,6 +3396,18 @@ mod tests {
                     )),
                     Transcript::Broken => {
                         Err(ContextWakeError::Provider("transcript is corrupt".into()))
+                    }
+                    Transcript::RecordedOnly => {
+                        Ok(provider_session_id.map(|session_id| ConversationExcerpt {
+                            agent_id: self.id.into(),
+                            provider_session_id: session_id.into(),
+                            session_title: None,
+                            captured_at: Utc::now(),
+                            last_activity_at: None,
+                            user_requests: vec!["do step 2".into()],
+                            last_agent_message: Some("Step 2 is complete".into()),
+                            truncated: false,
+                        }))
                     }
                 }
             }
@@ -3440,6 +3492,107 @@ mod tests {
                     .app
                     .conversation_for_checkpoint(Some(&profile), &fixture.workspace, true),
                 (None, None)
+            );
+        }
+
+        #[test]
+        fn capture_reads_the_session_contextwake_recorded_for_the_profile() {
+            let fixture = fixture(&[("recorded", Transcript::RecordedOnly)]);
+            let profile = add_profile(&fixture.app, "source", "recorded");
+            // Without a recorded session, the agent's own lookup finds nothing.
+            assert_eq!(
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&profile), &fixture.workspace, true),
+                (None, None)
+            );
+            let now = Utc::now();
+            fixture
+                .app
+                .store
+                .insert_session(&Session {
+                    id: Uuid::new_v4(),
+                    provider_session_id: Some("launched-by-contextwake".into()),
+                    title: None,
+                    workspace_id: fixture.workspace.id,
+                    profile_id: Some(profile.id),
+                    agent_id: profile.agent_id.clone(),
+                    model_provider_id: None,
+                    model: None,
+                    started_at: now,
+                    last_seen_at: now,
+                    resume_capability: ResumeCapability::Native,
+                    archived: false,
+                    continuity: ContinuityKind::RestoredFromHandoff,
+                })
+                .expect("session");
+            let (excerpt, warning) =
+                fixture
+                    .app
+                    .conversation_for_checkpoint(Some(&profile), &fixture.workspace, true);
+            assert_eq!(warning, None);
+            let excerpt = excerpt.expect("excerpt of the recorded session");
+            assert_eq!(excerpt.provider_session_id, "launched-by-contextwake");
+            assert_eq!(
+                excerpt.last_agent_message.as_deref(),
+                Some("Step 2 is complete")
+            );
+        }
+
+        #[test]
+        fn the_most_recently_active_excerpt_is_kept() {
+            let excerpt = |id: &str, minutes_ago: Option<i64>| ConversationExcerpt {
+                agent_id: "codex".into(),
+                provider_session_id: id.into(),
+                session_title: None,
+                captured_at: Utc::now(),
+                last_activity_at: minutes_ago
+                    .map(|minutes| Utc::now() - chrono::Duration::minutes(minutes)),
+                user_requests: Vec::new(),
+                last_agent_message: Some(id.into()),
+                truncated: false,
+            };
+            let chosen = |newest, recorded| {
+                most_recent_excerpt(newest, recorded)
+                    .expect("excerpt")
+                    .map(|excerpt| excerpt.provider_session_id)
+            };
+            assert_eq!(
+                chosen(
+                    Ok(Some(excerpt("newest", Some(1)))),
+                    Some(Ok(Some(excerpt("recorded", Some(30)))))
+                ),
+                Some("newest".into())
+            );
+            assert_eq!(
+                chosen(
+                    Ok(Some(excerpt("newest", Some(30)))),
+                    Some(Ok(Some(excerpt("recorded", Some(1)))))
+                ),
+                Some("recorded".into())
+            );
+            assert_eq!(
+                chosen(Ok(None), Some(Ok(Some(excerpt("recorded", None))))),
+                Some("recorded".into())
+            );
+            assert_eq!(
+                chosen(Ok(Some(excerpt("newest", None))), None),
+                Some("newest".into())
+            );
+            // A failed read of one session does not hide the other's excerpt.
+            assert_eq!(
+                chosen(
+                    Err(ContextWakeError::Provider("corrupt".into())),
+                    Some(Ok(Some(excerpt("recorded", None))))
+                ),
+                Some("recorded".into())
+            );
+            assert!(
+                most_recent_excerpt(
+                    Ok(None),
+                    Some(Err(ContextWakeError::Provider("corrupt".into())))
+                )
+                .is_err()
             );
         }
 
