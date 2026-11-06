@@ -898,6 +898,29 @@ impl Store {
             .map_err(Into::into)
     }
 
+    /// Checkpoint index entries of one workspace, newest first, served by
+    /// `checkpoints_workspace_idx` so callers can read a single file.
+    pub fn list_checkpoint_paths_for_workspace(
+        &self,
+        workspace_id: Uuid,
+    ) -> Result<Vec<(Uuid, String, PathBuf, DateTime<Utc>)>> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, objective, storage_path, created_at
+             FROM checkpoints WHERE workspace_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = statement.query_map([workspace_id.to_string()], |row| {
+            Ok((
+                parse_uuid(row.get::<_, String>(0)?)?,
+                row.get(1)?,
+                PathBuf::from(row.get::<_, String>(2)?),
+                parse_time(row.get::<_, String>(3)?)?,
+            ))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn usage_summary(&self) -> Result<UsageSummary> {
         let connection = self.connection()?;
         let metric = |name: &str| -> rusqlite::Result<u64> {
