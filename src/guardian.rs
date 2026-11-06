@@ -36,16 +36,37 @@ pub fn assess(
         .is_some_and(|snapshot| snapshot.timed_out)
     {
         // A timed-out status carries no counts, so comparing it would report
-        // drift (or its absence) that was never observed.
-        (
-            ContinuityRiskLevel::Notice,
-            false,
-            if latest.is_some() {
-                "Git status timed out, so the workspace could not be compared with the latest checkpoint."
-            } else {
-                "Git status timed out, so workspace changes could not be inspected. Create a checkpoint when meaningful work begins."
-            },
-        )
+        // drift (or its absence) that was never observed. The changed-file
+        // list comes from separate Git commands; when it returned paths, that
+        // evidence is still used.
+        let file_delta = latest.map(|checkpoint| file_delta(checkpoint, changed_files));
+        let old = checkpoint_age_seconds.is_some_and(|age| age >= SIGNIFICANT_AGE_SECONDS);
+        match file_delta {
+            None if !changed_files.is_empty() => (
+                ContinuityRiskLevel::Warning,
+                true,
+                "Workspace changes have no checkpoint (Git status timed out, but changed files were observed). Create one before switching profiles.",
+            ),
+            Some(delta) if !changed_files.is_empty() && delta > 0 => (
+                if delta >= SIGNIFICANT_FILE_DELTA || old {
+                    ContinuityRiskLevel::Warning
+                } else {
+                    ContinuityRiskLevel::Notice
+                },
+                true,
+                "Git status timed out, but the changed files differ from the latest checkpoint.",
+            ),
+            Some(_) => (
+                ContinuityRiskLevel::Notice,
+                false,
+                "Git status timed out, so the workspace could not be compared with the latest checkpoint.",
+            ),
+            None => (
+                ContinuityRiskLevel::Notice,
+                false,
+                "Git status timed out, so workspace changes could not be inspected. Create a checkpoint when meaningful work begins.",
+            ),
+        }
     } else if let Some(checkpoint) = latest {
         let drift = Drift::measure(checkpoint, git, changed_files);
         let old = checkpoint_age_seconds.is_some_and(|age| age >= SIGNIFICANT_AGE_SECONDS);
@@ -99,6 +120,13 @@ pub fn assess(
     }
 }
 
+/// Paths that entered or left the changed-file set since the checkpoint.
+fn file_delta(checkpoint: &Checkpoint, changed_files: &[PathBuf]) -> usize {
+    let before = checkpoint.files_changed.iter().collect::<BTreeSet<_>>();
+    let after = changed_files.iter().collect::<BTreeSet<_>>();
+    before.symmetric_difference(&after).count()
+}
+
 fn churn(snapshot: &GitSnapshot) -> u64 {
     snapshot.additions.saturating_add(snapshot.deletions)
 }
@@ -125,9 +153,7 @@ impl Drift {
                 baseline_unknown: true,
             };
         }
-        let before = checkpoint.files_changed.iter().collect::<BTreeSet<_>>();
-        let after = changed_files.iter().collect::<BTreeSet<_>>();
-        let file_delta = before.symmetric_difference(&after).count();
+        let file_delta = file_delta(checkpoint, changed_files);
         let (state_changed, head_moved, churn_delta) = match (baseline, git) {
             (None, None) => (false, false, 0),
             // The workspace became, or stopped being, a Git repository.
@@ -379,6 +405,50 @@ mod tests {
         );
         assert_eq!(status.level, ContinuityRiskLevel::Notice);
         assert!(status.recommendation.contains("no complete Git baseline"));
+    }
+
+    #[test]
+    fn timed_out_status_still_uses_observed_changed_files() {
+        let now = Utc::now();
+        let timed_out = GitSnapshot {
+            timed_out: true,
+            ..GitSnapshot::default()
+        };
+        let files = [PathBuf::from("a.rs"), PathBuf::from("b.rs")];
+
+        // Known changes with no checkpoint are a warning, as before the
+        // timeout handling existed.
+        let status = assess(None, Some(&timed_out), &files, now);
+        assert_eq!(status.level, ContinuityRiskLevel::Warning);
+        assert!(status.workspace_changed);
+        assert_eq!(status.observed_changed_files, 2);
+        assert!(status.recommendation.contains("no checkpoint"));
+
+        // A changed-file set that differs from the checkpoint is drift.
+        let checkpoint = checkpoint_with_files(
+            now - Duration::minutes(5),
+            GitSnapshot::default(),
+            &["a.rs"],
+        );
+        let status = assess(Some(&checkpoint), Some(&timed_out), &files, now);
+        assert_eq!(status.level, ContinuityRiskLevel::Notice);
+        assert!(status.workspace_changed);
+        let many = (0..=SIGNIFICANT_FILE_DELTA)
+            .map(|index| PathBuf::from(format!("file-{index}.rs")))
+            .collect::<Vec<_>>();
+        let status = assess(Some(&checkpoint), Some(&timed_out), &many, now);
+        assert_eq!(status.level, ContinuityRiskLevel::Warning);
+
+        // The same file set gives no evidence either way.
+        let same = checkpoint_with_files(
+            now - Duration::minutes(5),
+            GitSnapshot::default(),
+            &["a.rs", "b.rs"],
+        );
+        let status = assess(Some(&same), Some(&timed_out), &files, now);
+        assert_eq!(status.level, ContinuityRiskLevel::Notice);
+        assert!(!status.workspace_changed);
+        assert!(status.recommendation.contains("could not be compared"));
     }
 
     #[test]
