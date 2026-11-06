@@ -14,8 +14,8 @@ use crate::model::{
 };
 use crate::paths::AppPaths;
 use crate::security::{
-    SecretScanner, ensure_relative_payload_path, path_fingerprint, sanitize_terminal, sha256_bytes,
-    validate_external_reference,
+    SecretScanner, contains_terminal_control_data, ensure_relative_payload_path, path_fingerprint,
+    sanitize_terminal, sha256_bytes, validate_external_reference,
 };
 use crate::store::Store;
 
@@ -364,6 +364,14 @@ impl HandoffService {
             if SecretScanner::new().redact(&text).redacted() {
                 return Err(ContextWakeError::InvalidData(format!(
                     "{} contains possible secret material; redact it before import",
+                    content.path
+                )));
+            }
+            // A carriage return, escape sequence or bidirectional control could
+            // hide text from the preview that the receiving agent still reads.
+            if contains_terminal_control_data(&text) {
+                return Err(ContextWakeError::InvalidData(format!(
+                    "{} contains terminal control data; remove it before import",
                     content.path
                 )));
             }
