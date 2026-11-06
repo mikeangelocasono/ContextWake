@@ -76,6 +76,24 @@ struct StatusReport {
     git_unavailable: bool,
 }
 
+const STATUS_CONTEXT_INFORMATION: &str =
+    "Unavailable from stable provider interfaces; local continuity remains available";
+
+/// What `ctx status` shows.
+enum StatusOutcome {
+    Report(Box<StatusReport>),
+    /// Run from the home directory or a root with no usable active workspace:
+    /// there is no workspace to show, and the first warning says how to pick
+    /// one.
+    NoWorkspace(Box<WorkspacelessStatus>),
+}
+
+struct WorkspacelessStatus {
+    active_profile: Option<Profile>,
+    agent: AgentHealth,
+    warnings: Vec<String>,
+}
+
 /// The workspace an omitted `--workspace` refers to.
 enum DirectoryTarget {
     /// Rules 1, 2 and 4, with the warning raised while reading trusted project
@@ -109,8 +127,12 @@ impl Application {
                 Ok(0)
             }
             Some(Command::Status(args)) => {
-                let report = self.status_report_for(args.path.as_deref())?;
-                print_status(&report, cli.json, cli.ascii);
+                match self.status_report_for(args.path.as_deref())? {
+                    StatusOutcome::Report(report) => print_status(&report, cli.json, cli.ascii),
+                    StatusOutcome::NoWorkspace(status) => {
+                        print_workspaceless_status(&status, cli.json);
+                    }
+                }
                 Ok(0)
             }
             Some(Command::Doctor(args)) => {
@@ -192,8 +214,11 @@ impl Application {
     /// `ctx status [PATH]`. Without a path the workspace follows the rules of an
     /// omitted `--workspace`. Where those refuse (the home directory or a drive
     /// root), the active workspace is shown with a warning instead, because
-    /// status changes nothing.
-    fn status_report_for(&self, path: Option<&Path>) -> Result<StatusReport> {
+    /// status changes nothing. Without a usable active workspace (a fresh
+    /// install, or one whose directory was removed) the status has no
+    /// workspace and carries the guidance as a warning, so `ctx status` stays
+    /// usable from there.
+    fn status_report_for(&self, path: Option<&Path>) -> Result<StatusOutcome> {
         let (agent, mut warnings) = self.active_agent_health()?;
         let workspace = if let Some(path) = path {
             let (workspace, warning) =
@@ -208,7 +233,23 @@ impl Application {
                 }
                 DirectoryTarget::Refused { directory, reason } => {
                     let (workspace, warning) =
-                        self.active_workspace_instead(&directory, &reason, "ctx status")?;
+                        match self.active_workspace_instead(&directory, &reason, "ctx status") {
+                            Ok(found) => found,
+                            Err(refusal) => {
+                                let message = match refusal {
+                                    ContextWakeError::WorkspaceNotFound(message) => message,
+                                    other => safe_message(&other),
+                                };
+                                warnings.insert(0, message);
+                                return Ok(StatusOutcome::NoWorkspace(Box::new(
+                                    WorkspacelessStatus {
+                                        active_profile: self.store.active_profile()?,
+                                        agent,
+                                        warnings,
+                                    },
+                                )));
+                            }
+                        };
                     warnings.insert(
                         0,
                         format!(
@@ -222,6 +263,7 @@ impl Application {
             }
         };
         self.status_report(workspace, agent, warnings)
+            .map(|report| StatusOutcome::Report(Box::new(report)))
     }
 
     /// The active workspace, re-registered, for the interactive fallback of
@@ -342,9 +384,7 @@ impl Application {
                 git,
                 agent,
                 latest_session,
-                context_information:
-                    "Unavailable from stable provider interfaces; local continuity remains available"
-                        .into(),
+                context_information: STATUS_CONTEXT_INFORMATION.into(),
                 continuity_guardian,
             },
             warnings,
@@ -502,15 +542,26 @@ impl Application {
                     && path_is_within(directory, &workspace.path)
             })
             .max_by_key(|workspace| simplify_path(&workspace.path).as_os_str().len());
-        let root = if let Some(registered) = registered {
-            registered.path
-        } else if let Some(root) = self
+        let git_root = self
             .git
             .repository_root(directory)
             .ok()
             .flatten()
-            .map(|root| canonicalize_simplified(&root).unwrap_or_else(|_| simplify_path(&root)))
-        {
+            .map(|root| canonicalize_simplified(&root).unwrap_or_else(|_| simplify_path(&root)));
+        // The most specific candidate wins: a Git work tree nested inside a
+        // registered directory (for example a repository below an ordinary
+        // folder where `ctx status` once ran) is its own workspace, while a
+        // registered directory inside the work tree, or the work tree itself,
+        // keeps its registration.
+        let registered = registered.filter(|registered| {
+            git_root.as_ref().is_none_or(|git_root| {
+                !path_is_within(git_root, &registered.path)
+                    || paths_equivalent(git_root, &registered.path)
+            })
+        });
+        let root = if let Some(registered) = registered {
+            registered.path
+        } else if let Some(root) = git_root {
             if let Some(reason) = broad_root_reason(&root, homes) {
                 return Ok(DirectoryTarget::Refused {
                     directory: directory.to_path_buf(),
@@ -2006,30 +2057,7 @@ fn print_status(report: &StatusReport, json: bool, ascii: bool) {
         });
         return;
     }
-    let profile = status
-        .active_profile
-        .as_ref()
-        .map_or("Not configured", |value| value.display_name.as_str());
-    println!("{PRODUCT_NAME}");
-    println!("  Active profile  {profile}");
-    println!(
-        "  Agent           {} {}",
-        status.agent.agent_id,
-        status.agent.version.as_deref().unwrap_or("unavailable")
-    );
-    if let Some(profile) = &status.active_profile {
-        println!(
-            "  Model backend   {}",
-            profile
-                .model_provider_id
-                .as_deref()
-                .unwrap_or("agent default")
-        );
-        println!(
-            "  Model           {}",
-            profile.model_preference.as_deref().unwrap_or("not exposed")
-        );
-    }
+    print_status_profile(status.active_profile.as_ref(), &status.agent);
     println!(
         "  Workspace       {}",
         terminal_line(&status.workspace.display_name)
@@ -2062,8 +2090,66 @@ fn print_status(report: &StatusReport, json: bool, ascii: bool) {
         status.continuity_guardian.level.as_str().to_uppercase(),
         status.continuity_guardian.recommendation
     );
-    for warning in &report.warnings {
-        println!("  Warning         {warning}");
+    print_status_warnings(&report.warnings);
+}
+
+/// `ctx status` without a workspace to show. The JSON keeps the shape of a
+/// regular status, with `null` for everything that belongs to a workspace.
+fn print_workspaceless_status(status: &WorkspacelessStatus, json: bool) {
+    let active_profile = status.active_profile.as_ref();
+    let agent = &status.agent;
+    let warnings = &status.warnings;
+    if json {
+        print_json(&serde_json::json!({
+            "application": PRODUCT_NAME,
+            "version": VERSION,
+            "active_profile": active_profile,
+            "workspace": null,
+            "git": null,
+            "agent": agent,
+            "latest_session": null,
+            "context_information": STATUS_CONTEXT_INFORMATION,
+            "continuity_guardian": null,
+            "warnings": warnings,
+        }));
+        return;
+    }
+    print_status_profile(active_profile, agent);
+    println!("  Workspace       None selected");
+    print_status_warnings(warnings);
+}
+
+fn print_status_profile(active_profile: Option<&Profile>, agent: &AgentHealth) {
+    let profile = active_profile.map_or("Not configured", |value| value.display_name.as_str());
+    println!("{PRODUCT_NAME}");
+    println!("  Active profile  {}", terminal_line(profile));
+    println!(
+        "  Agent           {} {}",
+        agent.agent_id,
+        terminal_line(agent.version.as_deref().unwrap_or("unavailable"))
+    );
+    if let Some(profile) = active_profile {
+        println!(
+            "  Model backend   {}",
+            terminal_line(
+                profile
+                    .model_provider_id
+                    .as_deref()
+                    .unwrap_or("agent default")
+            )
+        );
+        println!(
+            "  Model           {}",
+            terminal_line(profile.model_preference.as_deref().unwrap_or("not exposed"))
+        );
+    }
+}
+
+/// Warnings can quote repository content (for example a `project.toml` parse
+/// error), so each one is a single terminal-safe line.
+fn print_status_warnings(warnings: &[String]) {
+    for warning in warnings {
+        println!("  Warning         {}", terminal_line(warning));
     }
 }
 
@@ -2075,9 +2161,14 @@ pub(crate) fn print_doctor(report: &DoctorReport, json: bool, ascii: bool) {
     println!("{PRODUCT_NAME} Doctor\n");
     for check in &report.checks {
         let status_marker = marker(check.status, ascii);
-        println!("{status_marker:<7} {:<22} {}", check.name, check.summary);
+        // Summaries name paths and quote error text; each stays one line.
+        println!(
+            "{status_marker:<7} {:<22} {}",
+            check.name,
+            terminal_line(&check.summary)
+        );
         if let Some(action) = &check.action {
-            println!("        Action: {action}");
+            println!("        Action: {}", terminal_line(action));
         }
     }
 }
@@ -2264,7 +2355,7 @@ fn safe_message(error: &ContextWakeError) -> String {
 }
 
 fn warn(message: &str) {
-    eprintln!("Warning: {message}");
+    eprintln!("Warning: {}", terminal_line(message));
 }
 
 fn marker(status: CheckStatus, ascii: bool) -> &'static str {

@@ -892,6 +892,111 @@ fn workspace_paths_are_terminal_safe_in_human_output() {
     assert!(!listed.contains('\u{1b}'), "{listed:?}");
     assert!(!listed.contains('\u{7}'), "{listed:?}");
     assert_eq!(listed.lines().count(), 1, "{listed:?}");
+
+    // Doctor names the active workspace; its path cannot forge a line either.
+    let hostile = store
+        .list_workspaces()
+        .expect("workspaces")
+        .into_iter()
+        .find(|workspace| workspace.display_name.starts_with("repo"))
+        .expect("hostile workspace");
+    store
+        .set_active_workspace(hostile.id)
+        .expect("activate the hostile workspace");
+    let doctor = command(&home).arg("doctor").output().expect("doctor");
+    let doctor = String::from_utf8_lossy(&doctor.stdout).into_owned();
+    assert!(doctor.contains("Active workspace"), "{doctor}");
+    assert!(!doctor.contains('\u{1b}'), "{doctor:?}");
+    assert!(
+        !doctor
+            .lines()
+            .any(|line| line.starts_with("Active profile")),
+        "{doctor}"
+    );
+}
+
+#[test]
+fn a_git_repository_below_a_registered_directory_is_its_own_workspace() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("state");
+    let parent = root.path().join("projects");
+    let repo = parent.join("repo-b");
+    std::fs::create_dir_all(&parent).expect("parent");
+    // `ctx status` in an ordinary parent folder registers it (rule 4).
+    let registered_parent = json_in(&home, &parent, &["status"]);
+    assert_eq!(
+        registered_parent["workspace"]["path"],
+        text(&canonical(&parent))
+    );
+    git_repository(&repo);
+    let nested = repo.join("src").join("module");
+    std::fs::create_dir_all(&nested).expect("subdirectory");
+
+    let checkpoint = json_in(
+        &home,
+        &nested,
+        &["checkpoint", "create", "--objective", "Work in B"],
+    );
+    let status = json_in(&home, &nested, &["status"]);
+    assert_eq!(status["workspace"]["path"], text(&canonical(&repo)));
+    assert_ne!(
+        status["workspace"]["id"], registered_parent["workspace"]["id"],
+        "a repository below a registered folder resolved to that folder"
+    );
+    assert_eq!(checkpoint["workspace_id"], status["workspace"]["id"]);
+    assert!(status["git"].is_object(), "{status}");
+
+    // A registered directory inside the work tree keeps its registration.
+    let inner = repo.join("src");
+    let added = json_output(&home, &["workspace", "add", &text(&inner)]);
+    let status = json_in(&home, &nested, &["status"]);
+    assert_eq!(status["workspace"]["id"], added["id"]);
+    // The parent folder itself is still its own workspace.
+    let status = json_in(&home, &parent, &["status"]);
+    assert_eq!(
+        status["workspace"]["id"],
+        registered_parent["workspace"]["id"]
+    );
+}
+
+#[test]
+fn status_from_the_home_directory_works_without_a_usable_active_workspace() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("state");
+    let user_home = root.path().join("user-home");
+    let stale = root.path().join("stale-project");
+    std::fs::create_dir_all(&user_home).expect("user home");
+    let status_at_home = |json: bool| {
+        let mut command = command_at_home(&home, &user_home, &user_home);
+        if json {
+            command.arg("--json");
+        }
+        command.arg("status").output().expect("status at home")
+    };
+
+    // A fresh install: nothing to show, but status still works.
+    let fresh = successful_json(status_at_home(true));
+    assert!(fresh["workspace"].is_null(), "{fresh}");
+    let warning = fresh["warnings"][0].as_str().expect("warning");
+    assert!(warning.contains("home directory"), "{warning}");
+    assert!(warning.contains("ctx status <path>"), "{warning}");
+    let human = stdout(&status_at_home(false));
+    assert!(human.contains("None selected"), "{human}");
+
+    // The active workspace was deleted: status names the recovery command.
+    std::fs::create_dir_all(&stale).expect("stale project");
+    let added = json_output(&home, &["workspace", "add", &text(&stale)]);
+    std::fs::remove_dir_all(&stale).expect("delete the active project");
+    let missing = successful_json(status_at_home(true));
+    assert!(missing["workspace"].is_null(), "{missing}");
+    let warning = missing["warnings"][0].as_str().expect("warning");
+    assert!(
+        warning.contains(&format!(
+            "ctx workspace remove {} --yes",
+            added["id"].as_str().expect("id")
+        )),
+        "{warning}"
+    );
 }
 
 #[cfg(unix)]
@@ -1128,7 +1233,27 @@ fn invalid_trusted_project_configuration_does_not_block_status_or_checkpoints() 
         ])
         .output()
         .expect("checkpoint");
-    assert!(String::from_utf8_lossy(&created.stderr).contains("Warning"));
+    let warning = String::from_utf8_lossy(&created.stderr).into_owned();
+    assert!(warning.contains("Warning"));
+    // The parse error quotes the file over several lines; a warning stays one.
+    assert!(
+        warning.lines().all(|line| line.starts_with("Warning: ")),
+        "{warning:?}"
+    );
+    let human = stdout(
+        &command(&home)
+            .args(["status", &text(&project)])
+            .output()
+            .expect("human status"),
+    );
+    assert!(human.contains("future_setting"), "{human}");
+    assert!(
+        human
+            .lines()
+            .skip(1)
+            .all(|line| line.starts_with("  ") && line[2..].starts_with(char::is_alphabetic)),
+        "a warning spilled onto lines of its own: {human}"
+    );
     let checkpoint = successful_json(created);
     assert!(checkpoint["project_instructions"].is_null());
 
