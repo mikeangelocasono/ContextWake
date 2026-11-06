@@ -676,7 +676,36 @@ fn git_summary_is_portable_redacted_and_importable() {
         .checkpoints
         .create(&workspace, Some(&owner), None, objective("Continue"))
         .expect("checkpoint");
-    assert!(checkpoint.git.is_some());
+    // The local checkpoint file redacts the commit subject too, and stores the
+    // repository root in its conventional form.
+    let stored = fs::read_to_string(
+        local
+            .store
+            .checkpoint_path(&checkpoint.id.to_string())
+            .expect("indexed path"),
+    )
+    .expect("stored checkpoint");
+    assert!(
+        !stored.contains("abcd1234efgh5678"),
+        "checkpoint file stores the raw commit subject"
+    );
+    let snapshot = checkpoint.git.as_ref().expect("git snapshot");
+    assert!(
+        snapshot
+            .last_commit
+            .as_deref()
+            .expect("subject")
+            .contains("[REDACTED]")
+    );
+    assert!(
+        !snapshot
+            .repository_root
+            .as_deref()
+            .expect("repository root")
+            .to_string_lossy()
+            .starts_with(r"\\?\")
+    );
+    assert_eq!(snapshot.branch.as_deref(), Some("main"));
     let record = local
         .handoffs
         .create(&checkpoint, &workspace)

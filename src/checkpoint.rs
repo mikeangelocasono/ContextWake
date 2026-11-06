@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::error::{ContextWakeError, IoContext, Result};
 use crate::git::GitClient;
 use crate::model::{Checkpoint, Profile, RedactionStatus, Session, ValidationResult, Workspace};
-use crate::paths::AppPaths;
+use crate::paths::{AppPaths, simplify_path};
 use crate::security::{SecretScanner, sanitize_terminal};
 use crate::store::Store;
 use crate::workspace::load_project_instructions;
@@ -208,7 +208,19 @@ impl CheckpointService {
             .map(|value| clean(value, TEXT_FIELD_MAX_CHARS))
             .filter(|value| !value.is_empty());
 
-        let git = self.git.snapshot(&workspace.path)?;
+        // The commit subject is repository free text and is redacted like any
+        // other field before it is written; the repository root is stored in
+        // its conventional form. HEAD and the branch stay raw because the
+        // guardian compares them with later snapshots.
+        let git = self.git.snapshot(&workspace.path)?.map(|mut snapshot| {
+            snapshot.last_commit = snapshot
+                .last_commit
+                .take()
+                .map(|subject| clean(subject, TEXT_FIELD_MAX_CHARS))
+                .filter(|subject| !subject.is_empty());
+            snapshot.repository_root = snapshot.repository_root.as_deref().map(simplify_path);
+            snapshot
+        });
         let files_changed = self.git.changed_files(&workspace.path)?;
         let checkpoint = Checkpoint {
             schema_version: 2,
@@ -367,12 +379,22 @@ impl CheckpointService {
     /// Deletes a checkpoint file and its index entry. When the file is already
     /// gone (deleted by hand, quarantined, or an earlier interrupted delete),
     /// the stale index entry is still removed. Files outside managed storage
-    /// and symlinks are never deleted.
+    /// and symlinks are never deleted: for such an entry (which
+    /// [`Self::list_with_unreadable`] reports as unreadable) only the index
+    /// row is removed, so [`UnreadableCheckpoint::recovery_command`] works for
+    /// every unreadable reason.
     pub fn delete(&self, reference: &str) -> Result<()> {
         let path = self.store.checkpoint_path(reference)?;
         match std::fs::symlink_metadata(&path) {
             Ok(_) => {
-                ensure_managed_file(&path, &self.paths.checkpoints_dir())?;
+                match ensure_managed_file(&path, &self.paths.checkpoints_dir()) {
+                    Ok(()) => {}
+                    Err(ContextWakeError::UnsafePath(_)) => {
+                        self.store.delete_checkpoint_index(reference)?;
+                        return Ok(());
+                    }
+                    Err(error) => return Err(error),
+                }
                 if let Err(error) = std::fs::remove_file(&path)
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
@@ -565,6 +587,121 @@ mod tests {
         atomic_write(&path, b"first", false).expect("first write");
         atomic_write(&path, b"second", true).expect("explicit replacement");
         assert_eq!(std::fs::read(path).expect("read"), b"second");
+    }
+
+    /// Re-points a checkpoint's index row at `path`.
+    fn repoint_index(store: &Store, checkpoint: &Checkpoint, path: &Path) {
+        store
+            .delete_checkpoint_index(&checkpoint.id.to_string())
+            .expect("remove row");
+        store
+            .insert_checkpoint_index(
+                checkpoint.id,
+                checkpoint.workspace_id,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &checkpoint.objective,
+                path,
+                checkpoint.redaction_status,
+                checkpoint.created_at,
+            )
+            .expect("re-insert row");
+    }
+
+    fn assert_recovery_removes_only_the_row(
+        service: &CheckpointService,
+        store: &Store,
+        checkpoint: &Checkpoint,
+        foreign: &Path,
+    ) {
+        let id = checkpoint.id.to_string();
+        let listing = service.list_with_unreadable().expect("listing");
+        assert_eq!(listing.unreadable.len(), 1);
+        assert!(
+            listing.unreadable[0]
+                .reason
+                .contains("outside managed checkpoint storage or is a symlink"),
+            "{}",
+            listing.unreadable[0].reason
+        );
+        assert_eq!(
+            listing.unreadable[0].recovery_command(),
+            format!("ctx checkpoint delete {id} --yes")
+        );
+        service.delete(&id).expect("the advertised recovery works");
+        assert!(
+            foreign.exists(),
+            "a file outside managed storage was deleted"
+        );
+        assert!(store.checkpoint_path(&id).is_err(), "index row remains");
+        assert!(
+            service
+                .list_with_unreadable()
+                .expect("listing")
+                .unreadable
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn deleting_an_entry_outside_managed_storage_removes_only_its_index_row() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, store, workspace) = service(root.path());
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Moved state".into(),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        // For example a CONTEXTWAKE_HOME copied elsewhere with the old copy kept.
+        let managed = store
+            .checkpoint_path(&checkpoint.id.to_string())
+            .expect("path");
+        let foreign = root
+            .path()
+            .join("old-state")
+            .join(format!("{}.json", checkpoint.id));
+        std::fs::create_dir_all(foreign.parent().expect("parent")).expect("old state");
+        std::fs::rename(&managed, &foreign).expect("move file");
+        repoint_index(&store, &checkpoint, &foreign);
+        assert_recovery_removes_only_the_row(&service, &store, &checkpoint, &foreign);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_an_entry_whose_file_is_a_symlink_keeps_the_link_target() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (service, store, workspace) = service(root.path());
+        let checkpoint = service
+            .create(
+                &workspace,
+                None,
+                None,
+                CheckpointInput {
+                    objective: "Linked".into(),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        let managed = store
+            .checkpoint_path(&checkpoint.id.to_string())
+            .expect("path");
+        let target = root.path().join("target.json");
+        std::fs::rename(&managed, &target).expect("move file");
+        std::os::unix::fs::symlink(&target, &managed).expect("symlink");
+        assert_recovery_removes_only_the_row(&service, &store, &checkpoint, &target);
+        assert!(
+            std::fs::symlink_metadata(&managed).is_ok(),
+            "symlink was touched"
+        );
     }
 
     #[test]
