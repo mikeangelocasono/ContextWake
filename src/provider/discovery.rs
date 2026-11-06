@@ -373,23 +373,37 @@ impl DiscoveryContext {
     /// user's home (the home itself when `directory` is empty). Like the
     /// executable overrides, `variable` comes from the process environment
     /// only in contexts built by [`Self::from_environment`].
+    #[allow(
+        dead_code,
+        reason = "the Codex and Gemini adapters look up their homes through this"
+    )]
     pub(crate) fn agent_default_home(&self, variable: &str, directory: &str) -> Option<PathBuf> {
-        let configured = match &self.overrides {
+        self.configured_agent_home(variable)
+            .or_else(|| self.unconfigured_agent_home(directory))
+    }
+
+    /// The absolute directory named by `variable`, wrapping quotes removed;
+    /// `None` when the variable is unset, empty or relative.
+    pub(crate) fn configured_agent_home(&self, variable: &str) -> Option<PathBuf> {
+        match &self.overrides {
             Overrides::Process => std::env::var_os(variable),
             Overrides::Fixed(values) => values.get(variable).cloned(),
         }
         .map(strip_wrapping_quotes)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
-        configured.or_else(|| {
-            self.home.as_ref().map(|home| {
-                if directory.is_empty() {
-                    home.clone()
-                } else {
-                    home.join(directory)
-                }
-            })
+        .filter(|path| path.is_absolute())
+    }
+
+    /// `directory` inside the user's home (the home itself when `directory`
+    /// is empty): the agent's home when its variable is not set at all.
+    pub(crate) fn unconfigured_agent_home(&self, directory: &str) -> Option<PathBuf> {
+        self.home.as_ref().map(|home| {
+            if directory.is_empty() {
+                home.clone()
+            } else {
+                home.join(directory)
+            }
         })
     }
 

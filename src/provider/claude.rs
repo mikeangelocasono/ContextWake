@@ -45,7 +45,8 @@ const PROJECTS_DIRECTORY: &str = "projects";
 const HANDOFF_PROMPT_PREFIX: &str = "ContextWake handoff ";
 /// How a delivered `ContextWake` handoff prompt appears among the user
 /// requests of a conversation excerpt (the prompt itself is long and is
-/// already part of the handoff the next agent receives).
+/// already part of the handoff the next agent receives). Session titles skip
+/// it and use the next typed request instead.
 const DELIVERED_HANDOFF_REQUEST: &str = "[ContextWake handoff delivered]";
 /// Claude Code text that is recorded as a user message but was not typed as
 /// a request: slash-command records, local command and shell output, and
@@ -81,12 +82,22 @@ const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LAUNCH_CANDIDATES: usize = 32;
 /// Tolerated difference between `ContextWake`'s and Claude Code's clocks.
 const CLOCK_SKEW_SECONDS: i64 = 2;
+/// Where Claude Code keeps its configuration when `ContextWake` sets no
+/// override of its own.
+#[derive(Clone, Debug, Default)]
+struct ConfigHomes {
+    /// The absolute `CLAUDE_CONFIG_DIR` of the environment `ContextWake`
+    /// runs in (wrapping quotes removed).
+    configured: Option<PathBuf>,
+    /// `<user home>\.claude`: Claude Code's home when the variable is not
+    /// set at all.
+    unconfigured: Option<PathBuf>,
+}
 
 #[derive(Clone, Debug)]
 pub struct ClaudeAdapter {
     executable: AgentExecutable,
-    /// Where Claude Code keeps its configuration when no override is set.
-    default_home: Option<PathBuf>,
+    homes: ConfigHomes,
 }
 
 impl ClaudeAdapter {
@@ -104,45 +115,60 @@ impl ClaudeAdapter {
                 },
                 default_launcher,
             ),
-            default_home: context
-                .agent_default_home(CONFIG_DIR_VARIABLE, ".claude")
-                .map(|home| simplify_path(&home)),
+            homes: ConfigHomes {
+                configured: context
+                    .configured_agent_home(CONFIG_DIR_VARIABLE)
+                    .map(|home| simplify_path(&home)),
+                unconfigured: context
+                    .unconfigured_agent_home(".claude")
+                    .map(|home| simplify_path(&home)),
+            },
         }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: AgentExecutable::direct(executable),
-            default_home: None,
+            homes: ConfigHomes::default(),
         }
     }
 
+    /// Sets the home Claude Code uses without `CLAUDE_CONFIG_DIR`.
     #[cfg(test)]
     #[must_use]
     fn with_default_home(mut self, home: impl Into<PathBuf>) -> Self {
-        self.default_home = Some(home.into());
+        self.homes.unconfigured = Some(home.into());
         self
     }
 
-    /// Whether `home` is the directory Claude Code uses without an override.
-    fn is_default_home(&self, home: &Path) -> bool {
-        self.default_home.as_deref().is_some_and(|default| {
-            paths_equivalent(home, default)
-                || matches!(
-                    (canonicalize_simplified(home), canonicalize_simplified(default)),
-                    (Ok(home), Ok(default)) if paths_equivalent(&home, &default)
-                )
-        })
-    }
-
-    /// Every Claude Code command starts here. `CLAUDE_CONFIG_DIR` is set only
-    /// for a home other than the default one: setting it to the default path
-    /// is not the same as leaving it unset (Claude Code then looks for its
-    /// global `.claude.json` inside that directory and misses the sign-in).
+    /// Every Claude Code command starts here. Claude Code must see exactly
+    /// the variable that selects `agent_home`:
+    /// * the environment's own `CLAUDE_CONFIG_DIR` home gets that value;
+    /// * `<user home>\.claude` gets no variable at all, even when one is
+    ///   inherited: setting it to the default path is not the same as
+    ///   leaving it unset (Claude Code then looks for its global
+    ///   `.claude.json` inside that directory and misses the sign-in), and an
+    ///   inherited value (relative, quoted, or naming another directory)
+    ///   would send Claude Code somewhere else;
+    /// * any other home (a `ContextWake`-managed one) is passed explicitly.
+    ///
+    /// Without a home (version probes) the environment is inherited.
     fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
         let mut command = self.executable.command()?;
-        if let Some(home) = agent_home.filter(|home| !self.is_default_home(home)) {
-            command.env(CONFIG_DIR_VARIABLE, home);
+        if let Some(home) = agent_home {
+            let configured = self.homes.configured.as_deref();
+            if let Some(configured) = configured.filter(|configured| same_home(home, configured)) {
+                command.env(CONFIG_DIR_VARIABLE, configured);
+            } else if self
+                .homes
+                .unconfigured
+                .as_deref()
+                .is_some_and(|unconfigured| same_home(home, unconfigured))
+            {
+                command.env_remove(CONFIG_DIR_VARIABLE);
+            } else {
+                command.env(CONFIG_DIR_VARIABLE, home);
+            }
         }
         Ok(command)
     }
@@ -286,6 +312,16 @@ fn inherit_stdio(command: &mut Command) {
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+}
+
+/// Whether `home` and `other` name the same directory (Windows spellings
+/// and links resolved).
+fn same_home(home: &Path, other: &Path) -> bool {
+    paths_equivalent(home, other)
+        || matches!(
+            (canonicalize_simplified(home), canonicalize_simplified(other)),
+            (Ok(home), Ok(other)) if paths_equivalent(&home, &other)
+        )
 }
 
 /// The resolved, non-verbatim form of `path` (unchanged when it cannot be
@@ -443,10 +479,22 @@ impl TranscriptFile {
             .strip_suffix(".jsonl")
             .or_else(|| file_name.strip_suffix(".JSONL"))?;
         let session_id = validate_session_reference(stem).ok()?;
-        if session_id != stem {
+        // Session references may contain ':', which Windows reads as a drive
+        // prefix (`C:x.jsonl` replaces the directory in `join`) or an
+        // alternate data stream (`x.jsonl:s`); a transcript is always one
+        // plain file name directly inside `directory`.
+        if session_id != stem || file_name.contains(':') {
             return None;
         }
         let path = directory.join(file_name);
+        let mut components = Path::new(file_name).components();
+        if !matches!(
+            (components.next(), components.next()),
+            (Some(std::path::Component::Normal(_)), None)
+        ) || path.parent() != Some(directory)
+        {
+            return None;
+        }
         let metadata = std::fs::symlink_metadata(&path).ok()?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             return None;
@@ -1193,7 +1241,10 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn default_home(&self) -> Option<PathBuf> {
-        self.default_home.clone()
+        self.homes
+            .configured
+            .clone()
+            .or_else(|| self.homes.unconfigured.clone())
     }
 
     fn conversation_excerpt(
@@ -1402,7 +1453,7 @@ mod tests {
                 r#"echo {"loggedIn": false, "authMethod": "none"}"#,
                 r#"printf '%s\n' '{"loggedIn": false, "authMethod": "none"}'"#,
             )),
-            default_home: None,
+            homes: ConfigHomes::default(),
         };
         assert_eq!(
             adapter.auth_status(directory.path()).expect("auth"),
@@ -1494,15 +1545,18 @@ mod tests {
         );
     }
 
+    /// How [`config_dir`] reports a removed variable.
+    const REMOVED: &str = "<removed>";
+
     /// The `CLAUDE_CONFIG_DIR` the command sets (`None` when it inherits the
-    /// variable unchanged). Removing the variable would show as `<removed>`.
+    /// variable unchanged). Removing the variable shows as [`REMOVED`].
     fn config_dir(command: &Command) -> Option<String> {
         command
             .get_envs()
             .find(|(key, _)| *key == OsStr::new(CONFIG_DIR_VARIABLE))
             .map(|(_, value)| {
                 value.map_or_else(
-                    || "<removed>".into(),
+                    || REMOVED.into(),
                     |value| value.to_string_lossy().into_owned(),
                 )
             })
@@ -1513,11 +1567,76 @@ mod tests {
     }
 
     #[test]
+    fn an_inherited_config_dir_never_redirects_the_selected_home() {
+        // The homes as discovered, with an executable for building commands.
+        let discovered = |context: &DiscoveryContext| ClaudeAdapter {
+            executable: AgentExecutable::direct("claude"),
+            ..ClaudeAdapter::discover_in(context)
+        };
+        let home = root();
+        let user_default = home.join(".claude");
+        let isolated = home.join("ContextWake").join("profiles").join("work");
+        let context = DiscoveryContext::new(Some(&home), Some(&home), Vec::new());
+        let config_dir_for = |context: &DiscoveryContext, target: &Path| {
+            config_dir(
+                &discovered(context)
+                    .base_command(Some(target))
+                    .expect("command"),
+            )
+        };
+
+        // A relative or empty inherited value is not Claude Code's home here,
+        // so the user default home must not inherit it.
+        for unusable in ["relative", ""] {
+            let context = context.clone().with_override(CONFIG_DIR_VARIABLE, unusable);
+            assert_eq!(
+                config_dir_for(&context, &user_default),
+                Some(REMOVED.into()),
+                "{unusable:?}"
+            );
+        }
+
+        // An existing-login profile stored the variable-less home and the
+        // user later configured another directory: the profile keeps its
+        // home without the variable; the configured home gets its value.
+        let configured = home.join("Claude Config");
+        let quoted = format!("\"{}\"", configured.display());
+        let configured_context = context
+            .clone()
+            .with_override(CONFIG_DIR_VARIABLE, quoted.as_str());
+        assert_eq!(
+            ClaudeAdapter::discover_in(&configured_context).default_home(),
+            Some(configured.clone())
+        );
+        assert_eq!(
+            config_dir_for(&configured_context, &user_default),
+            Some(REMOVED.into())
+        );
+        assert_eq!(
+            config_dir_for(&configured_context, &configured),
+            Some(text(&configured))
+        );
+        assert_eq!(
+            config_dir_for(&configured_context, &isolated),
+            Some(text(&isolated))
+        );
+        // Version probes without a home inherit the environment.
+        assert_eq!(
+            config_dir(
+                &discovered(&configured_context)
+                    .base_command(None)
+                    .expect("command")
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn the_default_home_is_never_passed_as_config_dir() {
         let default = root().join(".claude");
         let adapter = ClaudeAdapter::with_executable("claude").with_default_home(&default);
         let command = adapter.base_command(Some(&default)).expect("command");
-        assert_eq!(config_dir(&command), None);
+        assert_eq!(config_dir(&command), Some(REMOVED.into()));
         assert_eq!(
             config_dir(&adapter.base_command(None).expect("command")),
             None
@@ -1546,7 +1665,7 @@ mod tests {
             let command = adapter
                 .base_command(Some(Path::new(spelling)))
                 .expect("command");
-            assert_eq!(config_dir(&command), None, "{spelling}");
+            assert_eq!(config_dir(&command), Some(REMOVED.into()), "{spelling}");
         }
     }
 
@@ -1567,7 +1686,7 @@ mod tests {
                 .expect("launch"),
         ];
         for command in &commands {
-            assert_eq!(config_dir(command), None);
+            assert_eq!(config_dir(command), Some(REMOVED.into()));
         }
         let other = fixture.root.path().join("isolated home");
         let command = adapter
@@ -1821,7 +1940,7 @@ mod tests {
                 &format!("exit /b {exit}"),
                 &format!("exit {exit}"),
             )),
-            default_home: None,
+            homes: ConfigHomes::default(),
         };
         adapter("0")
             .launch_with_handoff(&fixture.home, &fixture.workspace, &launch)
@@ -2214,6 +2333,56 @@ mod tests {
                 .conversation_excerpt(&fixture.home, &fixture.workspace, Some("../escape"))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn session_ids_never_name_files_outside_the_project_directory() {
+        let fixture = TranscriptFixture::new();
+        let at = "2026-11-01T10:00:00Z";
+        write_transcript(
+            &fixture.project,
+            SESSION_A,
+            &[user("Visible request", at, &fixture.cwd)],
+        );
+        for name in [
+            "C:evil.jsonl",
+            "c:evil.jsonl",
+            &format!("{SESSION_A}.jsonl:s.jsonl"),
+            &format!("{SESSION_A}.jsonl::$DATA.jsonl"),
+        ] {
+            assert!(
+                TranscriptFile::at(&fixture.project, name).is_none(),
+                "{name}"
+            );
+        }
+        assert!(TranscriptFile::at(&fixture.project, &format!("{SESSION_A}.jsonl")).is_some());
+
+        // On NTFS `<id>.jsonl:s` would open an alternate data stream of a
+        // real transcript; it must not be read as a session.
+        let stream = fixture.project.join(format!("{SESSION_A}.jsonl:s.jsonl"));
+        let hidden = format!("{}\n", user("Hidden stream", at, &fixture.cwd));
+        if cfg!(windows) {
+            std::fs::write(&stream, hidden).expect("NTFS alternate data stream");
+            let adapter = TranscriptFixture::adapter();
+            let stream_id = format!("{SESSION_A}.jsonl:s");
+            assert_eq!(
+                adapter
+                    .conversation_excerpt(&fixture.home, &fixture.workspace, Some(&stream_id))
+                    .expect("no excerpt"),
+                None
+            );
+            let record = LaunchRecord {
+                started_at: DateTime::parse_from_rfc3339("2026-11-01T09:00:00Z")
+                    .expect("time")
+                    .with_timezone(&Utc),
+                marker: "Hidden stream".into(),
+                expected_session_id: Some(stream_id),
+            };
+            let launched = adapter
+                .launched_session(&fixture.home, &fixture.workspace, &record)
+                .expect("launched");
+            assert!(launched.is_none_or(|session| !session.prompt_delivered));
+        }
     }
 
     #[test]
