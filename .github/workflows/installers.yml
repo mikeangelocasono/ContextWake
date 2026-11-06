@@ -8,21 +8,74 @@ permissions:
   contents: read
 
 jobs:
-  windows:
+  windows-package:
+    # Regression suite for scripts/*.ps1 against a package built from this commit: PATH round trips
+    # (REG_EXPAND_SZ, REG_SZ, missing value) on a disposable registry key, rollback after a failed
+    # post-swap verification, updating and uninstalling while ctx.exe is running, relative install
+    # directories, checksum and archive rejection, the README scriptblock form, and release tooling.
+    name: windows (package built from source)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: 1.88.0
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-targets: false
+      - name: Build release binaries
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc
+      - name: Check binaries need no Visual C++ runtime
+        shell: pwsh
+        run: ./scripts/check-windows-runtime.ps1 -Path target/x86_64-pc-windows-msvc/release/ctx.exe, target/x86_64-pc-windows-msvc/release/ctxwake.exe
+      - name: Package
+        id: package
+        shell: pwsh
+        run: ./scripts/package-release.ps1 -Target x86_64-pc-windows-msvc -Label windows-x86_64
+      - name: Installer regression suite (Windows PowerShell 5.1)
+        shell: powershell
+        env:
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.artifact }}
+        run: .\scripts\test-windows-installer.ps1 -Archive $env:RELEASE_ARCHIVE
+      - name: Installer regression suite (PowerShell 7)
+        shell: pwsh
+        env:
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.artifact }}
+        run: ./scripts/test-windows-installer.ps1 -Archive $env:RELEASE_ARCHIVE
+
+  windows:
+    # The current scripts against the live published release, on the runner's real user PATH.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Fresh install, reinstall, PATH, and uninstall (Windows PowerShell 5.1)
         shell: powershell
         run: |
           $installDir = Join-Path $env:RUNNER_TEMP "contextwake-winps\bin"
           $stateDir = Join-Path $env:RUNNER_TEMP "contextwake-winps\state"
-          $originalUserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $environment = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey("Environment")
+          $originalValue = $environment.GetValue("Path", $null, "DoNotExpandEnvironmentNames")
+          $originalKind = $null
+          if ($null -ne $originalValue) { $originalKind = $environment.GetValueKind("Path") }
+          function Get-RawUserPath {
+              $value = $environment.GetValue("Path", $null, "DoNotExpandEnvironmentNames")
+              if ($null -eq $value) { return "<missing>" }
+              return "$($environment.GetValueKind('Path'))|$value"
+          }
           try {
+              # Seed an unexpanded entry: the round trip must keep %USERPROFILE% and REG_EXPAND_SZ.
+              $seeded = "%USERPROFILE%\contextwake-ci-sentinel"
+              if (-not [string]::IsNullOrEmpty($originalValue)) { $seeded = "$originalValue;$seeded" }
+              $environment.SetValue("Path", $seeded, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+
               .\scripts\install.ps1 -Version latest -InstallDir $installDir
-              $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-              $entries = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $installDir.TrimEnd('\') })
-              if ($entries.Count -ne 1) { throw "installer did not add exactly one user PATH entry" }
+              if ((Get-RawUserPath) -cne "ExpandString|$seeded;$installDir") {
+                  throw "install changed the user PATH beyond appending its entry: $(Get-RawUserPath)"
+              }
 
               $env:PATH = "$installDir;$env:PATH"
               $env:CONTEXTWAKE_HOME = $stateDir
@@ -35,9 +88,9 @@ jobs:
               New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
               Set-Content -LiteralPath (Join-Path $stateDir "preserve-sentinel") -Value "preserve"
               .\scripts\install.ps1 -Version latest -InstallDir $installDir
-              $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-              $entries = @($userPath -split ';' | Where-Object { $_.TrimEnd('\') -ieq $installDir.TrimEnd('\') })
-              if ($entries.Count -ne 1) { throw "reinstall duplicated the user PATH entry" }
+              if ((Get-RawUserPath) -cne "ExpandString|$seeded;$installDir") {
+                  throw "reinstall changed the user PATH: $(Get-RawUserPath)"
+              }
               if (-not (Test-Path -LiteralPath (Join-Path $stateDir "preserve-sentinel"))) {
                   throw "reinstall removed ContextWake state"
               }
@@ -48,12 +101,18 @@ jobs:
               if (-not (Test-Path -LiteralPath (Join-Path $stateDir "preserve-sentinel"))) {
                   throw "uninstall removed ContextWake state"
               }
-              if ([Environment]::GetEnvironmentVariable("Path", "User") -cne $originalUserPath) {
-                  throw "uninstall did not restore the original user PATH"
+              if ((Get-RawUserPath) -cne "ExpandString|$seeded") {
+                  throw "uninstall did not restore the raw user PATH: $(Get-RawUserPath)"
               }
           }
           finally {
-              [Environment]::SetEnvironmentVariable("Path", $originalUserPath, "User")
+              if ($null -eq $originalValue) {
+                  $environment.DeleteValue("Path", $false)
+              }
+              else {
+                  $environment.SetValue("Path", $originalValue, $originalKind)
+              }
+              $environment.Dispose()
           }
       - name: PowerShell 7 install smoke test
         shell: pwsh
@@ -107,7 +166,9 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Fresh install, reinstall, PATH, state preservation, and uninstall
         shell: sh
         run: |

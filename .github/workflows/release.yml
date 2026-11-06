@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Everything that ships is built here from a clean checkout of the tagged commit:
+# - no build cache is restored, so a poisoned cache entry cannot reach a release binary;
+# - every third-party action is pinned to a full commit SHA (the comment names the tag or branch);
+# - each build job runs the format, Clippy and test gates of ci.yml before the release build, and
+#   publish needs every build job, so a commit that fails a gate publishes nothing.
 jobs:
   build:
     strategy:
@@ -26,14 +31,14 @@ jobs:
             label: macos-aarch64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.88.0
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-${{ matrix.target }}
+          components: rustfmt, clippy
       - name: Validate tag matches Cargo version
         if: github.event_name == 'push'
         shell: pwsh
@@ -43,6 +48,12 @@ jobs:
           if ($env:GITHUB_REF_NAME -ne "v$version") {
             throw "Tag $env:GITHUB_REF_NAME does not match Cargo version v$version"
           }
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Test
+        run: cargo test --locked --workspace --all-targets --all-features
       - run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Smoke-test release binaries (Windows)
         if: runner.os == 'Windows'
@@ -51,6 +62,10 @@ jobs:
           .\target\${{ matrix.target }}\release\ctx.exe --version
           .\target\${{ matrix.target }}\release\ctx.exe --help
           .\target\${{ matrix.target }}\release\ctxwake.exe --version
+      - name: Check Windows binaries need no Visual C++ runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-runtime.ps1 -Path target/${{ matrix.target }}/release/ctx.exe, target/${{ matrix.target }}/release/ctxwake.exe
       - name: Smoke-test release binaries (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -61,7 +76,19 @@ jobs:
         id: package
         shell: pwsh
         run: ./scripts/package-release.ps1 -Target '${{ matrix.target }}' -Label '${{ matrix.label }}'
-      - uses: actions/upload-artifact@v7
+      - name: Test the Windows installer against the package (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.artifact }}
+        run: .\scripts\test-windows-installer.ps1 -Archive $env:RELEASE_ARCHIVE
+      - name: Test the Windows installer against the package (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          RELEASE_ARCHIVE: ${{ steps.package.outputs.artifact }}
+        run: ./scripts/test-windows-installer.ps1 -Archive $env:RELEASE_ARCHIVE
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.label }}
           path: ${{ steps.package.outputs.artifact }}
@@ -71,18 +98,17 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: artifacts
           merge-multiple: true
       - name: Generate SHA-256 manifest
         shell: pwsh
-        run: |
-          Get-ChildItem artifacts -File | Sort-Object Name | ForEach-Object {
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
-            "$hash  $($_.Name)"
-          } | Set-Content -Encoding ascii artifacts/SHA256SUMS
-      - uses: actions/upload-artifact@v7
+        run: ./scripts/write-checksums.ps1 -Directory artifacts
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bundle
           path: artifacts/*
@@ -90,13 +116,15 @@ jobs:
 
   publish:
     if: github.event_name == 'push'
-    needs: checksums
+    needs: [build, checksums]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bundle
           path: artifacts
