@@ -44,6 +44,13 @@ pub struct SwitchRequest {
     pub refresh_when_active: bool,
 }
 
+const GENERATED_TASK_PREFIX: &str = "Continue from profile ";
+const GENERATED_TASK_SUFFIX: &str = " using an explicit workspace handoff";
+
+fn is_generated_switch_task(task: &str) -> bool {
+    task.starts_with(GENERATED_TASK_PREFIX) && task.ends_with(GENERATED_TASK_SUFFIX)
+}
+
 pub fn switch_profile(
     store: &Store,
     checkpoints: &CheckpointService,
@@ -108,9 +115,16 @@ pub fn switch_profile_with(
         } else if input.objective.trim().is_empty() {
             input.objective = format!("Continue work in {}", workspace.display_name);
         }
-        if input.active_task.is_none() {
+        // A task this function generated for an earlier switch names that
+        // switch's source profile; it is refreshed instead of carried along,
+        // so the next agent is not told to continue from the wrong profile.
+        if input
+            .active_task
+            .as_deref()
+            .is_none_or(is_generated_switch_task)
+        {
             input.active_task = Some(format!(
-                "Continue from profile {} using an explicit workspace handoff",
+                "{GENERATED_TASK_PREFIX}{}{GENERATED_TASK_SUFFIX}",
                 previous
                     .as_ref()
                     .map_or("unknown", |profile| profile.display_name.as_str())
@@ -159,9 +173,9 @@ pub fn switch_profile_with(
     }
     let handoff = created.map(|(_, handoff)| handoff);
     let message = if already_active {
-        "Profile was already active; a fresh checkpoint and workspace handoff were created. No session transfer was attempted."
+        "Profile was already active; a fresh checkpoint and workspace handoff were created."
     } else if handoff.is_some() {
-        "Profile switched. Continuity was preserved with a workspace handoff; no native session resume was claimed."
+        "Profile switched. Continuity was preserved with a workspace handoff; the switch itself resumes no agent session, so no native session resume was claimed."
     } else {
         "Profile switched explicitly. No provider session was resumed or transferred."
     };

@@ -328,6 +328,12 @@ fn repeated_switch_replaces_stale_target_review_task() {
             "Review this handoff after activating profile client",
         ]
     );
+    // The generated current task names the latest source profile, not the
+    // source of the first switch.
+    assert_eq!(
+        refreshed.active_task.as_deref(),
+        Some("Continue from profile work using an explicit workspace handoff")
+    );
 }
 
 #[test]
