@@ -54,6 +54,9 @@ const TASKKILL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Most filter drivers and configured hooks one repository may declare before
 /// `ContextWake` refuses to inspect it (each one costs command-line space).
 const MAX_NEUTRALIZED_NAMES: usize = 128;
+/// Most bytes the generated `-c` settings may take. Windows limits a whole command line
+/// to 32,767 characters, so overly long names are refused instead of failing the spawn.
+const MAX_NEUTRALIZED_BYTES: usize = 16 * 1024;
 /// Appended to the Git executable path to form `core.hooksPath`. The executable is a
 /// regular file, so nothing can exist below it and no directory has to be created.
 const DISABLED_HOOKS_DIRECTORY: &str = "contextwake-hooks-disabled";
@@ -617,6 +620,13 @@ fn neutralizing_overrides(listing: &[u8]) -> Result<Vec<OsString>> {
     for name in hooks {
         settings.push(OsString::from(format!("hook.{name}.enabled=false")));
     }
+    // Each setting also costs a `-c` argument and separators on the command line.
+    let bytes: usize = settings.iter().map(|setting| setting.len() + 4).sum();
+    if bytes > MAX_NEUTRALIZED_BYTES {
+        return Err(refuse(
+            "filter driver or hook names too long for ContextWake to disable",
+        ));
+    }
     Ok(settings)
 }
 
@@ -1044,6 +1054,27 @@ mod tests {
                 .expect("exactly at the limit")
                 .len(),
             MAX_NEUTRALIZED_NAMES * 4
+        );
+    }
+
+    #[test]
+    fn overly_long_program_settings_are_refused() {
+        // 128 names of 60 characters stay within the name limit but would exceed the
+        // Windows command-line limit once expanded into four settings each.
+        let mut long = Vec::new();
+        for index in 0..MAX_NEUTRALIZED_NAMES {
+            long.extend_from_slice(format!("filter.{index:0>60}.clean\0").as_bytes());
+        }
+        assert!(matches!(
+            neutralizing_overrides(&long),
+            Err(ContextWakeError::UntrustedConfiguration(_))
+        ));
+        let name = "n".repeat(60);
+        assert_eq!(
+            neutralizing_overrides(format!("filter.{name}.clean\0").as_bytes())
+                .expect("one long name fits")
+                .len(),
+            4
         );
     }
 
