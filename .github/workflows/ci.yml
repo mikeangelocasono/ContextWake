@@ -7,6 +7,9 @@ on:
 permissions:
   contents: read
 
+# Third-party actions are pinned to full commit SHAs (the comment names the tag or branch);
+# Dependabot proposes updates for the tagged ones. dtolnay/rust-toolchain publishes no tags,
+# so its master-branch pin is updated by hand (see docs/release.md).
 jobs:
   quality:
     strategy:
@@ -15,12 +18,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
           toolchain: 1.88.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Avoid restoring stale cargo-package target entries across releases.
           # Registry and Git dependency caches remain enabled.
@@ -37,6 +42,10 @@ jobs:
           .\target\release\ctx.exe --version
           .\target\release\ctx.exe --help
           .\target\release\ctxwake.exe --version
+      - name: Check Windows binaries need no Visual C++ runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-windows-runtime.ps1 -Path target/release/ctx.exe, target/release/ctxwake.exe
       - name: Smoke-test canonical and compatibility binaries (Unix)
         if: runner.os != 'Windows'
         run: |
@@ -60,8 +69,10 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -71,9 +82,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,7 +99,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: --no-progress --verbose './**/*.md' './**/*.yml'

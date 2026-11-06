@@ -1,0 +1,11 @@
+# Link the C runtime statically into Windows MSVC builds so ctx.exe and
+# ctxwake.exe do not import VCRUNTIME140.dll. That DLL ships only with the
+# Visual C++ Redistributable, so a dynamically linked build fails to start on a
+# clean Windows install, in Windows Sandbox, or in a Server Core container.
+#
+# The section applies only when building for x86_64-pc-windows-msvc; GNU and
+# Unix builds are unaffected. A RUSTFLAGS environment variable replaces these
+# flags entirely, so CI and the release workflow run
+# scripts/check-windows-runtime.ps1 on the built executables.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
