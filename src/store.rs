@@ -433,6 +433,9 @@ impl Store {
                  WHEN workspaces.trust_state = 'trusted' THEN 'trusted'
                  ELSE excluded.trust_state
                END,
+               preferred_agent_id = excluded.preferred_agent_id,
+               preferred_model_provider_id = excluded.preferred_model_provider_id,
+               preferred_model = excluded.preferred_model,
                git_root = excluded.git_root,
                last_opened_at = excluded.last_opened_at",
             params![

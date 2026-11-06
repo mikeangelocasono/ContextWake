@@ -45,7 +45,17 @@ to `ctx checkpoint create` to execute them and capture redacted status-only
 results. Standard input and output are disconnected, and each command has the
 configured timeout. ContextWake does not invoke a shell or persist command output.
 
-Precedence is CLI flags, environment overrides, trusted project configuration, selected profile metadata, global configuration, and built-in defaults. Project configuration may not control provider credential paths, telemetry, or update channels.
+For a trusted workspace, `name` becomes the workspace display name. `preferred_agent`,
+`preferred_model_provider`, and `preferred_model` are recorded on the workspace (see
+`ctx workspace show`) and `preferred_profile` is accepted, but all four are informational:
+ContextWake never switches profiles because of them, and agent launches use the active
+profile's agent, model backend, and model. If a trusted `project.toml` cannot be used (for
+example, it contains a key this version does not know), ContextWake ignores it with a
+warning; `ctx workspace validate` and `ctx checkpoint create --validate` report the error.
+
+ContextWake settings come from CLI flags, then environment overrides (`CONTEXTWAKE_HOME`,
+`CONTEXTWAKE_<AGENT>_BIN`), then `config.toml`, then built-in defaults. Project configuration
+may not control provider credential paths, telemetry, or update channels.
 
 Agent executable overrides are process-local and must point to trusted binaries:
 
