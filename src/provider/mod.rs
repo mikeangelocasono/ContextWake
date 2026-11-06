@@ -16,9 +16,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
-    AgentCapabilities, AgentHealth, AgentModel, AuthState, DiscoveredAgentSession, ModelProvider,
+    AgentCapabilities, AgentHealth, AgentModel, AuthState, ConversationExcerpt,
+    DiscoveredAgentSession, ModelProvider,
 };
 
 use discovery::DiscoveryContext;
@@ -33,6 +36,11 @@ const NO_SESSION_LISTING: &str = "does not expose a supported session-listing in
 /// Message of the trait's default `available_models`: the adapter has no
 /// model-catalog implementation.
 const NO_MODEL_CATALOG: &str = "does not expose a supported model catalog";
+/// Message of the trait's default `conversation_excerpt`.
+const NO_CONVERSATION_EXCERPT: &str = "does not expose a readable conversation transcript";
+/// Message of the trait's default `launch_with_handoff` for a resume.
+const NO_RESUME_WITH_HANDOFF: &str =
+    "cannot deliver a handoff into a natively resumed session; start a new session instead";
 
 pub use codex::CodexAdapter;
 pub use gemini::GeminiAdapter;
@@ -85,6 +93,54 @@ impl AcpTransport {
     pub fn arguments(&self) -> &[OsString] {
         &self.arguments
     }
+}
+
+/// How `ContextWake` asks a coding agent to continue from a handoff, for
+/// [`AgentAdapter::launch_with_handoff`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffLaunch {
+    /// Directory of the validated AWHF handoff; it contains `context.md`.
+    pub handoff_directory: PathBuf,
+    /// The complete first message for the agent, built, bounded and redacted
+    /// by `ContextWake` with LF line endings. Adapters pass it unchanged as
+    /// one argument.
+    pub prompt: String,
+    /// Unique text contained in `prompt`, used afterwards to confirm from
+    /// the agent's transcript that the prompt was delivered.
+    pub marker: String,
+    pub model_provider: Option<String>,
+    pub model: Option<String>,
+    /// Natively resume this provider session and deliver `prompt` into it.
+    /// `None` starts a new session.
+    pub resume_session_id: Option<String>,
+    /// A provider session ID for a new session, for agents that accept one
+    /// (Claude Code `--session-id`). Ignored when resuming and by agents that
+    /// cannot assign session IDs.
+    pub new_session_id: Option<String>,
+}
+
+/// What `ContextWake` knows about a launch it performed, for
+/// [`AgentAdapter::launched_session`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchRecord {
+    /// When `ContextWake` started the agent process.
+    pub started_at: DateTime<Utc>,
+    /// The marker contained in the delivered prompt.
+    pub marker: String,
+    /// The session the launch resumed, or the ID it assigned to a new one.
+    pub expected_session_id: Option<String>,
+}
+
+/// The provider session a launch created or resumed, as found afterwards in
+/// the agent's own local session store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchedSession {
+    pub provider_session_id: String,
+    pub title: Option<String>,
+    pub last_activity_at: Option<DateTime<Utc>>,
+    /// A user message containing the launch marker is in the session's
+    /// transcript, so the agent received the handoff prompt.
+    pub prompt_delivered: bool,
 }
 
 /// Stable, compile-time interface for an AI coding CLI. Model backends are
@@ -148,6 +204,75 @@ pub trait AgentAdapter: Send + Sync {
         model_provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<()>;
+
+    /// The configuration home the agent uses when `ContextWake` sets no
+    /// override, which is where the user's existing sign-in lives. `None`
+    /// means profiles of this agent always use a `ContextWake`-managed home.
+    ///
+    /// For a profile that uses this home, `ContextWake` never sets the
+    /// agent's home variable, never writes into the directory and never
+    /// deletes it.
+    fn default_home(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Reads a bounded, redacted excerpt of the agent's conversation in
+    /// `workspace` from its local transcripts: the given provider session, or
+    /// the most recently active one when `provider_session_id` is `None`.
+    /// `Ok(None)` means that no transcript was found for the workspace.
+    fn conversation_excerpt(
+        &self,
+        _agent_home: &Path,
+        _workspace: &Path,
+        _provider_session_id: Option<&str>,
+    ) -> Result<Option<ConversationExcerpt>> {
+        Err(ContextWakeError::CapabilityUnavailable(format!(
+            "{} {NO_CONVERSATION_EXCERPT}",
+            self.display_name()
+        )))
+    }
+
+    /// Runs the agent interactively in `workspace` with `launch.prompt` as
+    /// its first message, and returns when the agent exits. With
+    /// `launch.resume_session_id` the agent natively resumes that session and
+    /// the prompt is delivered into it; otherwise a new session starts.
+    ///
+    /// The default implementation starts a new session through
+    /// [`Self::start_with_handoff`] (with the adapter's own prompt) and
+    /// refuses to resume.
+    fn launch_with_handoff(
+        &self,
+        agent_home: &Path,
+        workspace: &Path,
+        launch: &HandoffLaunch,
+    ) -> Result<()> {
+        if launch.resume_session_id.is_some() {
+            return Err(ContextWakeError::CapabilityUnavailable(format!(
+                "{} {NO_RESUME_WITH_HANDOFF}",
+                self.display_name()
+            )));
+        }
+        self.start_with_handoff(
+            agent_home,
+            workspace,
+            &launch.handoff_directory,
+            launch.model_provider.as_deref(),
+            launch.model.as_deref(),
+        )
+    }
+
+    /// Finds the provider session that the launch described by `record`
+    /// created or resumed in `workspace`, and whether the handoff prompt
+    /// reached it. `Ok(None)` means the adapter cannot tell, in which case
+    /// `ContextWake` must not claim that the context was delivered.
+    fn launched_session(
+        &self,
+        _agent_home: &Path,
+        _workspace: &Path,
+        _record: &LaunchRecord,
+    ) -> Result<Option<LaunchedSession>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -251,6 +376,47 @@ mod tests {
     use super::*;
     use crate::provider::discovery::commands_built_on_this_thread;
     use crate::provider::discovery::tests::{executable, git_work_tree};
+
+    fn launch(resume_session_id: Option<&str>) -> HandoffLaunch {
+        HandoffLaunch {
+            handoff_directory: PathBuf::from("handoff"),
+            prompt: "ContextWake handoff test".into(),
+            marker: "ContextWake handoff test".into(),
+            model_provider: None,
+            model: None,
+            resume_session_id: resume_session_id.map(str::to_string),
+            new_session_id: None,
+        }
+    }
+
+    #[test]
+    fn continuity_hooks_default_to_honest_refusals() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let adapter = CursorAdapter::with_executable(root.path().join("missing-agent"));
+        assert_eq!(adapter.default_home(), None);
+        assert!(matches!(
+            adapter.conversation_excerpt(root.path(), root.path(), None),
+            Err(ContextWakeError::CapabilityUnavailable(_))
+        ));
+        let record = LaunchRecord {
+            started_at: chrono::Utc::now(),
+            marker: "marker".into(),
+            expected_session_id: None,
+        };
+        assert_eq!(
+            adapter
+                .launched_session(root.path(), root.path(), &record)
+                .expect("no verification"),
+            None
+        );
+        // Resuming with a handoff is refused before any process is built.
+        let before = commands_built_on_this_thread();
+        assert!(matches!(
+            adapter.launch_with_handoff(root.path(), root.path(), &launch(Some("session"))),
+            Err(ContextWakeError::CapabilityUnavailable(_))
+        ));
+        assert_eq!(commands_built_on_this_thread(), before);
+    }
 
     const OVERRIDES: [&str; 9] = [
         "CONTEXTWAKE_CODEX_BIN",

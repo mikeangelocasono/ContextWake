@@ -1,18 +1,19 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use wait_timeout::ChildExt;
 
 use crate::error::{ContextWakeError, IoContext, Result};
-use crate::model::AuthState;
+use crate::model::{AuthState, ConversationExcerpt};
 use crate::paths::{canonicalize_simplified, path_is_within, paths_equivalent};
-use crate::security::{SecretScanner, sanitize_terminal};
+use crate::security::{SecretScanner, sanitize_terminal, sanitize_untrusted_label};
 
 /// Standard-output bound for version, help and authentication probes.
 pub(crate) const MAX_PROBE_OUTPUT: usize = 64 * 1024;
@@ -486,9 +487,185 @@ pub(crate) fn contained_existing_path(root: &Path, candidate: &Path) -> Option<P
     path_is_within(&candidate, &root).then_some(candidate)
 }
 
+/// Reads at most the last `max_bytes` of `path`. The flag is `true` when
+/// the file is longer; the returned bytes then start after the first line
+/// break inside that window, so no partial line is returned.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "wave 2: used by the Claude, Codex and Gemini transcript readers"
+    )
+)]
+pub(crate) fn read_file_tail(path: &Path, max_bytes: usize) -> Result<(Vec<u8>, bool)> {
+    let mut file = File::open(path).at(path)?;
+    let length = file.metadata().at(path)?.len();
+    let limit = u64::try_from(max_bytes)
+        .map_err(|_| ContextWakeError::InvalidData("provider file limit is invalid".into()))?;
+    let mut bytes = Vec::new();
+    if length <= limit {
+        file.take(limit).read_to_end(&mut bytes).at(path)?;
+        return Ok((bytes, false));
+    }
+    file.seek(SeekFrom::Start(length - limit)).at(path)?;
+    file.take(limit).read_to_end(&mut bytes).at(path)?;
+    let start = bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .map_or(bytes.len(), |index| index + 1);
+    Ok((bytes.split_off(start), true))
+}
+
+/// Conversation text an adapter collected from one transcript.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TranscriptMessages {
+    /// Typed user requests in transcript order.
+    pub(crate) user_requests: Vec<String>,
+    /// The agent's latest final answer.
+    pub(crate) last_agent_message: Option<String>,
+    /// Part of the transcript was not read (for example its beginning).
+    pub(crate) partial: bool,
+}
+
+/// Builds a [`ConversationExcerpt`] from transcript text: keeps the newest
+/// requests within the excerpt limits, and sanitizes, redacts and bounds
+/// every text.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "wave 2: used by the Claude, Codex and Gemini transcript readers"
+    )
+)]
+pub(crate) fn conversation_excerpt_from(
+    agent_id: &str,
+    provider_session_id: &str,
+    session_title: Option<&str>,
+    last_activity_at: Option<DateTime<Utc>>,
+    messages: &TranscriptMessages,
+) -> ConversationExcerpt {
+    let mut truncated = messages.partial;
+    let mut user_requests = messages
+        .user_requests
+        .iter()
+        .filter_map(|text| {
+            excerpt_text(text, ConversationExcerpt::MAX_REQUEST_CHARS, &mut truncated)
+        })
+        .collect::<Vec<_>>();
+    let older = user_requests
+        .len()
+        .saturating_sub(ConversationExcerpt::MAX_USER_REQUESTS);
+    if older > 0 {
+        truncated = true;
+        user_requests.drain(..older);
+    }
+    let last_agent_message = messages.last_agent_message.as_deref().and_then(|text| {
+        excerpt_text(
+            text,
+            ConversationExcerpt::MAX_AGENT_MESSAGE_CHARS,
+            &mut truncated,
+        )
+    });
+    ConversationExcerpt {
+        agent_id: agent_id.to_string(),
+        provider_session_id: sanitize_untrusted_label(provider_session_id, 256).unwrap_or_default(),
+        session_title: session_title.and_then(|title| sanitize_untrusted_label(title, 200)),
+        captured_at: Utc::now(),
+        last_activity_at,
+        user_requests,
+        last_agent_message,
+        truncated,
+    }
+}
+
+/// Terminal-sanitized, redacted and trimmed text with LF line endings, cut
+/// to `max_chars` characters (setting `truncated`); `None` when nothing
+/// visible remains. Redaction runs before the cut so that a secret cannot
+/// escape detection by being cut short.
+fn excerpt_text(value: &str, max_chars: usize, truncated: &mut bool) -> Option<String> {
+    let sanitized = sanitize_terminal(value).replace("\r\n", "\n");
+    let redacted = SecretScanner::new().redact(&sanitized).text;
+    let text = redacted.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= max_chars {
+        return Some(text.to_string());
+    }
+    *truncated = true;
+    let mut cut = text
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    cut.push('\u{2026}');
+    Some(cut)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn tail_reads_whole_lines_only() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("transcript.jsonl");
+        std::fs::write(&path, b"first line\nsecond line\nthird\n").expect("write");
+        assert_eq!(
+            read_file_tail(&path, 1024).expect("whole file"),
+            (b"first line\nsecond line\nthird\n".to_vec(), false)
+        );
+        // The 12-byte window starts inside "second line"; that partial line is dropped.
+        assert_eq!(
+            read_file_tail(&path, 12).expect("tail"),
+            (b"third\n".to_vec(), true)
+        );
+    }
+
+    #[test]
+    fn conversation_excerpts_keep_the_newest_bounded_redacted_text() {
+        let requests = (1..=7)
+            .map(|index| format!("request {index}"))
+            .chain([
+                format!(
+                    "token=super-secret-value and \u{1b}[31mred\u{1b}[0m {}",
+                    "x".repeat(700)
+                ),
+                "   ".into(),
+            ])
+            .collect::<Vec<_>>();
+        let excerpt = conversation_excerpt_from(
+            "claude",
+            "session-1",
+            Some("Fix\nthe build"),
+            None,
+            &TranscriptMessages {
+                user_requests: requests,
+                last_agent_message: Some("y".repeat(4_000)),
+                partial: false,
+            },
+        );
+        assert_eq!(
+            excerpt.user_requests.len(),
+            ConversationExcerpt::MAX_USER_REQUESTS
+        );
+        assert_eq!(excerpt.user_requests[0], "request 4");
+        let newest = excerpt.user_requests.last().expect("newest request");
+        assert!(!newest.contains("super-secret-value") && newest.contains("[REDACTED]"));
+        assert!(!newest.contains('\u{1b}'));
+        assert_eq!(
+            newest.chars().count(),
+            ConversationExcerpt::MAX_REQUEST_CHARS
+        );
+        assert_eq!(
+            excerpt
+                .last_agent_message
+                .as_deref()
+                .map(|text| text.chars().count()),
+            Some(ConversationExcerpt::MAX_AGENT_MESSAGE_CHARS)
+        );
+        assert_eq!(excerpt.session_title.as_deref(), Some("Fix the build"));
+        assert!(excerpt.truncated);
+    }
 
     /// A fake agent that is a script interpreted by the platform's command
     /// processor, so tests need no compiled helper binaries. On Windows the

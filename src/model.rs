@@ -551,6 +551,43 @@ pub struct UsageSummary {
     pub local_profile_switch_count: u64,
 }
 
+/// A bounded excerpt of a coding agent's own conversation in one workspace,
+/// read from the agent's local transcript so that the next agent sees what
+/// the user last asked for and the latest answer.
+///
+/// Only typed user requests and the agent's final answers are included:
+/// never tool calls or tool output, hidden reasoning, or system, developer
+/// and injected context. Every text is terminal-sanitized and
+/// secret-redacted before it is stored.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ConversationExcerpt {
+    /// The coding agent whose transcript was read (for example `claude`).
+    pub agent_id: String,
+    pub provider_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    pub captured_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<DateTime<Utc>>,
+    /// The most recent user requests, oldest first.
+    pub user_requests: Vec<String>,
+    /// The agent's most recent final answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_message: Option<String>,
+    /// Whether older messages or longer text were left out to stay within
+    /// the limits.
+    pub truncated: bool,
+}
+
+impl ConversationExcerpt {
+    /// At most this many user requests are kept.
+    pub const MAX_USER_REQUESTS: usize = 5;
+    /// Each user request is cut to this many characters.
+    pub const MAX_REQUEST_CHARS: usize = 600;
+    /// The latest agent answer is cut to this many characters.
+    pub const MAX_AGENT_MESSAGE_CHARS: usize = 3_000;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
