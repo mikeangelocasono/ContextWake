@@ -1977,17 +1977,25 @@ fn discard_queued_input(events: &mut impl EventSource) -> io::Result<bool> {
 //   Enter. Several presses in one batch (other than held navigation keys) are
 //   therefore treated as pasted text, and so is type-ahead that queued up while
 //   the TUI was busy; neither may run hotkeys, answer a dialog or confirm a launch.
+// * Backspace inside such a batch is applied in order: it removes the character
+//   typed before it, or the last character of the prompt when it comes first.
 // * Ctrl+C always acts, even inside such a batch.
 //
 // The second value is true when the batch was treated as a paste.
 fn classify_batch(batch: Vec<Event>, continuing_paste: bool) -> (Vec<Input>, bool) {
     let mut presses = Vec::new();
     let mut pasted = String::new();
+    // Backspaces that came before any text in the batch; they edit the prompt.
+    let mut leading_backspaces = Vec::new();
     let mut explicit_paste = false;
     for event in batch {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if let Some(character) = pasted_char(&key) {
+                if key.code == KeyCode::Backspace {
+                    if pasted.pop().is_none() {
+                        leading_backspaces.push(key);
+                    }
+                } else if let Some(character) = pasted_char(&key) {
                     pasted.push(character);
                 }
                 presses.push(key);
@@ -2002,9 +2010,13 @@ fn classify_batch(batch: Vec<Event>, continuing_paste: bool) -> (Vec<Input>, boo
     if let Some(interrupt) = presses.iter().copied().find(is_interrupt) {
         return (vec![Input::Key(interrupt)], false);
     }
-    let burst = presses.len() > 1 && !presses.iter().all(is_pass_through_key);
+    let burst = presses.len() > 1
+        && !presses.iter().all(is_pass_through_key)
+        && !is_held_navigation_letter(&presses);
     if explicit_paste || burst || (continuing_paste && !presses.is_empty()) {
-        return (vec![Input::Paste(pasted)], true);
+        let mut inputs: Vec<Input> = leading_backspaces.into_iter().map(Input::Key).collect();
+        inputs.push(Input::Paste(pasted));
+        return (inputs, true);
     }
     (presses.into_iter().map(Input::Key).collect(), false)
 }
@@ -2032,6 +2044,18 @@ fn is_pass_through_key(key: &KeyEvent) -> bool {
             | KeyCode::Backspace
             | KeyCode::Delete
     )
+}
+
+// A held J or K (the list navigation letters) repeats one plain key; a paste of
+// several different characters never looks like that.
+fn is_held_navigation_letter(presses: &[KeyEvent]) -> bool {
+    presses.first().is_some_and(|first| {
+        matches!(first.code, KeyCode::Char('j' | 'k'))
+            && first.modifiers.is_empty()
+            && presses
+                .iter()
+                .all(|key| key.code == first.code && key.modifiers == first.modifiers)
+    })
 }
 
 // The character a key press types into a text prompt. Windows reports AltGr as
@@ -2524,12 +2548,21 @@ fn run_in_terminal(app: &Application, ascii: bool) -> Result<Option<LaunchAction
     else {
         return Ok(None);
     };
-    let mut state = event_loop(&mut terminal, app, ascii, &mut events, &probe, state)?;
+    let mut state = event_loop(
+        &mut terminal,
+        app,
+        ascii,
+        &mut events,
+        &probe,
+        state,
+        EXIT_WAIT_LIMIT,
+    )?;
     Ok(state.launch_action.take())
 }
 
 // The event loop after the initial load. Returns the final state; its
 // `launch_action` is the agent launch to run after the terminal is restored.
+// `exit_wait_limit` bounds how long a plain quit waits for a provider refresh.
 fn event_loop<B: Backend, E: EventSource>(
     terminal: &mut Terminal<B>,
     app: &Application,
@@ -2537,6 +2570,7 @@ fn event_loop<B: Backend, E: EventSource>(
     events: &mut E,
     probe: &Arc<dyn AgentProbe>,
     mut state: UiState,
+    exit_wait_limit: Duration,
 ) -> Result<UiState> {
     let mut loader: Option<StateLoad> = None;
     let mut action: Option<Task<ActionResult>> = None;
@@ -2591,7 +2625,16 @@ fn event_loop<B: Backend, E: EventSource>(
             }
         }
         if let Some(exit) = state.exit
-            && exit_ready(exit, Instant::now(), loader.is_some(), action.is_some())
+            && exit_ready(
+                exit,
+                Instant::now(),
+                ExitWork {
+                    loader_running: loader.is_some(),
+                    action_running: action.is_some(),
+                    launch_queued: state.launch_action.is_some(),
+                },
+                exit_wait_limit,
+            )
         {
             break;
         }
@@ -2644,19 +2687,34 @@ fn event_loop<B: Backend, E: EventSource>(
     Ok(state)
 }
 
+// The background work still running when the loop considers stopping.
+#[derive(Clone, Copy)]
+struct ExitWork {
+    loader_running: bool,
+    action_running: bool,
+    launch_queued: bool,
+}
+
 // Whether the loop may stop now. A running local mutation is allowed to finish
-// unless Ctrl+C was pressed twice; an in-flight provider refresh is waited for at
-// most EXIT_WAIT_LIMIT, and not at all after Ctrl+C or a second Q.
-fn exit_ready(exit: ExitRequest, now: Instant, loader_running: bool, action_running: bool) -> bool {
+// unless Ctrl+C was pressed twice. For a plain quit an in-flight provider refresh
+// is waited for at most `wait_limit`, and not at all after Ctrl+C or a second Q.
+// A queued agent launch always waits for the refresh: an abandoned worker would
+// keep running probes, Git commands and state writes in the workspace the agent
+// works in. Esc, Ctrl+C or a second Q cancel the launch instead.
+fn exit_ready(exit: ExitRequest, now: Instant, work: ExitWork, wait_limit: Duration) -> bool {
     if exit.interrupts >= 2 {
         return true;
     }
-    if action_running {
+    if work.action_running {
         return false;
     }
-    exit.interrupts >= 1
-        || !loader_running
-        || now.saturating_duration_since(exit.requested_at) >= EXIT_WAIT_LIMIT
+    if !work.loader_running {
+        return true;
+    }
+    if work.launch_queued {
+        return false;
+    }
+    exit.interrupts >= 1 || now.saturating_duration_since(exit.requested_at) >= wait_limit
 }
 
 fn load_state_responsively<B: Backend, E: EventSource>(
@@ -5281,8 +5339,16 @@ mod tests {
             vec![Event::Key(ctrl_c())],
         ]);
 
-        let state = event_loop(&mut terminal, &app, false, &mut events, &probe, loaded)
-            .expect("the TUI keeps running");
+        let state = event_loop(
+            &mut terminal,
+            &app,
+            false,
+            &mut events,
+            &probe,
+            loaded,
+            EXIT_WAIT_LIMIT,
+        )
+        .expect("the TUI keeps running");
 
         assert!(
             state
@@ -5515,6 +5581,57 @@ mod tests {
         assert!(matches!(state.input, InputMode::ConfirmSwitch { .. }));
     }
 
+    // Review fix: a held J/K still navigates, and Backspace inside a burst of
+    // typed-ahead keys edits in order instead of being dropped.
+    #[test]
+    fn held_vim_keys_navigate_and_burst_backspaces_edit_in_order() {
+        let root = tempfile::tempdir().expect("root");
+        let app = test_app(root.path());
+        let held = vec![
+            press(KeyCode::Char('j')),
+            release(KeyCode::Char('j')),
+            press(KeyCode::Char('j')),
+        ];
+        let (inputs, pasted) = classify_batch(held, false);
+        assert!(!pasted, "a held J is navigation, not pasted text");
+        assert_eq!(inputs, vec![Input::Key(key(KeyCode::Char('j'))); 2]);
+        let (_, pasted) = classify_batch(
+            vec![press(KeyCode::Char('j')), press(KeyCode::Char('k'))],
+            false,
+        );
+        assert!(pasted, "different letters are still text");
+        let (_, pasted) = classify_batch(
+            vec![press(KeyCode::Char('q')), press(KeyCode::Char('q'))],
+            false,
+        );
+        assert!(pasted, "only the navigation letters pass through");
+
+        let mut state = fixture();
+        state.input = InputMode::CreateCheckpoint {
+            value: "Fixes".into(),
+        };
+        let typed = [
+            KeyCode::Backspace,
+            KeyCode::Char(' '),
+            KeyCode::Char('x'),
+            KeyCode::Backspace,
+            KeyCode::Char('y'),
+        ]
+        .into_iter()
+        .map(press)
+        .collect::<Vec<_>>();
+        let (inputs, pasted) = classify_batch(typed, false);
+        assert!(pasted);
+        for input in inputs {
+            assert!(state.dispatch(&app, input, Instant::now()).is_none());
+        }
+        assert!(
+            matches!(&state.input, InputMode::CreateCheckpoint { value } if value == "Fixe y"),
+            "{:?}",
+            state.input
+        );
+    }
+
     // Windows reports releases as separate events; nothing may act twice.
     #[test]
     fn key_releases_and_held_navigation_keys_act_once_per_press() {
@@ -5560,29 +5677,139 @@ mod tests {
             requested_at: start,
             interrupts: 0,
         };
-        assert!(!exit_ready(exit, start, true, false));
-        assert!(!exit_ready(
+        let work = |loader_running, action_running| ExitWork {
+            loader_running,
+            action_running,
+            launch_queued: false,
+        };
+        let ready = |exit, now, work| exit_ready(exit, now, work, EXIT_WAIT_LIMIT);
+        assert!(!ready(exit, start, work(true, false)));
+        assert!(!ready(
             exit,
             start + Duration::from_secs(1),
-            true,
-            false
+            work(true, false)
         ));
-        assert!(exit_ready(exit, start + EXIT_WAIT_LIMIT, true, false));
-        assert!(exit_ready(exit, start, false, false));
+        assert!(ready(exit, start + EXIT_WAIT_LIMIT, work(true, false)));
+        assert!(ready(exit, start, work(false, false)));
         let interrupted = ExitRequest {
             interrupts: 1,
             ..exit
         };
-        assert!(exit_ready(interrupted, start, true, false));
+        assert!(ready(interrupted, start, work(true, false)));
         assert!(
-            !exit_ready(interrupted, start, true, true),
+            !ready(interrupted, start, work(true, true)),
             "a running local mutation may finish"
         );
         let forced = ExitRequest {
             interrupts: 2,
             ..exit
         };
-        assert!(exit_ready(forced, start, true, true));
+        assert!(ready(forced, start, work(true, true)));
+
+        // A queued launch never starts the agent beside a running refresh.
+        let launch = ExitWork {
+            launch_queued: true,
+            ..work(true, false)
+        };
+        assert!(!ready(exit, start + EXIT_WAIT_LIMIT * 10, launch));
+        assert!(ready(
+            exit,
+            start,
+            ExitWork {
+                loader_running: false,
+                ..launch
+            }
+        ));
+    }
+
+    // Review fix: an agent launch waits for the in-flight provider refresh instead
+    // of starting while the abandoned worker still probes, runs Git and writes
+    // state; a plain quit still stops waiting after the limit.
+    #[test]
+    fn a_queued_launch_waits_for_the_refresh_but_a_quit_does_not() {
+        // The probe owns the state root, so it outlives the detached loader.
+        // A stored workspace, active profile and resumable session, so the session
+        // is still there after the refresh. The probe owns the state root, so it
+        // outlives the detached loader.
+        fn stuck_probe() -> (mpsc::Sender<()>, Arc<dyn AgentProbe>, Application) {
+            let root = tempfile::tempdir().expect("root");
+            let app = test_app(root.path());
+            let workspace = app
+                .register_workspace(
+                    &workspace_dir(root.path(), "workspace"),
+                    TrustState::Untrusted,
+                    true,
+                )
+                .expect("register");
+            let profile = app.create_profile("Work", None, None).expect("profile");
+            app.store.set_active_profile(profile.id).expect("activate");
+            let mut session = test_session(workspace.id, "Agent work", &profile.agent_id);
+            session.profile_id = Some(profile.id);
+            app.store.insert_session(&session).expect("session");
+            let (release, stuck) = mpsc::channel::<()>();
+            let probe: Arc<dyn AgentProbe> = Arc::new(StuckProbe {
+                release: Mutex::new(stuck),
+                _root: root,
+            });
+            (release, probe, app)
+        }
+        let short_limit = Duration::from_millis(20);
+        let hold = Duration::from_millis(400);
+
+        let (release_probe, probe, app) = stuck_probe();
+        let mut state = UiState::load(&app, false, &NoAgents);
+        assert_eq!(state.sessions.len(), 1);
+        state.screen = Screen::SessionDetail;
+        state.refresh_requested = true;
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("terminal");
+        let mut events = ScriptedEvents::new(vec![vec![press(KeyCode::Enter)]]);
+        let started = Instant::now();
+        let releaser = thread::spawn(move || {
+            thread::sleep(hold);
+            let _ = release_probe.send(());
+        });
+        let finished = event_loop(
+            &mut terminal,
+            &app,
+            false,
+            &mut events,
+            &probe,
+            state,
+            short_limit,
+        )
+        .expect("event loop");
+        let waited = started.elapsed();
+        releaser.join().expect("releaser");
+        assert!(
+            waited >= hold,
+            "the launch was handed over while the refresh was still running ({waited:?})"
+        );
+        assert!(matches!(
+            finished.launch_action,
+            Some(LaunchAction::ResumeSession(_))
+        ));
+
+        let (release_probe, probe, app) = stuck_probe();
+        let mut state = fixture();
+        state.refresh_requested = true;
+        let mut events = ScriptedEvents::new(vec![vec![press(KeyCode::Char('q'))]]);
+        let started = Instant::now();
+        let finished = event_loop(
+            &mut terminal,
+            &app,
+            false,
+            &mut events,
+            &probe,
+            state,
+            short_limit,
+        )
+        .expect("event loop");
+        assert!(
+            started.elapsed() < hold,
+            "a plain quit stops waiting for a stuck probe"
+        );
+        assert!(finished.launch_action.is_none());
+        drop(release_probe);
     }
 
     #[test]
