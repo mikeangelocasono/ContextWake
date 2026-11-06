@@ -1819,6 +1819,7 @@ fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Profile> {
         model_preference: row.get(5)?,
         description: row.get(6)?,
         agent_home: PathBuf::from(row.get::<_, String>(7)?),
+        home_mode: crate::model::ProfileHomeMode::Isolated,
         account_fingerprint: row.get(8)?,
         auth_state: AuthState::from(row.get::<_, String>(9)?.as_str()),
         created_at: parse_time(row.get(10)?)?,
@@ -1932,6 +1933,7 @@ mod tests {
             model_preference: None,
             description: None,
             agent_home: directory.join(format!("{name}-home")),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::Unknown,
             created_at: now,
@@ -2003,6 +2005,7 @@ mod tests {
             model_preference: None,
             description: None,
             agent_home: directory.path().join("codex-home"),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::Unknown,
             created_at: now,
@@ -2023,6 +2026,7 @@ mod tests {
             name: "personal".into(),
             display_name: "Personal".into(),
             agent_home: directory.path().join("codex-home-personal"),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             ..profile.clone()
         };
         store
@@ -2056,6 +2060,7 @@ mod tests {
             model_preference: None,
             description: None,
             agent_home: directory.path().join("codex-home"),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::Unknown,
             created_at: now,
@@ -2161,6 +2166,7 @@ mod tests {
             model_preference: Some("big-pickle".into()),
             description: None,
             agent_home: directory.path().join("opencode-home"),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::SignedOut,
             created_at: now,
@@ -3441,6 +3447,7 @@ mod tests {
             id: Uuid::new_v4(),
             name: target.id.to_string(),
             agent_home: directory.path().join("lookalike-home"),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             ..target.clone()
         };
         store.insert_profile(&lookalike).expect("lookalike");

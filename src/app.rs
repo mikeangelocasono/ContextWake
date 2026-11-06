@@ -776,6 +776,7 @@ impl Application {
             model_preference,
             description: description.map(sanitize_terminal),
             agent_home,
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::SignedOut,
             created_at: now,

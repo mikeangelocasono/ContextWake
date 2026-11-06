@@ -496,6 +496,7 @@ mod tests {
                 model_preference: None,
                 description: None,
                 agent_home: legacy.agent_home("codex", &profile_id),
+                home_mode: crate::model::ProfileHomeMode::Isolated,
                 account_fingerprint: None,
                 auth_state: AuthState::SignedIn,
                 created_at: now,

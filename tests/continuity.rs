@@ -37,6 +37,7 @@ fn profile_for_agent(paths: &AppPaths, name: &str, agent_id: &str) -> Profile {
         model_preference: None,
         description: None,
         agent_home: paths.agent_home(agent_id, &id),
+        home_mode: contextwake::model::ProfileHomeMode::Isolated,
         account_fingerprint: None,
         auth_state: AuthState::SignedOut,
         created_at: now,

@@ -154,6 +154,7 @@ mod tests {
             model_preference: None,
             description: None,
             agent_home: paths.agent_home("codex", &id),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state: AuthState::SignedOut,
             created_at: now,

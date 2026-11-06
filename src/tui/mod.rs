@@ -4440,6 +4440,7 @@ mod tests {
             model_preference: None,
             description: None,
             agent_home: agent_home.into(),
+            home_mode: crate::model::ProfileHomeMode::Isolated,
             account_fingerprint: None,
             auth_state,
             created_at: now,

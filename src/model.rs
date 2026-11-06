@@ -47,11 +47,56 @@ pub struct Profile {
     pub description: Option<String>,
     #[serde(alias = "provider_home")]
     pub agent_home: PathBuf,
+    /// Whether `agent_home` is a `ContextWake`-managed directory or the
+    /// agent's own default home (the user's existing sign-in).
+    #[serde(default)]
+    pub home_mode: ProfileHomeMode,
     pub account_fingerprint: Option<String>,
     pub auth_state: AuthState,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// Where a profile's coding agent keeps its configuration and sign-in.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileHomeMode {
+    /// A `ContextWake`-managed directory, passed to the agent through its
+    /// home variable (for example `CLAUDE_CONFIG_DIR`). The profile signs in
+    /// separately.
+    #[default]
+    Isolated,
+    /// The agent's own default home, so the profile uses the existing
+    /// sign-in. `ContextWake` never sets the agent's home variable, writes
+    /// into this directory or deletes it.
+    AgentDefault,
+}
+
+impl ProfileHomeMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::AgentDefault => "agent_default",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Isolated => "ContextWake-managed home (separate sign-in)",
+            Self::AgentDefault => "agent's default home (existing sign-in)",
+        }
+    }
+}
+
+impl From<&str> for ProfileHomeMode {
+    fn from(value: &str) -> Self {
+        if value == "agent_default" {
+            Self::AgentDefault
+        } else {
+            Self::Isolated
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -215,6 +260,9 @@ impl DiscoveredAgentSession {
 pub enum ContinuityKind {
     NativeResume,
     RestoredFromHandoff,
+    /// A native resume of the agent's own session into which a handoff was
+    /// delivered, so it also knows what happened in other agents since.
+    ResumedWithHandoff,
     NewSession,
     Unknown,
 }
@@ -224,6 +272,7 @@ impl ContinuityKind {
         match self {
             Self::NativeResume => "native_resume",
             Self::RestoredFromHandoff => "restored_from_handoff",
+            Self::ResumedWithHandoff => "resumed_with_handoff",
             Self::NewSession => "new_session",
             Self::Unknown => "unknown",
         }
@@ -233,6 +282,7 @@ impl ContinuityKind {
         match self {
             Self::NativeResume => "Native Resume",
             Self::RestoredFromHandoff => "Restored from Handoff",
+            Self::ResumedWithHandoff => "Native Resume + Handoff",
             Self::NewSession => "New Session",
             Self::Unknown => "Unknown",
         }
@@ -244,6 +294,7 @@ impl From<&str> for ContinuityKind {
         match value {
             "native_resume" => Self::NativeResume,
             "restored_from_handoff" => Self::RestoredFromHandoff,
+            "resumed_with_handoff" => Self::ResumedWithHandoff,
             "new_session" => Self::NewSession,
             _ => Self::Unknown,
         }
@@ -591,6 +642,28 @@ impl ConversationExcerpt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuity_and_home_modes_round_trip_through_their_names() {
+        for kind in [
+            ContinuityKind::NativeResume,
+            ContinuityKind::RestoredFromHandoff,
+            ContinuityKind::ResumedWithHandoff,
+            ContinuityKind::NewSession,
+            ContinuityKind::Unknown,
+        ] {
+            assert_eq!(ContinuityKind::from(kind.as_str()), kind);
+        }
+        for mode in [ProfileHomeMode::Isolated, ProfileHomeMode::AgentDefault] {
+            assert_eq!(ProfileHomeMode::from(mode.as_str()), mode);
+        }
+        // Rows and JSON written before home modes existed are managed homes.
+        assert_eq!(
+            ProfileHomeMode::from("unexpected"),
+            ProfileHomeMode::Isolated
+        );
+        assert_eq!(ProfileHomeMode::default(), ProfileHomeMode::Isolated);
+    }
 
     #[test]
     fn discovered_session_without_created_time_starts_at_update_time() {
