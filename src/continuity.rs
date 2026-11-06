@@ -391,8 +391,10 @@ pub struct ContinueOutcome {
 /// session store confirms. `launched` is the result of
 /// [`AgentAdapter::launched_session`].
 ///
-/// * Delivery confirmed: continuity `resumed_with_handoff` (resume) or
-///   `restored_from_handoff` (new session).
+/// * Delivery confirmed: continuity `resumed_with_handoff` when the
+///   confirmed session is the one the plan resumed, else
+///   `restored_from_handoff` (a new session, including an attempted resume
+///   that the agent turned into a new session).
 /// * Otherwise continuity `unknown`.
 /// * `resume_capability` is `native` only for a known provider session ID
 ///   with verified native resume.
@@ -409,10 +411,11 @@ pub fn record_launch(
     launched: Option<&LaunchedSession>,
 ) -> Result<(Session, bool)> {
     let delivered = launched.is_some_and(|session| session.prompt_delivered);
-    let provider_session_id = launched
-        .and_then(|session| validate_session_reference(&session.provider_session_id).ok())
-        .or_else(|| plan.resume_session_id().map(str::to_string));
-    let continuity = match (delivered, plan.resumes()) {
+    let provider_session_id = match launched {
+        Some(session) => validate_session_reference(&session.provider_session_id).ok(),
+        None => plan.resume_session_id().map(str::to_string),
+    };
+    let continuity = match (delivered, resumed_planned_session(plan, launched)) {
         (true, true) => ContinuityKind::ResumedWithHandoff,
         (true, false) => ContinuityKind::RestoredFromHandoff,
         (false, _) => ContinuityKind::Unknown,
@@ -583,7 +586,7 @@ pub fn continue_with_handoff(
         });
     if let Err(error) = result {
         if let Some(found) = &launched {
-            let (session, delivered) =
+            let (session, _) =
                 record_launch(store, adapter, profile, workspace, &plan, Some(found))?;
             report(ContinueNotice::Progress(launch_result_message(
                 agent,
@@ -591,7 +594,7 @@ pub fn continue_with_handoff(
                 handoff_id,
                 &plan,
                 &session,
-                delivered,
+                Some(found),
             )));
         }
         return Err(error);
@@ -604,7 +607,7 @@ pub fn continue_with_handoff(
         handoff_id,
         &plan,
         &session,
-        delivered,
+        launched.as_ref(),
     );
     report(ContinueNotice::Progress(message.clone()));
     Ok(ContinueOutcome {
@@ -619,40 +622,71 @@ pub fn continue_with_handoff(
     })
 }
 
+/// The launch resumed the session the plan chose: the plan resumes and the
+/// agent's session store shows the launch in that same session (an agent
+/// that started a fresh session instead did not resume it).
+fn resumed_planned_session(plan: &LaunchPlan, launched: Option<&LaunchedSession>) -> bool {
+    plan.resume_session_id()
+        .zip(launched)
+        .is_some_and(|(planned, launched)| {
+            launched.provider_session_id.eq_ignore_ascii_case(planned)
+        })
+}
+
 /// The final message of a continue launch; it never claims more than the
-/// agent's transcript confirms.
+/// agent's transcript confirms. `launched` is what
+/// [`AgentAdapter::launched_session`] found (`None`: the adapter could not
+/// tell which session the launch used, so no transcript was checked).
 pub fn launch_result_message(
     agent: &str,
     workspace: &str,
     handoff_id: Uuid,
     plan: &LaunchPlan,
     session: &Session,
-    delivered: bool,
+    launched: Option<&LaunchedSession>,
 ) -> String {
     let id = session
         .provider_session_id
         .as_deref()
         .map_or_else(|| "(session ID unknown)".to_string(), sanitize_terminal);
-    match (delivered, plan.resumes()) {
-        (true, true) => format!(
-            "{}: resumed {agent} session {id} in workspace {workspace}; its transcript confirms that it received handoff {handoff_id}.",
-            ContinuityKind::ResumedWithHandoff.label()
-        ),
-        (true, false) => format!(
-            "{}: started a new {agent} session {id} in workspace {workspace}; its transcript confirms that it received handoff {handoff_id}. This was not a native session resume.",
-            ContinuityKind::RestoredFromHandoff.label()
-        ),
-        (false, resumed) => format!(
-            "Could not confirm that {agent} received the handoff {handoff_id}: no message with this launch's marker was found in its local transcripts. {} in workspace {workspace} was recorded with continuity Unknown.",
-            if resumed {
-                format!("The resumed session {id}")
-            } else if session.provider_session_id.is_some() {
-                format!("The new session {id}")
-            } else {
-                "The launch".to_string()
-            }
-        ),
+    let delivered = launched.is_some_and(|session| session.prompt_delivered);
+    let resumed = resumed_planned_session(plan, launched);
+    let planned = plan.resume_session_id().map(sanitize_terminal);
+    if delivered {
+        return match (resumed, planned) {
+            (true, _) => format!(
+                "{}: resumed {agent} session {id} in workspace {workspace}; its transcript confirms that it received handoff {handoff_id}.",
+                ContinuityKind::ResumedWithHandoff.label()
+            ),
+            (false, Some(planned)) => format!(
+                "{}: {agent} did not resume session {planned}; its transcript shows that handoff {handoff_id} was delivered into session {id} in workspace {workspace} instead. This was not a native session resume.",
+                ContinuityKind::RestoredFromHandoff.label()
+            ),
+            (false, None) => format!(
+                "{}: started a new {agent} session {id} in workspace {workspace}; its transcript confirms that it received handoff {handoff_id}. This was not a native session resume.",
+                ContinuityKind::RestoredFromHandoff.label()
+            ),
+        };
     }
+    let reason = if launched.is_some() {
+        "no message with this launch's marker was found in its local transcripts".to_string()
+    } else {
+        format!(
+            "{agent}'s local session store did not show which session this launch used, so no transcript could be checked for this launch's marker"
+        )
+    };
+    let subject = match (launched, planned) {
+        (Some(_), _) if resumed => format!("The resumed session {id}"),
+        (None, Some(planned)) => format!("The attempted resume of session {planned}"),
+        (Some(_), Some(planned)) => {
+            format!("Session {id} (not the session {planned} that was to be resumed)")
+        }
+        _ if session.provider_session_id.is_some() => format!("The new session {id}"),
+        _ => "The launch".to_string(),
+    };
+    format!(
+        "Could not confirm that {agent} received the handoff {handoff_id}: {reason}. {subject} in workspace {workspace} was recorded with continuity Unknown."
+    )
 }
 
 #[cfg(test)]
@@ -1294,6 +1328,79 @@ mod tests {
             );
             assert!(!outcome.message.contains("Restored"));
         }
+    }
+
+    #[test]
+    fn unconfirmed_delivery_says_whether_a_transcript_was_checked_at_all() {
+        let fixture = fixture();
+        // `launched_session` returned `Ok(None)`: the adapter cannot tell, so
+        // nothing was searched and the message must not say otherwise.
+        let agent = FakeAgent::new(CapabilitySupport::Partial, Found::Nothing);
+        let message = run_continue(&fixture, &agent, true)
+            .outcome
+            .expect("continue")
+            .message;
+        assert!(
+            message.contains("did not show which session this launch used"),
+            "{message}"
+        );
+        assert!(!message.contains("no message with this launch's marker was found"));
+
+        // A session was found but its transcript lacks the marker.
+        let agent = FakeAgent::new(
+            CapabilitySupport::Partial,
+            Found::Other {
+                id: "seen-but-no-marker".into(),
+                delivered: false,
+            },
+        );
+        let message = run_continue(&fixture, &agent, true)
+            .outcome
+            .expect("continue")
+            .message;
+        assert!(
+            message.contains("no message with this launch's marker was found"),
+            "{message}"
+        );
+        assert!(message.contains("The new session seen-but-no-marker"));
+    }
+
+    #[test]
+    fn delivery_into_a_different_session_than_the_resumed_one_is_not_a_native_resume() {
+        let fixture = fixture();
+        let agent = FakeAgent::new(
+            CapabilitySupport::Verified,
+            Found::Other {
+                id: "fresh-session".into(),
+                delivered: true,
+            },
+        );
+        let row = session_row(&fixture, "019a-stale", 10);
+        fixture.store.insert_session(&row).expect("row");
+        let run = run_continue(&fixture, &agent, false);
+        let outcome = run.outcome.as_ref().expect("continue");
+        assert!(outcome.plan.resumes(), "the plan was a resume");
+        assert!(outcome.delivered);
+        let session = outcome.session.as_ref().expect("session row");
+        assert_eq!(
+            session.provider_session_id.as_deref(),
+            Some("fresh-session")
+        );
+        assert_eq!(session.continuity, ContinuityKind::RestoredFromHandoff);
+        assert!(
+            outcome
+                .message
+                .starts_with("Restored from Handoff: Fake Agent did not resume session 019a-stale"),
+            "{}",
+            outcome.message
+        );
+        assert!(!outcome.message.contains("Native Resume"));
+        let stale = fixture.store.session("019a-stale").expect("stale row");
+        assert_eq!(
+            stale.continuity,
+            ContinuityKind::Unknown,
+            "the stale row is not marked as resumed"
+        );
     }
 
     #[test]

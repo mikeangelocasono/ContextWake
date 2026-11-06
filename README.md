@@ -263,9 +263,13 @@ Before launching, ContextWake prints its decision: "Resuming Claude Code session
 ... and delivering handoff ..." when the profile has a known session in the
 workspace and the agent's native resume is verified, otherwise "Starting a new
 ... session". Pass `--new-session` to always start fresh. After the agent exits,
-ContextWake checks the agent's own transcript for the handoff's launch marker
-and reports "Native Resume + Handoff" or "Restored from Handoff" only when it
-finds it; otherwise it says that delivery could not be confirmed. The same flow
+ContextWake looks for the session the launch used in the agent's own local
+session store and checks its transcript for the handoff's launch marker. It
+reports "Native Resume + Handoff" only when the marker is in the session that
+was to be resumed, and "Restored from Handoff" when it is in a new session;
+otherwise it says that delivery could not be confirmed, and whether the
+transcript lacked the marker or no transcript could be checked (the agent's
+session store did not show which session the launch used). The same flow
 is in the TUI: switch profile, review the handoff preview (target workspace,
 destination profile, resume or new; N forces a new session), press Enter.
 
