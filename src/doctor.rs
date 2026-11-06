@@ -6,9 +6,9 @@ use serde::Serialize;
 use crate::config::AppConfig;
 use crate::error::ContextWakeError;
 use crate::git::GitClient;
-use crate::model::{AgentHealth, AuthState};
-use crate::paths::AppPaths;
-use crate::provider::AgentRegistry;
+use crate::model::{AgentHealth, AuthState, ProfileHomeMode};
+use crate::paths::{AppPaths, path_is_within, paths_equivalent};
+use crate::provider::{AgentAdapter, AgentRegistry};
 use crate::security::{SecretScanner, sanitize_terminal};
 use crate::store::Store;
 use crate::{PRODUCT_NAME, VERSION};
@@ -242,6 +242,11 @@ fn build_report(
 
     if let Loaded::Ready(store) = state.store {
         checks.push(active_workspace_check(store));
+        checks.extend(profile_homes_check(
+            store,
+            agents,
+            state.paths.map(AppPaths::agent_homes_dir).as_deref(),
+        ));
     }
 
     checks.push(match state.store {
@@ -427,6 +432,9 @@ fn authentication_check(
                 .find(|(adapter, _)| adapter.id() == profile.agent_id)
                 .and_then(|(_, health)| health.as_ref().ok())
                 .map_or(AuthState::Unknown, |health| health.auth_state);
+            let agent = agents
+                .get(&profile.agent_id)
+                .map_or(profile.agent_id.as_str(), |adapter| adapter.display_name());
             DoctorCheck {
                 name: "Authentication".into(),
                 status: if auth == AuthState::SignedIn {
@@ -434,9 +442,21 @@ fn authentication_check(
                 } else {
                     CheckStatus::Warning
                 },
-                summary: format!("{}: {}", profile.display_name, auth.as_str()),
-                action: (auth != AuthState::SignedIn)
-                    .then(|| format!("Run 'ctx profile login {}'.", profile.name)),
+                summary: format!(
+                    "{}: {} ({})",
+                    sanitize_terminal(&profile.display_name),
+                    auth.as_str(),
+                    home_mode_text(profile.home_mode, agent)
+                ),
+                action: (auth != AuthState::SignedIn).then(|| match profile.home_mode {
+                    ProfileHomeMode::AgentDefault => format!(
+                        "Sign in to {agent} the way you normally do, or run 'ctx profile login {}' (this signs in your normal {agent} login).",
+                        profile.name
+                    ),
+                    ProfileHomeMode::Isolated => {
+                        format!("Run 'ctx profile login {}'.", profile.name)
+                    }
+                }),
             }
         }
         None => DoctorCheck {
@@ -446,6 +466,93 @@ fn authentication_check(
             action: Some("Run 'ctx profile add Personal'.".into()),
         },
     }
+}
+
+fn home_mode_text(mode: ProfileHomeMode, agent: &str) -> String {
+    match mode {
+        ProfileHomeMode::AgentDefault => format!("existing {agent} sign-in"),
+        ProfileHomeMode::Isolated => "separate ContextWake sign-in".into(),
+    }
+}
+
+/// Lists every profile with the sign-in it uses, and warns when a profile that
+/// uses an agent's existing sign-in no longer matches the home the agent uses
+/// now (for example after `CLAUDE_CONFIG_DIR` or `CODEX_HOME` changed). Nothing
+/// is probed or written.
+/// When the agent's current default home lies inside `managed_homes` (the
+/// agent-homes directory; doctor then runs inside an agent launched for an
+/// isolated profile), the comparison is skipped and reported as not checked.
+fn profile_homes_check(
+    store: &Store,
+    agents: &AgentRegistry,
+    managed_homes: Option<&std::path::Path>,
+) -> Option<DoctorCheck> {
+    let profiles = match store.list_profiles() {
+        Ok(profiles) if profiles.is_empty() => return None,
+        Ok(profiles) => profiles,
+        Err(error) => {
+            return Some(DoctorCheck {
+                name: "Profiles".into(),
+                status: CheckStatus::Warning,
+                summary: safe_error_text(&error),
+                action: Some("Run 'ctx profile list' for details.".into()),
+            });
+        }
+    };
+    let mut entries = Vec::new();
+    let mut mismatches = Vec::new();
+    for profile in &profiles {
+        let adapter = agents.get(&profile.agent_id).ok();
+        let agent = adapter.map_or(profile.agent_id.as_str(), |adapter| adapter.display_name());
+        let name = sanitize_terminal(&profile.display_name);
+        let mode = home_mode_text(profile.home_mode, agent);
+        if profile.home_mode != ProfileHomeMode::AgentDefault {
+            entries.push(format!("{name} ({mode})"));
+            continue;
+        }
+        let current = adapter.and_then(AgentAdapter::default_home);
+        if let (Some(current), Some(managed)) = (current.as_deref(), managed_homes)
+            && path_is_within(current, managed)
+        {
+            entries.push(format!(
+                "{name} ({mode}; not checked: a ContextWake-managed {agent} home is in effect)"
+            ));
+            continue;
+        }
+        entries.push(format!("{name} ({mode})"));
+        if !current
+            .as_deref()
+            .is_some_and(|current| paths_equivalent(current, &profile.agent_home))
+        {
+            mismatches.push(format!(
+                "{} records {} but {agent} now uses {}",
+                sanitize_terminal(&profile.display_name),
+                sanitize_terminal(&profile.agent_home.display().to_string()),
+                current.map_or_else(
+                    || "no default home".into(),
+                    |current| sanitize_terminal(&current.display().to_string())
+                )
+            ));
+        }
+    }
+    Some(if mismatches.is_empty() {
+        DoctorCheck {
+            name: "Profiles".into(),
+            status: CheckStatus::Pass,
+            summary: entries.join(", "),
+            action: None,
+        }
+    } else {
+        DoctorCheck {
+            name: "Profiles".into(),
+            status: CheckStatus::Warning,
+            summary: mismatches.join("; "),
+            action: Some(
+                "Restore the agent's home variable that was in effect when the profile was created, or remove the profile ('ctx profile remove <name> --yes'; the agent's home is not changed) and add it again."
+                    .into(),
+            ),
+        }
+    })
 }
 
 fn not_checked(name: &str, reason: &str) -> DoctorCheck {
@@ -538,6 +645,119 @@ mod tests {
                 .action
                 .as_deref()
                 .is_some_and(|action| action.contains("ordinary directories"))
+        );
+    }
+
+    #[test]
+    fn profile_sign_in_modes_are_reported_and_moved_default_homes_warn() {
+        use crate::app::profile_tests::{ExistingLoginAgent, application_with, user_home};
+        use crate::app::{NewProfile, ProfileHomeChoice};
+
+        let root = tempfile::tempdir().expect("root");
+        let home = user_home(root.path());
+        let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
+        let app = application_with(root.path(), agent.clone());
+        assert!(
+            profile_homes_check(&app.store, &app.agents, Some(&app.paths.agent_homes_dir()))
+                .is_none()
+        );
+        for (name, choice) in [
+            ("Mine", ProfileHomeChoice::ExistingLogin),
+            ("Separate", ProfileHomeChoice::Isolated),
+        ] {
+            app.add_profile(&NewProfile {
+                name,
+                display_name: None,
+                description: None,
+                agent_id: "claude",
+                model_provider_id: None,
+                model_preference: None,
+                allow_shared_identity: false,
+                home: choice,
+            })
+            .expect("profile");
+        }
+
+        let check =
+            profile_homes_check(&app.store, &app.agents, Some(&app.paths.agent_homes_dir()))
+                .expect("profiles check");
+        assert_eq!(check.status, CheckStatus::Pass);
+        assert!(
+            check
+                .summary
+                .contains("Mine (existing Claude Code sign-in)"),
+            "{}",
+            check.summary
+        );
+        assert!(
+            check
+                .summary
+                .contains("Separate (separate ContextWake sign-in)"),
+            "{}",
+            check.summary
+        );
+        // The active profile (the first one created) reports its mode too.
+        let results = app
+            .agents
+            .implemented()
+            .map(|adapter| {
+                Ok(AgentHealth {
+                    agent_id: adapter.id().into(),
+                    installed: true,
+                    executable: None,
+                    version: None,
+                    auth_state: AuthState::SignedOut,
+                    message: String::new(),
+                })
+            })
+            .collect::<Vec<_>>();
+        let authentication = authentication_check(&app.store, &app.agents, &results);
+        assert!(
+            authentication
+                .summary
+                .contains("existing Claude Code sign-in"),
+            "{}",
+            authentication.summary
+        );
+        assert!(
+            authentication
+                .action
+                .as_deref()
+                .is_some_and(|action| action.contains("normal Claude Code login")),
+            "{:?}",
+            authentication.action
+        );
+
+        // The agent's home variable changed since the profile was created.
+        agent.set_default_home(Some(root.path().join("Other Home").join(".claude")));
+        let check =
+            profile_homes_check(&app.store, &app.agents, Some(&app.paths.agent_homes_dir()))
+                .expect("profiles check");
+        assert_eq!(check.status, CheckStatus::Warning);
+        assert!(check.summary.contains("Other Home"), "{}", check.summary);
+        assert!(
+            check
+                .action
+                .as_deref()
+                .is_some_and(|action| action.contains("ctx profile remove")),
+            "{:?}",
+            check.action
+        );
+
+        // Inside an agent ContextWake launched for an isolated profile, the
+        // agent's default home is a managed home; that is not a moved home.
+        let separate = app.store.profile("separate").expect("separate profile");
+        agent.set_default_home(Some(separate.agent_home.clone()));
+        let check =
+            profile_homes_check(&app.store, &app.agents, Some(&app.paths.agent_homes_dir()))
+                .expect("profiles check");
+        assert_eq!(check.status, CheckStatus::Pass, "{}", check.summary);
+        assert!(
+            check
+                .summary
+                .contains("Mine (existing Claude Code sign-in; not checked: a ContextWake-managed Claude Code home is in effect)"),
+            "{}",
+            check.summary
         );
     }
 

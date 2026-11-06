@@ -19,11 +19,24 @@ const AGENT_OVERRIDES: [&str; 9] = [
     "CONTEXTWAKE_OPENCODE_BIN",
 ];
 
+/// The agents' own home variables point into the test's state root, so a
+/// profile that uses an agent's existing sign-in never records (or probes) the
+/// real `%USERPROFILE%\.claude`, `.codex` or `.gemini`.
+const AGENT_HOME_VARIABLES: [(&str, &str); 3] = [
+    ("CLAUDE_CONFIG_DIR", ".claude"),
+    ("CODEX_HOME", ".codex"),
+    ("GEMINI_CLI_HOME", "gemini-user"),
+];
+
 fn command(home: &Path) -> assert_cmd::Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("ctx");
     command.env("CONTEXTWAKE_HOME", home);
     for variable in AGENT_OVERRIDES {
         command.env(variable, format!("contextwake-test-missing-{variable}"));
+    }
+    let agent_homes = home.join("agent-default-homes");
+    for (variable, directory) in AGENT_HOME_VARIABLES {
+        command.env(variable, agent_homes.join(directory));
     }
     command
 }
@@ -210,10 +223,11 @@ args = ["--version"]
     )
     .expect("project instructions");
 
-    let profile = json_output(&home, &["profile", "add", "Personal"]);
+    let profile = json_output(&home, &["profile", "add", "Personal", "--isolated"]);
     assert_eq!(profile["name"], "personal");
     assert_eq!(profile["display_name"], "Personal");
     assert_eq!(profile["auth_state"], "signed_out");
+    assert_eq!(profile["home_mode"], "isolated");
     let config = json_output(
         &home,
         &[
@@ -393,6 +407,7 @@ fn agent_and_model_are_distinct_and_persisted() {
             "anthropic",
             "--model",
             "sonnet",
+            "--isolated",
         ],
     );
     assert_eq!(profile["agent_id"], "claude");
@@ -400,7 +415,7 @@ fn agent_and_model_are_distinct_and_persisted() {
     assert_eq!(profile["model_preference"], "sonnet");
 
     let duplicate = command(&home)
-        .args(["profile", "add", "Work", "--agent", "claude"])
+        .args(["profile", "add", "Work", "--agent", "claude", "--isolated"])
         .output()
         .expect("duplicate profile attempt");
     assert!(!duplicate.status.success());
@@ -1472,4 +1487,90 @@ fn a_local_handoff_continues_only_in_its_own_workspace() {
     let message = refused["message"].as_str().expect("message");
     assert!(message.contains("project-a"), "{message}");
     assert!(message.contains("continues there"), "{message}");
+}
+
+/// `--existing-login` demands the agent's own sign-in and fails clearly when an
+/// agent cannot share it (Kiro CLI has no default home `ContextWake` can use);
+/// `--isolated` forces a managed home. Profile output names the mode.
+#[test]
+fn profile_add_home_mode_flags_are_explicit() {
+    let root = tempfile::tempdir().expect("root");
+    let home = root.path().join("state dir");
+
+    let refused = json_error(
+        &command(&home)
+            .args([
+                "--json",
+                "profile",
+                "add",
+                "Kiro",
+                "--agent",
+                "kiro",
+                "--existing-login",
+            ])
+            .output()
+            .expect("existing-login attempt"),
+    );
+    let message = refused["message"].as_str().expect("message");
+    assert!(
+        message.contains("cannot use an existing Kiro CLI sign-in"),
+        "{message}"
+    );
+    assert!(message.contains("--isolated"), "{message}");
+
+    let conflicting = command(&home)
+        .args([
+            "profile",
+            "add",
+            "Kiro",
+            "--agent",
+            "kiro",
+            "--isolated",
+            "--existing-login",
+        ])
+        .output()
+        .expect("conflicting flags");
+    assert!(!conflicting.status.success());
+    assert!(
+        String::from_utf8_lossy(&conflicting.stderr).contains("cannot be used with"),
+        "{}",
+        String::from_utf8_lossy(&conflicting.stderr)
+    );
+
+    let human = stdout(
+        &command(&home)
+            .args(["profile", "add", "Kiro", "--agent", "kiro"])
+            .output()
+            .expect("automatic profile"),
+    );
+    assert!(human.contains("separate ContextWake sign-in"), "{human}");
+    assert!(human.contains("was not used"), "{human}");
+    assert!(human.contains("ctx profile login kiro"), "{human}");
+
+    let shown = json_output(&home, &["profile", "show", "kiro"]);
+    assert_eq!(shown["home_mode"], "isolated");
+    let listed = stdout(
+        &command(&home)
+            .args(["profile", "list"])
+            .output()
+            .expect("list"),
+    );
+    assert!(listed.contains("isolated"), "{listed}");
+    let details = stdout(
+        &command(&home)
+            .args(["profile", "show", "kiro"])
+            .output()
+            .expect("show"),
+    );
+    assert!(
+        details.contains("Sign-in:  separate ContextWake sign-in"),
+        "{details}"
+    );
+    let status = stdout(
+        &command_in(&home, root.path())
+            .args(["status", &text(root.path())])
+            .output()
+            .expect("status"),
+    );
+    assert!(status.contains("Sign-in"), "{status}");
 }

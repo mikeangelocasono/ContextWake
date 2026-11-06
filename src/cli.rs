@@ -92,6 +92,18 @@ pub enum ProfileCommand {
         /// per profile (Kiro CLI, Cursor CLI). Such profiles share one identity.
         #[arg(long)]
         allow_shared_identity: bool,
+        /// Give the profile its own ContextWake-managed agent home, with a
+        /// separate sign-in (`ctx profile login NAME`). Without this flag, a
+        /// profile uses the agent's existing sign-in when the agent supports
+        /// that and no other profile uses it yet.
+        #[arg(long, conflicts_with = "existing_login")]
+        isolated: bool,
+        /// Use the agent's own default home and existing sign-in (for example
+        /// `%USERPROFILE%\.claude`). The agent's home variable is never set,
+        /// and that home is never written into or deleted. Fails when the
+        /// agent cannot do this or another profile already uses it.
+        #[arg(long)]
+        existing_login: bool,
     },
     List,
     Show {

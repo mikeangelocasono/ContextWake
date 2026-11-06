@@ -22,8 +22,8 @@ use crate::git::GitClient;
 use crate::guardian::assess;
 use crate::handoff::HandoffService;
 use crate::model::{
-    AgentHealth, AuthState, CapabilitySupport, ContinuityKind, Profile, ResumeCapability, Session,
-    TrustState, Workspace,
+    AgentHealth, AuthState, CapabilitySupport, ContinuityKind, Profile, ProfileHomeMode,
+    ResumeCapability, Session, TrustState, Workspace,
 };
 use crate::paths::{
     AppPaths, canonicalize_simplified, path_is_within, paths_equivalent, simplify_path,
@@ -92,6 +92,195 @@ struct WorkspacelessStatus {
     active_profile: Option<Profile>,
     agent: AgentHealth,
     warnings: Vec<String>,
+}
+
+/// Which configuration home a new profile uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProfileHomeChoice {
+    /// The agent's default home (the existing sign-in) when the agent has
+    /// one and no other profile uses it; otherwise a managed home.
+    #[default]
+    Automatic,
+    /// A `ContextWake`-managed home with a separate sign-in.
+    Isolated,
+    /// The agent's default home; an error when that is not possible.
+    ExistingLogin,
+}
+
+/// What [`Application::add_profile`] creates.
+#[derive(Clone, Copy, Debug)]
+pub struct NewProfile<'a> {
+    pub name: &'a str,
+    pub display_name: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub agent_id: &'a str,
+    pub model_provider_id: Option<&'a str>,
+    pub model_preference: Option<&'a str>,
+    /// See [`Application::create_profile_with_options`].
+    pub allow_shared_identity: bool,
+    pub home: ProfileHomeChoice,
+}
+
+/// A created profile and whether the agent's existing sign-in was available
+/// when its home was chosen.
+#[derive(Clone, Debug)]
+pub struct CreatedProfile {
+    pub profile: Profile,
+    pub existing_login: ExistingLogin,
+}
+
+/// Whether a new profile can use an agent's own default home.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExistingLogin {
+    Available(PathBuf),
+    /// Another profile already uses the default home (agent homes are
+    /// unique, so at most one profile uses the existing sign-in).
+    InUse {
+        home: PathBuf,
+        profile: String,
+    },
+    /// The agent's configured home is a `ContextWake`-managed home, for
+    /// example because `ctx` runs inside an agent that `ContextWake`
+    /// launched for another profile.
+    Managed(PathBuf),
+    /// The adapter has no default home to share.
+    Unsupported,
+}
+
+impl ExistingLogin {
+    pub const fn is_available(&self) -> bool {
+        matches!(self, Self::Available(_))
+    }
+
+    /// Why the existing sign-in cannot be used, for `agent` (a display name).
+    pub fn reason(&self, agent: &str) -> String {
+        match self {
+            Self::Available(home) => {
+                format!(
+                    "the existing {agent} sign-in in {} is available",
+                    display_path(home)
+                )
+            }
+            Self::InUse { home, profile } => format!(
+                "profile {} already uses the existing {agent} sign-in in {}",
+                terminal_line(profile),
+                display_path(home)
+            ),
+            Self::Managed(home) => format!(
+                "the {agent} home in effect ({}) is a ContextWake-managed profile home, not your own {agent} sign-in",
+                display_path(home)
+            ),
+            Self::Unsupported => {
+                format!("ContextWake cannot use an existing {agent} sign-in for profiles")
+            }
+        }
+    }
+}
+
+/// Decides [`ExistingLogin`] from the adapter's default home, the managed
+/// agent-homes directory and the existing profiles.
+pub fn existing_login_status(
+    default_home: Option<&Path>,
+    managed_homes: &Path,
+    profiles: &[Profile],
+) -> ExistingLogin {
+    let Some(home) = default_home.map(simplify_path) else {
+        return ExistingLogin::Unsupported;
+    };
+    if path_is_within(&home, managed_homes) {
+        return ExistingLogin::Managed(home);
+    }
+    if let Some(profile) = profiles
+        .iter()
+        .find(|profile| paths_equivalent(&profile.agent_home, &home))
+    {
+        return ExistingLogin::InUse {
+            home,
+            profile: profile.display_name.clone(),
+        };
+    }
+    ExistingLogin::Available(home)
+}
+
+/// One line that says which sign-in a profile uses.
+pub fn profile_home_summary(profile: &Profile, agent: &str) -> String {
+    match profile.home_mode {
+        ProfileHomeMode::AgentDefault => format!(
+            "existing {agent} sign-in (the agent's own home {}; ContextWake never changes it)",
+            display_path(&profile.agent_home)
+        ),
+        ProfileHomeMode::Isolated => format!(
+            "separate ContextWake sign-in (managed home {})",
+            display_path(&profile.agent_home)
+        ),
+    }
+}
+
+/// What `ctx profile add` prints: the chosen mode and what it means.
+/// `explicitly_isolated` is true when the user asked for a managed home.
+pub fn profile_created_message(
+    created: &CreatedProfile,
+    agent: &str,
+    explicitly_isolated: bool,
+) -> String {
+    let profile = &created.profile;
+    let mut message = format!(
+        "Created profile {} ({}).\nSign-in: {}.",
+        terminal_line(&profile.display_name),
+        profile.agent_id,
+        profile_home_summary(profile, agent)
+    );
+    match profile.home_mode {
+        ProfileHomeMode::AgentDefault => {
+            let _ = write!(
+                message,
+                "\nThis profile uses the sign-in you already use with {agent} outside ContextWake. ContextWake launches {agent} without overriding its home and never writes into or deletes that home.\nAuth: {}.",
+                profile.auth_state.as_str()
+            );
+            if profile.auth_state != AuthState::SignedIn {
+                let _ = write!(
+                    message,
+                    "\nSign in to {agent} the way you normally do, or run:\n  ctx profile login {}\n(this signs in your normal {agent} login, not a separate one)",
+                    profile.name
+                );
+            }
+        }
+        ProfileHomeMode::Isolated => {
+            if !explicitly_isolated && !created.existing_login.is_available() {
+                let _ = write!(
+                    message,
+                    "\nThe existing sign-in was not used: {}.",
+                    created.existing_login.reason(agent)
+                );
+            }
+            let _ = write!(
+                message,
+                "\nThis profile signs in separately from your normal {agent} login. Credentials remain provider-owned. Sign in with:\n  ctx profile login {}",
+                profile.name
+            );
+        }
+    }
+    message
+}
+
+/// For a profile that uses the agent's own default home: a notice that
+/// signing `direction` ("in" or "out") changes the user's normal agent login.
+fn existing_login_notice(profile: &Profile, agent: &str, direction: &str) -> Option<String> {
+    (profile.home_mode == ProfileHomeMode::AgentDefault).then(|| {
+        format!(
+            "Profile {} uses your existing {agent} sign-in ({}). Signing {direction} here signs your normal {agent} login {direction}, also outside ContextWake.",
+            terminal_line(&profile.display_name),
+            display_path(&profile.agent_home)
+        )
+    })
+}
+
+/// Short label for profile lists.
+const fn home_mode_tag(mode: ProfileHomeMode) -> &'static str {
+    match mode {
+        ProfileHomeMode::AgentDefault => "existing-login",
+        ProfileHomeMode::Isolated => "isolated",
+    }
 }
 
 /// The workspace an omitted `--workspace` refers to.
@@ -704,6 +893,9 @@ impl Application {
     /// capability is unsupported, as for Kiro CLI and Cursor CLI) is refused
     /// unless `allow_shared_identity` acknowledges that the profiles share one
     /// provider identity.
+    ///
+    /// The profile always gets a `ContextWake`-managed home; see
+    /// [`Self::add_profile`] for profiles that use the existing sign-in.
     pub fn create_profile_with_options(
         &self,
         name: &str,
@@ -714,13 +906,45 @@ impl Application {
         model_preference: Option<&str>,
         allow_shared_identity: bool,
     ) -> Result<Profile> {
-        let requested_name = validate_local_name(name)?;
+        self.add_profile(&NewProfile {
+            name,
+            display_name,
+            description,
+            agent_id,
+            model_provider_id,
+            model_preference,
+            allow_shared_identity,
+            home: ProfileHomeChoice::Isolated,
+        })
+        .map(|created| created.profile)
+    }
+
+    /// Whether a new profile for `agent_id` can use the agent's own default
+    /// home (the user's existing sign-in).
+    pub fn existing_login(&self, agent_id: &str) -> Result<ExistingLogin> {
+        let adapter = self.agents.get(agent_id)?;
+        Ok(existing_login_status(
+            adapter.default_home().as_deref(),
+            &self.paths.agent_homes_dir(),
+            &self.store.list_profiles()?,
+        ))
+    }
+
+    /// Creates a profile. `request.home` decides whether it uses the agent's
+    /// own default home (the existing sign-in: `ContextWake` never sets the
+    /// agent's home variable, never initializes, writes into or deletes that
+    /// directory) or a `ContextWake`-managed home that signs in separately.
+    pub fn add_profile(&self, request: &NewProfile<'_>) -> Result<CreatedProfile> {
+        let requested_name = validate_local_name(request.name)?;
         let name = profile_slug(&requested_name)?;
-        let display_name = validate_local_name(display_name.unwrap_or(&requested_name))?;
-        let requested_agent = validate_external_reference(agent_id)?.to_ascii_lowercase();
+        let display_name = validate_local_name(request.display_name.unwrap_or(&requested_name))?;
+        let description = request.description;
+        let allow_shared_identity = request.allow_shared_identity;
+        let requested_agent = validate_external_reference(request.agent_id)?.to_ascii_lowercase();
         let adapter = self.agents.get(&requested_agent)?;
         let agent_id = adapter.id().to_string();
-        let mut model_provider_id = model_provider_id
+        let mut model_provider_id = request
+            .model_provider_id
             .map(validate_external_reference)
             .transpose()?
             .map(|value| value.to_ascii_lowercase());
@@ -731,7 +955,8 @@ impl Application {
                 "model provider {provider} is not declared by agent {agent_id}"
             )));
         }
-        let mut model_preference = model_preference
+        let mut model_preference = request
+            .model_preference
             .map(validate_external_reference)
             .transpose()?;
         if model_preference.is_some() && !adapter.capabilities().model_selection.is_available() {
@@ -763,11 +988,35 @@ impl Application {
                 )));
             }
         }
+        let existing_login = existing_login_status(
+            adapter.default_home().as_deref(),
+            &self.paths.agent_homes_dir(),
+            &self.store.list_profiles()?,
+        );
+        let default_home = match (request.home, &existing_login) {
+            (ProfileHomeChoice::Isolated, _) => None,
+            (_, ExistingLogin::Available(home)) => Some(home.clone()),
+            (ProfileHomeChoice::Automatic, _) => None,
+            (ProfileHomeChoice::ExistingLogin, unavailable) => {
+                return Err(ContextWakeError::CapabilityUnavailable(format!(
+                    "{}. Create the profile with --isolated to give it a separate ContextWake sign-in.",
+                    unavailable.reason(adapter.display_name())
+                )));
+            }
+        };
         let id = Uuid::new_v4();
-        let agent_home = self.paths.agent_home(&agent_id, &id);
-        adapter.initialize_profile_home(&agent_home)?;
+        let (agent_home, home_mode, auth_state) = if let Some(home) = default_home {
+            // The sign-in state is probed only after the insert succeeds, so a
+            // request that fails (for example on a taken name) never runs the
+            // agent's status command against the user's normal sign-in.
+            (home, ProfileHomeMode::AgentDefault, AuthState::Unknown)
+        } else {
+            let agent_home = self.paths.agent_home(&agent_id, &id);
+            adapter.initialize_profile_home(&agent_home)?;
+            (agent_home, ProfileHomeMode::Isolated, AuthState::SignedOut)
+        };
         let now = Utc::now();
-        let profile = Profile {
+        let mut profile = Profile {
             id,
             name,
             display_name,
@@ -776,25 +1025,51 @@ impl Application {
             model_preference,
             description: description.map(sanitize_terminal),
             agent_home,
-            home_mode: crate::model::ProfileHomeMode::Isolated,
+            home_mode,
             account_fingerprint: None,
-            auth_state: AuthState::SignedOut,
+            auth_state,
             created_at: now,
             updated_at: now,
             last_used_at: None,
         };
         if let Err(error) = self.store.insert_profile(&profile) {
-            // This UUID-scoped home was created by this operation and has not
-            // been exposed to an interactive agent process yet.
-            let _ = std::fs::remove_dir_all(&profile.agent_home);
+            if profile.home_mode == ProfileHomeMode::Isolated {
+                // This UUID-scoped home was created by this operation and has
+                // not been exposed to an interactive agent process yet. The
+                // agent's own default home is never deleted.
+                let _ = std::fs::remove_dir_all(&profile.agent_home);
+            }
             return Err(error);
         }
-        let became_active = self.store.active_profile()?.is_none();
-        if became_active {
-            self.store.set_active_profile(profile.id)?;
-            return self.store.profile(&profile.id.to_string());
+        if profile.home_mode == ProfileHomeMode::AgentDefault {
+            // The agent's own home is only read (through the adapter's status
+            // probe); a probe failure leaves the state unknown.
+            let auth_state = adapter
+                .auth_status(&profile.agent_home)
+                .unwrap_or(AuthState::Unknown);
+            if auth_state != AuthState::Unknown {
+                self.store.update_profile_auth(profile.id, auth_state)?;
+                profile.auth_state = auth_state;
+            }
         }
-        Ok(profile)
+        let became_active = self.store.active_profile()?.is_none();
+        let profile = if became_active {
+            self.store.set_active_profile(profile.id)?;
+            self.store.profile(&profile.id.to_string())?
+        } else {
+            profile
+        };
+        Ok(CreatedProfile {
+            profile,
+            existing_login,
+        })
+    }
+
+    /// The agent's display name, or its ID when no adapter implements it.
+    fn agent_display_name<'a>(&'a self, agent_id: &'a str) -> &'a str {
+        self.agents
+            .get(agent_id)
+            .map_or(agent_id, |adapter| adapter.display_name())
     }
 
     /// A warning for agents whose profiles share one sign-in, once more than
@@ -1081,16 +1356,26 @@ impl Application {
                 model_provider,
                 model,
                 allow_shared_identity,
+                isolated,
+                existing_login,
             } => {
-                let profile = self.create_profile_with_options(
-                    &name,
-                    display_name.as_deref(),
-                    description.as_deref(),
-                    &agent,
-                    model_provider.as_deref(),
-                    model.as_deref(),
+                let created = self.add_profile(&NewProfile {
+                    name: &name,
+                    display_name: display_name.as_deref(),
+                    description: description.as_deref(),
+                    agent_id: &agent,
+                    model_provider_id: model_provider.as_deref(),
+                    model_preference: model.as_deref(),
                     allow_shared_identity,
-                )?;
+                    home: if isolated {
+                        ProfileHomeChoice::Isolated
+                    } else if existing_login {
+                        ProfileHomeChoice::ExistingLogin
+                    } else {
+                        ProfileHomeChoice::Automatic
+                    },
+                })?;
+                let profile = &created.profile;
                 if let Some(warning) = self
                     .shared_identity_warning(&profile.agent_id)
                     .ok()
@@ -1099,11 +1384,15 @@ impl Application {
                     warn(&warning);
                 }
                 if json {
-                    print_json(&profile);
+                    print_json(profile);
                 } else {
                     println!(
-                        "Created profile {} ({}).\nCredentials remain provider-owned. Sign in with:\n  ctx profile login {}",
-                        profile.display_name, profile.agent_id, profile.name
+                        "{}",
+                        profile_created_message(
+                            &created,
+                            self.agent_display_name(&profile.agent_id),
+                            isolated
+                        )
                     );
                 }
             }
@@ -1119,9 +1408,10 @@ impl Application {
                     for profile in profiles {
                         let active_marker = if active == Some(profile.id) { "*" } else { " " };
                         println!(
-                            "{active_marker} {:<20} {:<8} {}",
-                            profile.display_name,
+                            "{active_marker} {:<20} {:<8} {:<14} {}",
+                            terminal_line(&profile.display_name),
                             profile.agent_id,
+                            home_mode_tag(profile.home_mode),
                             profile.auth_state.as_str()
                         );
                     }
@@ -1150,6 +1440,10 @@ impl Application {
                             .unwrap_or("agent default")
                     );
                     println!("  Auth:     {}", profile.auth_state.as_str());
+                    println!(
+                        "  Sign-in:  {}",
+                        profile_home_summary(&profile, self.agent_display_name(&profile.agent_id))
+                    );
                     println!("  Home:     {}", display_path(&profile.agent_home));
                 }
             }
@@ -1211,12 +1505,22 @@ impl Application {
             }
             ProfileCommand::Remove { profile, yes } => {
                 require_confirmation(yes, "profile metadata removal", "--yes")?;
+                // Only metadata is removed: neither a managed home nor the
+                // agent's own default home is ever deleted here.
                 let removed = self.store.remove_profile(&profile)?;
-                println!(
-                    "Removed ContextWake metadata for {}. Provider credentials and {} were not deleted.",
-                    removed.display_name,
-                    display_path(&removed.agent_home)
-                );
+                match removed.home_mode {
+                    ProfileHomeMode::AgentDefault => println!(
+                        "Removed ContextWake metadata for {}. Your existing {} sign-in and its home {} were not changed.",
+                        terminal_line(&removed.display_name),
+                        self.agent_display_name(&removed.agent_id),
+                        display_path(&removed.agent_home)
+                    ),
+                    ProfileHomeMode::Isolated => println!(
+                        "Removed ContextWake metadata for {}. Provider credentials and {} were not deleted.",
+                        terminal_line(&removed.display_name),
+                        display_path(&removed.agent_home)
+                    ),
+                }
             }
             ProfileCommand::Login {
                 profile,
@@ -1231,6 +1535,10 @@ impl Application {
                 {
                     warn(&warning);
                 }
+                if let Some(notice) = existing_login_notice(&profile, adapter.display_name(), "in")
+                {
+                    warn(&notice);
+                }
                 let auth_state = adapter.login(&profile.agent_home, device_auth)?;
                 self.store.update_profile_auth(profile.id, auth_state)?;
                 println!(
@@ -1241,9 +1549,18 @@ impl Application {
                 );
             }
             ProfileCommand::Logout { profile, yes } => {
-                require_confirmation(yes, "provider credential removal", "--yes")?;
                 let profile = self.store.profile(&profile)?;
                 let adapter = self.agents.get(&profile.agent_id)?;
+                let notice = existing_login_notice(&profile, adapter.display_name(), "out");
+                match &notice {
+                    Some(notice) if !yes => {
+                        return Err(ContextWakeError::InvalidData(format!(
+                            "{notice} Signing out requires explicit confirmation; pass --yes."
+                        )));
+                    }
+                    Some(notice) => warn(notice),
+                    None => require_confirmation(yes, "provider credential removal", "--yes")?,
+                }
                 adapter.logout(&profile.agent_home)?;
                 self.store
                     .update_profile_auth(profile.id, AuthState::SignedOut)?;
@@ -2155,6 +2472,13 @@ fn print_status_profile(active_profile: Option<&Profile>, agent: &AgentHealth) {
     );
     if let Some(profile) = active_profile {
         println!(
+            "  Sign-in         {}",
+            match profile.home_mode {
+                ProfileHomeMode::AgentDefault => "existing agent sign-in (agent's own home)",
+                ProfileHomeMode::Isolated => "separate ContextWake sign-in (managed home)",
+            }
+        );
+        println!(
             "  Model backend   {}",
             terminal_line(
                 profile
@@ -2734,5 +3058,444 @@ mod tests {
         assert!(shown.starts_with("repo"));
         assert!(shown.contains("-name"));
         assert_eq!(terminal_line("Calculator"), "Calculator");
+    }
+}
+
+/// Profiles that use an agent's existing sign-in, tested with a fake agent
+/// whose default home is a temporary directory. Nothing here runs an agent or
+/// reads a real agent home.
+#[cfg(test)]
+pub(crate) mod profile_tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::model::{AgentCapabilities, ModelProvider};
+    use crate::provider::{AgentAdapter, ClaudeAdapter};
+
+    /// Agent calls the fake recorded, by kind and home.
+    pub(crate) type Calls = Arc<Mutex<Vec<(&'static str, PathBuf)>>>;
+
+    /// Claude Code with a configurable default home. Capabilities and
+    /// detection come from a real adapter whose executable is missing, so
+    /// nothing is ever spawned.
+    pub(crate) struct ExistingLoginAgent {
+        inner: ClaudeAdapter,
+        default_home: Mutex<Option<PathBuf>>,
+        pub(crate) calls: Calls,
+    }
+
+    impl ExistingLoginAgent {
+        pub(crate) fn new(root: &Path, default_home: Option<PathBuf>) -> Arc<Self> {
+            Arc::new(Self {
+                inner: ClaudeAdapter::with_executable(root.join("missing-claude.exe")),
+                default_home: Mutex::new(default_home),
+                calls: Arc::default(),
+            })
+        }
+
+        pub(crate) fn set_default_home(&self, home: Option<PathBuf>) {
+            *self.default_home.lock().expect("default home") = home;
+        }
+
+        pub(crate) fn calls(&self, kind: &str) -> Vec<PathBuf> {
+            self.calls
+                .lock()
+                .expect("calls")
+                .iter()
+                .filter(|(recorded, _)| *recorded == kind)
+                .map(|(_, home)| home.clone())
+                .collect()
+        }
+
+        fn record(&self, kind: &'static str, home: &Path) {
+            self.calls
+                .lock()
+                .expect("calls")
+                .push((kind, home.to_path_buf()));
+        }
+    }
+
+    impl AgentAdapter for ExistingLoginAgent {
+        fn id(&self) -> &'static str {
+            "claude"
+        }
+        fn display_name(&self) -> &'static str {
+            "Claude Code"
+        }
+        fn model_providers(&self) -> Vec<ModelProvider> {
+            self.inner.model_providers()
+        }
+        fn capabilities(&self) -> AgentCapabilities {
+            self.inner.capabilities()
+        }
+        fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
+            self.inner.detect(agent_home)
+        }
+        fn auth_status(&self, agent_home: &Path) -> Result<AuthState> {
+            self.record("auth_status", agent_home);
+            Ok(AuthState::SignedIn)
+        }
+        fn initialize_profile_home(&self, agent_home: &Path) -> Result<()> {
+            self.record("initialize", agent_home);
+            std::fs::create_dir_all(agent_home).at(agent_home)
+        }
+        fn login(&self, agent_home: &Path, _device_auth: bool) -> Result<AuthState> {
+            self.record("login", agent_home);
+            Ok(AuthState::SignedIn)
+        }
+        fn logout(&self, agent_home: &Path) -> Result<()> {
+            self.record("logout", agent_home);
+            Ok(())
+        }
+        fn resume(&self, _: &Path, _: &Path, _: &str) -> Result<()> {
+            Err(ContextWakeError::CapabilityUnavailable("fake agent".into()))
+        }
+        fn start_with_handoff(
+            &self,
+            _: &Path,
+            _: &Path,
+            _: &Path,
+            _: Option<&str>,
+            _: Option<&str>,
+        ) -> Result<()> {
+            Err(ContextWakeError::CapabilityUnavailable("fake agent".into()))
+        }
+        fn default_home(&self) -> Option<PathBuf> {
+            self.default_home.lock().expect("default home").clone()
+        }
+    }
+
+    pub(crate) fn application_with(root: &Path, agent: Arc<ExistingLoginAgent>) -> Application {
+        let paths = AppPaths::from_root(root.join("state"));
+        paths.ensure().expect("paths");
+        let store = Store::open(paths.state_db()).expect("store");
+        Application {
+            paths,
+            config: AppConfig::default(),
+            store,
+            git: GitClient::with_executable("contextwake-test-missing-git", Duration::from_secs(1)),
+            agents: AgentRegistry::from_adapters(vec![agent]),
+        }
+    }
+
+    /// A default home with a space in its path and a file that must survive
+    /// every operation unchanged.
+    pub(crate) fn user_home(root: &Path) -> PathBuf {
+        let home = root.join("User Home").join(".claude");
+        std::fs::create_dir_all(&home).expect("default home");
+        std::fs::write(home.join("settings.json"), "{\"theme\":\"dark\"}").expect("sentinel");
+        home
+    }
+
+    fn assert_untouched(home: &Path) {
+        let entries = std::fs::read_dir(home)
+            .expect("default home still exists")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec![std::ffi::OsString::from("settings.json")]);
+        assert_eq!(
+            std::fs::read_to_string(home.join("settings.json")).expect("sentinel"),
+            "{\"theme\":\"dark\"}"
+        );
+    }
+
+    fn request(name: &str, home: ProfileHomeChoice) -> NewProfile<'_> {
+        NewProfile {
+            name,
+            display_name: None,
+            description: None,
+            agent_id: "claude",
+            model_provider_id: None,
+            model_preference: None,
+            allow_shared_identity: false,
+            home,
+        }
+    }
+
+    #[test]
+    fn automatic_profiles_use_the_existing_login_once() {
+        let root = tempfile::tempdir().expect("root");
+        let home = user_home(root.path());
+        let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
+        let app = application_with(root.path(), agent.clone());
+
+        let created = app
+            .add_profile(&request("Work", ProfileHomeChoice::Automatic))
+            .expect("existing-login profile");
+        let work = &created.profile;
+        assert_eq!(work.home_mode, ProfileHomeMode::AgentDefault);
+        assert!(paths_equivalent(&work.agent_home, &home));
+        assert_eq!(work.auth_state, AuthState::SignedIn);
+        assert_eq!(agent.calls("auth_status"), vec![work.agent_home.clone()]);
+        assert!(
+            agent.calls("initialize").is_empty(),
+            "the agent's own home is never initialized"
+        );
+        assert!(!app.paths.agent_homes_dir().join("claude").exists());
+        assert_untouched(&home);
+        let stored = app.store.profile("work").expect("stored");
+        assert_eq!(stored.home_mode, ProfileHomeMode::AgentDefault);
+        assert_eq!(stored.agent_home, work.agent_home);
+        let message = profile_created_message(&created, "Claude Code", false);
+        assert!(
+            message.contains("existing Claude Code sign-in"),
+            "{message}"
+        );
+        assert!(
+            message.contains("never writes into or deletes"),
+            "{message}"
+        );
+        assert!(message.contains("User Home"), "{message}");
+
+        // The default home is taken now: the next profile signs in separately.
+        let created = app
+            .add_profile(&request("Personal", ProfileHomeChoice::Automatic))
+            .expect("isolated profile");
+        let personal = &created.profile;
+        assert_eq!(personal.home_mode, ProfileHomeMode::Isolated);
+        assert_eq!(personal.auth_state, AuthState::SignedOut);
+        assert_eq!(
+            personal.agent_home,
+            app.paths.agent_home("claude", &personal.id)
+        );
+        assert_eq!(agent.calls("initialize"), vec![personal.agent_home.clone()]);
+        assert!(matches!(
+            &created.existing_login,
+            ExistingLogin::InUse { profile, .. } if profile == "Work"
+        ));
+        let message = profile_created_message(&created, "Claude Code", false);
+        assert!(message.contains("was not used"), "{message}");
+        assert!(message.contains("profile Work already uses"), "{message}");
+        assert!(message.contains("ctx profile login personal"), "{message}");
+
+        // Demanding the existing sign-in now fails and creates nothing.
+        let refused = app
+            .add_profile(&request("Third", ProfileHomeChoice::ExistingLogin))
+            .expect_err("the default home is already used");
+        assert!(matches!(
+            refused,
+            ContextWakeError::CapabilityUnavailable(_)
+        ));
+        let text = refused.to_string();
+        assert!(text.contains("profile Work already uses"), "{text}");
+        assert!(text.contains("--isolated"), "{text}");
+        assert!(matches!(
+            app.store.profile("third"),
+            Err(ContextWakeError::ProfileNotFound(_))
+        ));
+        assert_eq!(agent.calls("initialize").len(), 1);
+        assert_untouched(&home);
+    }
+
+    #[test]
+    fn isolated_choice_forces_a_managed_home_and_existing_login_can_follow() {
+        let root = tempfile::tempdir().expect("root");
+        let home = user_home(root.path());
+        let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
+        let app = application_with(root.path(), agent.clone());
+
+        let isolated = app
+            .add_profile(&request("Separate", ProfileHomeChoice::Isolated))
+            .expect("isolated");
+        assert_eq!(isolated.profile.home_mode, ProfileHomeMode::Isolated);
+        assert!(isolated.existing_login.is_available());
+        let message = profile_created_message(&isolated, "Claude Code", true);
+        assert!(!message.contains("was not used"), "{message}");
+        assert!(
+            message.contains("separate ContextWake sign-in"),
+            "{message}"
+        );
+        assert!(agent.calls("auth_status").is_empty());
+
+        let existing = app
+            .add_profile(&request("Mine", ProfileHomeChoice::ExistingLogin))
+            .expect("existing login is still available");
+        assert_eq!(existing.profile.home_mode, ProfileHomeMode::AgentDefault);
+        assert_untouched(&home);
+
+        // The compatibility entry points keep creating managed homes.
+        let legacy = app
+            .create_profile_for_agent("Legacy", None, None, "claude", None, None)
+            .expect("legacy");
+        assert_eq!(legacy.home_mode, ProfileHomeMode::Isolated);
+    }
+
+    #[test]
+    fn unsupported_or_managed_default_homes_fall_back_to_a_separate_sign_in() {
+        let root = tempfile::tempdir().expect("root");
+        let agent = ExistingLoginAgent::new(root.path(), None);
+        let app = application_with(root.path(), agent.clone());
+
+        let refused = app
+            .add_profile(&request("Work", ProfileHomeChoice::ExistingLogin))
+            .expect_err("no default home");
+        assert!(
+            refused
+                .to_string()
+                .contains("cannot use an existing Claude Code sign-in"),
+            "{refused}"
+        );
+        let created = app
+            .add_profile(&request("Work", ProfileHomeChoice::Automatic))
+            .expect("automatic falls back");
+        assert_eq!(created.profile.home_mode, ProfileHomeMode::Isolated);
+        assert_eq!(created.existing_login, ExistingLogin::Unsupported);
+
+        // A home variable that points at a ContextWake-managed home (as in an
+        // agent that ContextWake launched for another profile) is not the
+        // user's own sign-in.
+        agent.set_default_home(Some(created.profile.agent_home.clone()));
+        assert!(matches!(
+            app.existing_login("claude").expect("status"),
+            ExistingLogin::Managed(_)
+        ));
+        let created = app
+            .add_profile(&request("Other", ProfileHomeChoice::Automatic))
+            .expect("automatic falls back");
+        assert_eq!(created.profile.home_mode, ProfileHomeMode::Isolated);
+        assert!(
+            profile_created_message(&created, "Claude Code", false)
+                .contains("ContextWake-managed profile home")
+        );
+    }
+
+    #[test]
+    fn a_failed_insert_never_deletes_the_agent_default_home() {
+        let root = tempfile::tempdir().expect("root");
+        let home = user_home(root.path());
+        let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
+        let app = application_with(root.path(), agent.clone());
+        app.add_profile(&request("Work", ProfileHomeChoice::Isolated))
+            .expect("isolated");
+
+        // The name is taken, so the insert fails after the home was chosen.
+        assert!(
+            app.add_profile(&request("work", ProfileHomeChoice::ExistingLogin))
+                .is_err()
+        );
+        assert_untouched(&home);
+        // The failed request never ran the agent's status command against
+        // the user's normal sign-in.
+        assert!(agent.calls("auth_status").is_empty());
+    }
+
+    #[test]
+    fn remove_login_and_logout_respect_the_existing_login() {
+        let root = tempfile::tempdir().expect("root");
+        let home = user_home(root.path());
+        let agent = ExistingLoginAgent::new(root.path(), Some(home.clone()));
+        let app = application_with(root.path(), agent.clone());
+        let profile = app
+            .add_profile(&request("Work", ProfileHomeChoice::Automatic))
+            .expect("profile")
+            .profile;
+
+        // Logout of the user's normal sign-in needs --yes and says why.
+        let refused = app
+            .profile_command(
+                ProfileCommand::Logout {
+                    profile: "work".into(),
+                    yes: false,
+                },
+                false,
+            )
+            .expect_err("confirmation required");
+        let text = refused.to_string();
+        assert!(text.contains("normal Claude Code login"), "{text}");
+        assert!(text.contains("--yes"), "{text}");
+        assert!(agent.calls("logout").is_empty());
+
+        app.profile_command(
+            ProfileCommand::Login {
+                profile: "work".into(),
+                device_auth: false,
+            },
+            false,
+        )
+        .expect("login");
+        assert_eq!(agent.calls("login"), vec![profile.agent_home.clone()]);
+        app.profile_command(
+            ProfileCommand::Logout {
+                profile: "work".into(),
+                yes: true,
+            },
+            false,
+        )
+        .expect("logout");
+        assert_eq!(agent.calls("logout"), vec![profile.agent_home.clone()]);
+        assert_eq!(
+            app.store.profile("work").expect("profile").auth_state,
+            AuthState::SignedOut
+        );
+
+        app.profile_command(
+            ProfileCommand::Remove {
+                profile: "work".into(),
+                yes: true,
+            },
+            false,
+        )
+        .expect("remove");
+        assert!(matches!(
+            app.store.profile("work"),
+            Err(ContextWakeError::ProfileNotFound(_))
+        ));
+        assert_untouched(&home);
+        // With the profile gone, the existing sign-in is available again.
+        assert!(app.existing_login("claude").expect("status").is_available());
+    }
+
+    #[test]
+    fn existing_login_status_compares_homes_like_the_filesystem() {
+        let root = tempfile::tempdir().expect("root");
+        let managed = root.path().join("state").join("agent-homes");
+        let home = root.path().join("User Home").join(".claude");
+        let now = Utc::now();
+        let profile = Profile {
+            id: Uuid::new_v4(),
+            name: "work".into(),
+            display_name: "Work".into(),
+            agent_id: "claude".into(),
+            model_provider_id: None,
+            model_preference: None,
+            description: None,
+            agent_home: home.clone(),
+            home_mode: ProfileHomeMode::AgentDefault,
+            account_fingerprint: None,
+            auth_state: AuthState::Unknown,
+            created_at: now,
+            updated_at: now,
+            last_used_at: None,
+        };
+        assert_eq!(
+            existing_login_status(None, &managed, &[]),
+            ExistingLogin::Unsupported
+        );
+        assert_eq!(
+            existing_login_status(Some(&home), &managed, &[]),
+            ExistingLogin::Available(home.clone())
+        );
+        assert!(matches!(
+            existing_login_status(Some(&home), &managed, std::slice::from_ref(&profile)),
+            ExistingLogin::InUse { .. }
+        ));
+        assert!(matches!(
+            existing_login_status(Some(&managed.join("claude").join("x")), &managed, &[]),
+            ExistingLogin::Managed(_)
+        ));
+        #[cfg(windows)]
+        {
+            let other_case =
+                PathBuf::from(home.to_string_lossy().to_uppercase().replace('\\', "/"));
+            assert!(matches!(
+                existing_login_status(Some(&other_case), &managed, std::slice::from_ref(&profile)),
+                ExistingLogin::InUse { .. }
+            ));
+            let verbatim = PathBuf::from(format!(r"\\?\{}", home.display()));
+            assert!(matches!(
+                existing_login_status(Some(&verbatim), &managed, &[]),
+                ExistingLogin::Available(stored) if stored == home
+            ));
+        }
     }
 }
