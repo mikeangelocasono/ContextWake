@@ -5942,6 +5942,60 @@ mod tests {
         );
     }
 
+    // tui#2: a handoff that fails validation is refused while the TUI is still
+    // open, instead of failing at the shell after the terminal was restored.
+    #[test]
+    fn a_damaged_handoff_is_refused_before_the_tui_exits() {
+        let root = tempfile::tempdir().expect("root");
+        let app = test_app(root.path());
+        let workspace = app
+            .register_workspace(
+                &workspace_dir(root.path(), "workspace"),
+                TrustState::Untrusted,
+                true,
+            )
+            .expect("register");
+        let work = app.create_profile("Work", None, None).expect("work");
+        let checkpoint = app
+            .checkpoints()
+            .create(
+                &workspace,
+                Some(&work),
+                None,
+                CheckpointInput {
+                    objective: "Continue the work".into(),
+                    ..CheckpointInput::default()
+                },
+            )
+            .expect("checkpoint");
+        let handoff = app
+            .handoffs()
+            .create(&checkpoint, &workspace)
+            .expect("handoff");
+        std::fs::write(handoff.storage_path.join("context.md"), "tampered")
+            .expect("tamper with the package");
+        let mut state = UiState::load(&app, false, &NoAgents);
+        state.screen = Screen::HandoffPreview;
+        state.selected = state
+            .handoffs
+            .iter()
+            .position(|item| item.id == handoff.id)
+            .expect("listed");
+
+        assert!(send(&mut state, &app, KeyCode::Enter).is_none());
+
+        assert!(state.launch_action.is_none());
+        assert!(state.exit.is_none());
+        assert!(
+            state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("cannot be started")),
+            "{:?}",
+            state.message
+        );
+    }
+
     #[test]
     fn input_queued_during_an_action_is_dropped_but_ctrl_c_still_quits() {
         let mut typed_ahead = ScriptedEvents::new(vec![vec![
