@@ -961,7 +961,8 @@ impl Store {
     }
 
     /// Finds the workspace registered for `path`, comparing stored paths the
-    /// way the filesystem does (see [`paths_equivalent`]).
+    /// way the filesystem does (see [`names_same_directory`]): a different
+    /// directory whose path differs only in letter case is not a match.
     pub fn workspace_by_path(&self, path: &Path) -> Result<Option<Workspace>> {
         let connection = self.connection()?;
         match workspace_id_for_path(&connection, &stored_path(path))? {
@@ -1094,10 +1095,11 @@ impl Store {
     /// Inserts newly discovered provider metadata or refreshes an existing
     /// record owned by the same agent profile. Returns `true` when inserted.
     ///
-    /// A refresh keeps the user's archive decision and never raises the resume
-    /// capability: native resume stays limited to sessions first discovered
-    /// through a verified native-resume interface or actually resumed
-    /// natively. A lower capability declared by the adapter is applied.
+    /// A refresh keeps the user's archive decision and stores the resume
+    /// capability the caller computed from the adapter's current declaration,
+    /// never a hard-coded one: a session synced while native resume was only
+    /// partial stays non-native on every later sync, and becomes native once
+    /// the adapter declares native resume verified.
     pub fn upsert_provider_session(&self, session: &Session) -> Result<bool> {
         let provider_session_id = session.provider_session_id.as_deref().ok_or_else(|| {
             ContextWakeError::InvalidData(
@@ -1129,11 +1131,7 @@ impl Store {
             transaction.execute(
                 "UPDATE sessions
                  SET title = ?1, workspace_id = ?2, model_provider_id = ?3, model = ?4,
-                     started_at = ?5, last_seen_at = ?6,
-                     resume_capability = CASE
-                       WHEN ?7 = 'native' THEN resume_capability
-                       ELSE ?7
-                     END
+                     started_at = ?5, last_seen_at = ?6, resume_capability = ?7
                  WHERE id = ?8",
                 params![
                     session.title,
@@ -1629,10 +1627,41 @@ fn looks_like_path(reference: &str) -> bool {
         )
 }
 
+/// True when the stored workspace path `stored` names the directory
+/// `candidate` names.
+///
+/// Spellings that differ only in the verbatim prefix, separators or a trailing
+/// separator always match. Other equivalent spellings (on Windows, letter
+/// case) are decided by the filesystem: when both paths exist, their canonical
+/// forms must be identical, case included. On a case-insensitive volume both
+/// spellings canonicalize to the on-disk name and match; in a case-sensitive
+/// directory `Repo` and `repo` are different directories and do not, so one
+/// never inherits the other's row or trust. Two spellings of the same
+/// directory either both exist or both do not, so when exactly one exists they
+/// name different directories. Only when neither exists (a deleted or moved
+/// checkout) is the lexical comparison all there is.
+fn names_same_directory(stored: &Path, candidate: &Path) -> bool {
+    if path_merge_key(stored) == path_merge_key(candidate) {
+        return true;
+    }
+    if !paths_equivalent(stored, candidate) {
+        return false;
+    }
+    match (
+        canonicalize_simplified(stored),
+        canonicalize_simplified(candidate),
+    ) {
+        (Ok(stored), Ok(candidate)) => path_merge_key(&stored) == path_merge_key(&candidate),
+        (Err(_), Err(_)) => true,
+        _ => false,
+    }
+}
+
 /// Workspaces registered at the directory `reference` names. An existing path
 /// is compared in canonical form, which resolves `.` and `..`, symlinks,
 /// letter case and the verbatim prefix. A path that no longer exists (a
-/// deleted or moved checkout) is compared lexically.
+/// deleted or moved checkout) is compared lexically. See
+/// [`names_same_directory`].
 fn workspaces_at_path(connection: &Connection, reference: &Path) -> Result<Vec<Workspace>> {
     let workspaces = {
         let mut statement = connection.prepare(select_workspaces!("ORDER BY created_at, id"))?;
@@ -1647,7 +1676,7 @@ fn workspaces_at_path(connection: &Connection, reference: &Path) -> Result<Vec<W
     for spelling in spellings {
         let matches = workspaces
             .iter()
-            .filter(|workspace| paths_equivalent(&workspace.path, &spelling))
+            .filter(|workspace| names_same_directory(&workspace.path, &spelling))
             .cloned()
             .collect::<Vec<_>>();
         if !matches.is_empty() {
@@ -1658,7 +1687,8 @@ fn workspaces_at_path(connection: &Connection, reference: &Path) -> Result<Vec<W
 }
 
 /// The ID of the row whose stored path names `path`: the exact stored text
-/// first, then an equivalent spelling (oldest registration first).
+/// first, then another spelling of the same directory (oldest registration
+/// first; see [`names_same_directory`]).
 fn workspace_id_for_path(connection: &Connection, path: &Path) -> Result<Option<String>> {
     let exact: Option<String> = connection
         .query_row(
@@ -1677,7 +1707,7 @@ fn workspace_id_for_path(connection: &Connection, path: &Path) -> Result<Option<
     })?;
     for row in rows {
         let (id, stored) = row?;
-        if paths_equivalent(Path::new(&stored), path) {
+        if names_same_directory(Path::new(&stored), path) {
             return Ok(Some(id));
         }
     }
@@ -2190,7 +2220,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_session_refresh_never_promotes_capability_or_unarchives() {
+    fn provider_session_refresh_follows_the_adapter_capability_and_keeps_archive() {
         let directory = tempfile::tempdir().expect("tempdir");
         let store = Store::open(directory.path().join("state.db")).expect("store");
         let profile = test_profile(directory.path(), "grok", "grok");
@@ -2218,7 +2248,8 @@ mod tests {
             "re-running sync must not unlock native resume"
         );
 
-        // Not even a native capability computed later raises the stored one.
+        // Once the adapter declares native resume verified, sync computes
+        // native and the refreshed row follows instead of staying frozen.
         let upgraded = Session {
             id: Uuid::new_v4(),
             resume_capability: ResumeCapability::Native,
@@ -2229,7 +2260,8 @@ mod tests {
             .expect("third sync");
         assert_eq!(
             store.session("grok-1").unwrap().resume_capability,
-            ResumeCapability::Unknown
+            ResumeCapability::Native,
+            "a verified adapter declaration applies to rows synced earlier"
         );
 
         // An archived session stays archived and is not made the workspace's
@@ -2529,6 +2561,24 @@ mod tests {
         assert_eq!(stored[0].path, repository);
         assert_eq!(stored[0].git_root.as_deref(), Some(repository.as_path()));
 
+        let upper_case = PathBuf::from(repository.to_string_lossy().to_uppercase());
+        store
+            .upsert_workspace(&test_workspace(upper_case.clone(), "repo"))
+            .expect("case-variant registration");
+        assert_eq!(
+            store.list_workspaces().unwrap().len(),
+            1,
+            "a case-insensitive directory spelled in another case is the same row"
+        );
+        assert_eq!(
+            store
+                .workspace_by_path(&upper_case)
+                .expect("lookup")
+                .expect("registered")
+                .id,
+            first.id
+        );
+
         let forward_slashes = PathBuf::from(repository.to_string_lossy().replace('\\', "/"));
         store
             .upsert_workspace(&test_workspace(forward_slashes, "repo"))
@@ -2549,6 +2599,93 @@ mod tests {
                 .id,
             first.id
         );
+    }
+
+    /// Creates `path` as an empty directory with per-directory case
+    /// sensitivity enabled. Returns `false` when this Windows installation does
+    /// not support it.
+    #[cfg(windows)]
+    fn case_sensitive_directory(path: &Path) -> bool {
+        std::fs::create_dir_all(path).expect("directory");
+        let system_root = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        std::process::Command::new(system_root.join("System32").join("fsutil.exe"))
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(path)
+            .arg("enable")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn case_variant_directories_in_a_case_sensitive_folder_stay_separate() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(directory.path().join("state.db")).expect("store");
+        let folder = canonicalize_simplified(directory.path())
+            .expect("canonical")
+            .join("case-sensitive");
+        if !case_sensitive_directory(&folder) {
+            eprintln!("skipping: per-directory case sensitivity is not supported here");
+            return;
+        }
+        let upper = folder.join("Repo");
+        let lower = folder.join("repo");
+        std::fs::create_dir(&upper).expect("Repo");
+        if std::fs::create_dir(&lower).is_err()
+            || std::fs::read_dir(&folder).expect("read folder").count() != 2
+        {
+            eprintln!("skipping: the folder did not become case-sensitive");
+            return;
+        }
+        let trusted = Workspace {
+            trust_state: TrustState::Trusted,
+            ..test_workspace(upper.clone(), "Repo")
+        };
+        store.upsert_workspace(&trusted).expect("trusted workspace");
+        let lower_text = lower.to_string_lossy().into_owned();
+
+        // The other directory is not the trusted workspace.
+        assert!(store.workspace_by_path(&lower).expect("lookup").is_none());
+        assert!(matches!(
+            store.workspace(&lower_text),
+            Err(ContextWakeError::WorkspaceNotFound(_))
+        ));
+        assert!(matches!(
+            store.remove_workspace(&lower_text),
+            Err(ContextWakeError::WorkspaceNotFound(_))
+        ));
+        assert_eq!(store.list_workspaces().unwrap().len(), 1);
+
+        // Registering it creates a separate untrusted row and leaves the
+        // trusted row's path alone.
+        let lookalike = test_workspace(lower.clone(), "lookalike");
+        store
+            .upsert_workspace(&lookalike)
+            .expect("second workspace");
+        assert_eq!(store.list_workspaces().unwrap().len(), 2);
+        let original = store.workspace(&trusted.id.to_string()).unwrap();
+        assert_eq!(original.path, upper);
+        assert_eq!(original.trust_state, TrustState::Trusted);
+        let registered = store.workspace(&lower_text).expect("lookalike");
+        assert_eq!(registered.id, lookalike.id);
+        assert_eq!(registered.trust_state, TrustState::Untrusted);
+        assert_eq!(
+            store.workspace(&upper.to_string_lossy()).unwrap().id,
+            trusted.id
+        );
+
+        // Removing by the other path removes only that row.
+        assert_eq!(
+            store.remove_workspace(&lower_text).expect("remove").id,
+            lookalike.id
+        );
+        let remaining = store.list_workspaces().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, trusted.id);
     }
 
     #[cfg(windows)]
