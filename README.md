@@ -275,10 +275,17 @@ destination profile, resume or new; N forces a new session), press Enter.
 
 | Agent | Continue from a handoff | Native resume + handoff | Conversation excerpt |
 | --- | --- | --- | --- |
-| Claude Code | yes | when `ctx agent info claude` reports native resume as verified | from local transcripts |
-| OpenAI Codex CLI | yes | when `ctx agent info codex` reports native resume as verified | from local rollouts |
+| Claude Code | yes, delivery confirmed from the transcript | yes (verified end to end with Claude Code 2.1.319 on Windows) | from local transcripts |
+| OpenAI Codex CLI | yes, delivery confirmed from the rollout | yes (verified end to end with Codex CLI 0.166.0 on Windows) | from local rollouts |
 | Gemini CLI | yes | experimental, opt-in; not verified by ContextWake | documented format, not verified |
 | Other agents | new session only | no | no |
+
+The Claude Code and Codex CLI rows were verified on Windows by switching
+Claude Code -> Codex CLI -> Claude Code -> Codex CLI -> Claude Code on one
+project with existing sign-ins: each agent received the handoff, the returning
+agents resumed their own earlier sessions, and each continued the next pending
+step without the project being explained again. `ctx agent info <agent>`
+shows what the installed version supports.
 
 Turn excerpts off with `ctx config set --capture-conversation-excerpts false`
 or per command with `--no-conversation`.
@@ -369,6 +376,12 @@ vendors.
 - Every provider adapter is partial for the public alpha; capabilities vary by
   agent and installation. Use `ctx doctor` and `ctx agent info <agent>` for the
   current boundary.
+- Gemini CLI continuity (launch, session discovery, conversation excerpts and
+  resume) follows the documented behavior of Gemini CLI 0.67 and is covered by
+  fixture tests, but has not been verified against an installed Gemini CLI.
+- Agents keep separate conversation histories. ContextWake transfers the working
+  context (checkpoint, Git state, changed files and a short excerpt of the
+  previous agent's recent conversation); it never merges native histories.
 - Authenticated Kimi and Grok resume testing remains pending.
 - Cursor and Kiro cannot provide isolated identities on the tested Windows host.
 - Live local-model to commercial-agent continuity testing remains pending.
