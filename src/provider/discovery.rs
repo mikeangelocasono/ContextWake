@@ -373,13 +373,6 @@ impl DiscoveryContext {
     /// user's home (the home itself when `directory` is empty). Like the
     /// executable overrides, `variable` comes from the process environment
     /// only in contexts built by [`Self::from_environment`].
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "wave 2: used by the Claude, Codex and Gemini default homes"
-        )
-    )]
     pub(crate) fn agent_default_home(&self, variable: &str, directory: &str) -> Option<PathBuf> {
         let configured = match &self.overrides {
             Overrides::Process => std::env::var_os(variable),
