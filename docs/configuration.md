@@ -42,7 +42,9 @@ but a `CONTEXTWAKE_HOME` outside your user profile (for example
 `D:\contextwake` on a data volume) inherits the permissions of the folder it is
 created in, which often let every local user read it. Agent login state,
 checkpoints and handoffs live there, and `ctx doctor` warns about such a
-location. Keep the root inside your user profile, or remove the inherited
+location. The check resolves short (8.3) names, junctions and symbolic links
+first, so a junction inside your profile that points to another volume is
+reported too. Keep the root inside your user profile, or remove the inherited
 access, for example from Command Prompt:
 
 ```text
@@ -59,7 +61,10 @@ the database opens.
 Commands that take a workspace reference accept its ID, its path in any
 spelling that names the same directory (`.`, a relative path or a trailing
 separator, and on Windows also `/` separators, other letter case or the `\\?\`
-form), or its display name. A display name shared by several workspaces is
+form), or its display name. Letter case is decided by the filesystem: in a
+case-sensitive folder, `Repo` and `repo` are different directories and so
+different workspaces, and registering one never inherits the other's trust.
+A display name shared by several workspaces is
 refused with the candidates instead of picking one; retry with an ID or path.
 A provider session ID recorded for several local sessions is refused the same
 way.

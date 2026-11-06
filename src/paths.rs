@@ -158,7 +158,7 @@ impl AppPaths {
                 .filter(|directory| {
                     !private_roots
                         .iter()
-                        .any(|root| path_is_within(directory, root))
+                        .any(|root| resolved_path_is_within(directory, root))
                 })
                 .map(|directory| directory.display().to_string())
                 .collect::<Vec<_>>();
@@ -291,6 +291,19 @@ pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
     #[cfg(not(windows))]
     {
         left == right
+    }
+}
+
+/// Like [`path_is_within`], but decided on the directories the paths resolve
+/// to when both exist: 8.3 short names, `..` components, junctions and
+/// symlinks are resolved first, so a junction under `root` that points to
+/// another volume is outside it. Falls back to the lexical comparison when
+/// either path cannot be canonicalized (for example, it does not exist yet).
+#[cfg(windows)]
+fn resolved_path_is_within(path: &Path, root: &Path) -> bool {
+    match (canonicalize_simplified(path), canonicalize_simplified(root)) {
+        (Ok(path), Ok(root)) => path_is_within(&path, &root),
+        _ => path_is_within(path, root),
     }
 }
 
@@ -646,6 +659,46 @@ mod tests {
             .permission_warning()
             .expect("warning for a data-volume root");
         assert!(warning.contains(r"Z:\contextwake-state"), "{warning}");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn private_root_checks_compare_the_directories_paths_resolve_to() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let base = canonicalize_simplified(directory.path()).expect("canonical");
+        let profile = base.join("profile");
+        let outside = base.join("outside");
+        let state = profile.join("state");
+        std::fs::create_dir_all(profile.join("sub")).expect("profile");
+        std::fs::create_dir_all(&state).expect("state");
+        std::fs::create_dir_all(&outside).expect("outside");
+
+        // A different spelling of the profile root is still the profile.
+        let respelled_root = profile.join("sub").join("..");
+        assert!(!path_is_within(&state, &respelled_root));
+        assert!(resolved_path_is_within(&state, &respelled_root));
+
+        // Paths that do not exist yet are compared lexically.
+        assert!(resolved_path_is_within(&profile.join("missing"), &profile));
+        assert!(!resolved_path_is_within(&outside.join("missing"), &profile));
+
+        // A junction under the profile that points elsewhere is not private.
+        let junction = profile.join("linked state");
+        let created = std::process::Command::new("cmd.exe")
+            .args(["/D", "/C", "mklink", "/J"])
+            .arg(&junction)
+            .arg(&outside)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
+        if !created {
+            eprintln!("skipping the junction case: mklink /J is unavailable");
+            return;
+        }
+        assert!(path_is_within(&junction, &profile));
+        assert!(!resolved_path_is_within(&junction, &profile));
     }
 
     #[cfg(not(windows))]
