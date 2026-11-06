@@ -58,6 +58,44 @@ the data directory moves (for example the legacy AgentDeck directory move),
 those entries are pointed at the same files in the new location the next time
 the database opens.
 
+## Profiles and agent sign-in
+
+Each profile records which configuration home its coding agent uses (`home_mode`
+in `ctx profile show --json`, also shown by `ctx profile list`, `ctx status` and
+`ctx doctor`):
+
+* **Existing sign-in** (`agent_default`): the agent's own default home, so the
+  profile uses the login you already have. For Claude Code that is
+  `CLAUDE_CONFIG_DIR` if it is set to an absolute path, else `%USERPROFILE%\.claude`;
+  for Codex CLI `CODEX_HOME`, else `%USERPROFILE%\.codex`; for Gemini CLI
+  `GEMINI_CLI_HOME`, else your user profile (state under `.gemini`). ContextWake
+  records that path, never sets the agent's home variable when it launches the
+  agent, and never writes into, initializes or deletes that directory. The
+  sign-in state is read from the agent's own status command when the profile is
+  created (best effort; `unknown` when it cannot be checked).
+* **Separate sign-in** (`isolated`): a ContextWake-managed home under the data
+  directory (`agent-homes/<agent>/<profile id>`), passed to the agent through
+  its home variable. Sign in once with `ctx profile login <name>`.
+
+`ctx profile add NAME --agent A` uses the existing sign-in when the agent
+supports it and no other profile uses that home yet (agent homes are unique, so
+at most one profile per agent uses the existing sign-in); otherwise it creates
+a separate sign-in and says why. `--existing-login` demands the existing
+sign-in and fails when it is unavailable; `--isolated` always creates a
+separate one. The TUI's new-profile form offers the same choice (Up/Down
+toggles it). The library entry points that predate this choice
+(`Application::create_profile*`) keep creating separate sign-ins.
+
+For an existing-login profile, `ctx profile login` and `ctx profile logout`
+act on your normal agent login (the one you also use outside ContextWake); both
+print a notice first, and logout requires `--yes`. `ctx profile remove` only
+deletes ContextWake's metadata and never touches either kind of home. If the
+agent's home variable changes after the profile was created, `ctx doctor` warns
+that the recorded home no longer matches. Profiles created before state schema
+v6 keep separate sign-ins.
+
+## Workspaces and project configuration
+
 Commands that take a workspace reference accept its ID, its path in any
 spelling that names the same directory (`.`, a relative path or a trailing
 separator, and on Windows also `/` separators, other letter case or the `\\?\`

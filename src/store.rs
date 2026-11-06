@@ -10,15 +10,15 @@ use uuid::Uuid;
 
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
-    AuthState, ContinuityKind, HandoffRecord, Profile, RedactionStatus, ResumeCapability, Session,
-    TrustState, UsageSummary, Workspace,
+    AuthState, ContinuityKind, HandoffRecord, Profile, ProfileHomeMode, RedactionStatus,
+    ResumeCapability, Session, TrustState, UsageSummary, Workspace,
 };
 use crate::paths::{
     AGENT_HOMES_DIR, CHECKPOINTS_DIR, HANDOFFS_DIR, canonicalize_simplified, paths_equivalent,
     simplify_path,
 };
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// Expands to a `SELECT` of every profile column followed by `$tail`.
 macro_rules! select_profiles {
@@ -26,7 +26,7 @@ macro_rules! select_profiles {
         concat!(
             "SELECT id, name, display_name, agent_id, model_provider_id, model_preference,
                     description, agent_home, account_fingerprint, auth_state, created_at,
-                    updated_at, last_used_at
+                    updated_at, last_used_at, home_mode
              FROM profiles ",
             $tail
         )
@@ -62,7 +62,7 @@ macro_rules! select_sessions {
 /// Current table definitions. Every statement is idempotent, so the batch runs
 /// on each open before the versioned migrations bring older tables up to date.
 /// A new database records version 4 and then takes the same idempotent v4 to
-/// v5 step as an upgraded one.
+/// v5 and v5 to v6 steps as an upgraded one.
 const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS schema_meta (
        version INTEGER NOT NULL
      );
@@ -81,7 +81,8 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS schema_meta (
        auth_state TEXT NOT NULL,
        created_at TEXT NOT NULL,
        updated_at TEXT NOT NULL,
-       last_used_at TEXT
+       last_used_at TEXT,
+       home_mode TEXT NOT NULL DEFAULT 'isolated'
      );
      CREATE TABLE IF NOT EXISTS settings (
        key TEXT PRIMARY KEY,
@@ -317,6 +318,20 @@ fn migrate_v4_to_v5(connection: &Connection) -> Result<()> {
         })?;
     }
     connection.execute("UPDATE schema_meta SET version = 5", [])?;
+    Ok(())
+}
+
+/// v6 records whether a profile uses a `ContextWake`-managed agent home or
+/// the agent's own default home (the user's existing sign-in). Every profile
+/// created before v6 has a managed home.
+fn migrate_v5_to_v6(connection: &Connection) -> Result<()> {
+    if !table_has_column(connection, "profiles", "home_mode")? {
+        connection.execute(
+            "ALTER TABLE profiles ADD COLUMN home_mode TEXT NOT NULL DEFAULT 'isolated'",
+            [],
+        )?;
+    }
+    connection.execute("UPDATE schema_meta SET version = 6", [])?;
     Ok(())
 }
 
@@ -644,6 +659,7 @@ impl Store {
                 2 => migrate_v2_to_v3(&transaction)?,
                 3 => migrate_v3_to_v4(&transaction)?,
                 4 => migrate_v4_to_v5(&transaction)?,
+                5 => migrate_v5_to_v6(&transaction)?,
                 SCHEMA_VERSION => {}
                 version => return Err(unsupported_schema(version)),
             }
@@ -660,7 +676,8 @@ impl Store {
     /// records absolute paths. Only paths with the managed layout
     /// (`agent-homes/<agent>/<profile id>`, `checkpoints/<id>.json`,
     /// `handoffs/<id>`) are rewritten, and only when that entry exists in this
-    /// data directory.
+    /// data directory. The agent's own default home of an existing-login
+    /// profile is never rewritten.
     fn relocate_managed_paths(&self) -> Result<usize> {
         let Some(parent) = self
             .path
@@ -680,7 +697,8 @@ impl Store {
         // data directory, the entry's path inside a data directory)
         let layouts: [(&str, &str, usize, ManagedEntry); 3] = [
             (
-                "SELECT id, agent_id, agent_home FROM profiles WHERE agent_home IS NOT NULL",
+                "SELECT id, agent_id, agent_home FROM profiles
+                 WHERE agent_home IS NOT NULL AND home_mode <> 'agent_default'",
                 "UPDATE OR IGNORE profiles SET agent_home = ?1 WHERE id = ?2",
                 3,
                 agent_home_entry,
@@ -740,8 +758,8 @@ impl Store {
             "INSERT INTO profiles (
                id, name, display_name, agent_id, model_provider_id, model_preference,
                description, agent_home, account_fingerprint, auth_state, created_at,
-               updated_at, last_used_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+               updated_at, last_used_at, home_mode
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 profile.id.to_string(),
                 profile.name,
@@ -756,6 +774,7 @@ impl Store {
                 profile.created_at.to_rfc3339(),
                 profile.updated_at.to_rfc3339(),
                 profile.last_used_at.map(|value| value.to_rfc3339()),
+                profile.home_mode.as_str(),
             ],
         )?;
         Ok(())
@@ -1819,7 +1838,7 @@ fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Profile> {
         model_preference: row.get(5)?,
         description: row.get(6)?,
         agent_home: PathBuf::from(row.get::<_, String>(7)?),
-        home_mode: crate::model::ProfileHomeMode::Isolated,
+        home_mode: ProfileHomeMode::from(row.get::<_, String>(13)?.as_str()),
         account_fingerprint: row.get(8)?,
         auth_state: AuthState::from(row.get::<_, String>(9)?.as_str()),
         created_at: parse_time(row.get(10)?)?,
@@ -3228,10 +3247,11 @@ mod tests {
         let path = directory.path().join("state.db");
         let connection = Connection::open(&path).expect("future database");
         connection
-            .execute_batch(
+            .execute_batch(&format!(
                 "CREATE TABLE schema_meta (version INTEGER NOT NULL);
-                 INSERT INTO schema_meta(version) VALUES (6);",
-            )
+                 INSERT INTO schema_meta(version) VALUES ({});",
+                SCHEMA_VERSION + 1
+            ))
             .expect("future schema");
         drop(connection);
 
@@ -3580,6 +3600,138 @@ mod tests {
             old_data
                 .join(CHECKPOINTS_DIR)
                 .join(format!("{unmoved}.json"))
+        );
+    }
+
+    #[test]
+    fn profile_home_mode_round_trips_and_default_homes_stay_unique() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let store = Store::open(directory.path().join("state.db")).expect("store");
+        let isolated = test_profile(directory.path(), "isolated", "claude");
+        let mut existing = test_profile(directory.path(), "existing", "claude");
+        existing.agent_home = directory.path().join("User Home").join(".claude");
+        existing.home_mode = ProfileHomeMode::AgentDefault;
+        store.insert_profile(&isolated).expect("isolated");
+        store.insert_profile(&existing).expect("existing login");
+
+        assert_eq!(
+            store.profile("isolated").unwrap().home_mode,
+            ProfileHomeMode::Isolated
+        );
+        let stored = store.profile("existing").unwrap();
+        assert_eq!(stored.home_mode, ProfileHomeMode::AgentDefault);
+        assert_eq!(stored.agent_home, existing.agent_home);
+        assert!(
+            store
+                .list_profiles()
+                .unwrap()
+                .iter()
+                .any(|profile| profile.home_mode == ProfileHomeMode::AgentDefault)
+        );
+
+        // At most one profile per agent home: a second existing-login profile
+        // for the same default home is refused by the database.
+        let mut duplicate = test_profile(directory.path(), "duplicate", "claude");
+        duplicate.agent_home.clone_from(&existing.agent_home);
+        duplicate.home_mode = ProfileHomeMode::AgentDefault;
+        assert!(store.insert_profile(&duplicate).is_err());
+        assert!(matches!(
+            store.profile("duplicate"),
+            Err(ContextWakeError::ProfileNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn migrates_v5_profiles_to_managed_home_mode() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let path = directory.path().join("state.db");
+        let profile = test_profile(directory.path(), "work", "codex");
+        {
+            let store = Store::open(&path).expect("store");
+            store.insert_profile(&profile).expect("profile");
+        }
+        // The v5 schema is the v6 schema without `profiles.home_mode`.
+        let connection = Connection::open(&path).expect("database");
+        connection
+            .execute_batch(
+                "ALTER TABLE profiles DROP COLUMN home_mode;
+                 UPDATE schema_meta SET version = 5;",
+            )
+            .expect("v5 fixture");
+        assert!(!table_has_column(&connection, "profiles", "home_mode").unwrap());
+        drop(connection);
+
+        let store = Store::open(&path).expect("upgrade");
+        let connection = store.connection().unwrap();
+        assert_eq!(schema_version(&connection).unwrap(), 6);
+        assert!(table_has_column(&connection, "profiles", "home_mode").unwrap());
+        let migrated = store.profile("work").unwrap();
+        assert_eq!(migrated.home_mode, ProfileHomeMode::Isolated);
+        assert_eq!(migrated.agent_home, profile.agent_home);
+
+        // Reopening is idempotent, and new rows can choose either mode.
+        let store = Store::open(&path).expect("reopen");
+        let mut existing = test_profile(directory.path(), "existing", "claude");
+        existing.home_mode = ProfileHomeMode::AgentDefault;
+        store
+            .insert_profile(&existing)
+            .expect("existing-login profile");
+        assert_eq!(
+            store.profile("existing").unwrap().home_mode,
+            ProfileHomeMode::AgentDefault
+        );
+        assert_eq!(
+            store.profile("work").unwrap().home_mode,
+            ProfileHomeMode::Isolated
+        );
+    }
+
+    #[test]
+    fn relocation_never_rewrites_an_agent_default_home() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old_data = root.path().join("old data");
+        let new_data = root.path().join("new data");
+        std::fs::create_dir_all(&new_data).expect("new data");
+        let path = new_data.join("state.sqlite3");
+        let store = Store::open(&path).expect("store");
+        // A default home that happens to have the managed layout, next to an
+        // entry of that layout in this data directory, still names the
+        // agent's own home and must stay as recorded.
+        let mut existing = test_profile(root.path(), "existing", "claude");
+        existing.agent_home = old_data
+            .join(AGENT_HOMES_DIR)
+            .join("claude")
+            .join(existing.id.to_string());
+        existing.home_mode = ProfileHomeMode::AgentDefault;
+        store.insert_profile(&existing).expect("existing");
+        let mut managed = test_profile(root.path(), "managed", "claude");
+        managed.agent_home = old_data
+            .join(AGENT_HOMES_DIR)
+            .join("claude")
+            .join(managed.id.to_string());
+        store.insert_profile(&managed).expect("managed");
+        for profile in [&existing, &managed] {
+            std::fs::create_dir_all(
+                new_data
+                    .join(AGENT_HOMES_DIR)
+                    .join("claude")
+                    .join(profile.id.to_string()),
+            )
+            .expect("relocated entry");
+        }
+        drop(store);
+
+        let store = Store::open(&path).expect("reopen");
+        assert_eq!(
+            store.profile("existing").unwrap().agent_home,
+            existing.agent_home
+        );
+        assert_eq!(
+            store.profile("managed").unwrap().agent_home,
+            new_data
+                .join(AGENT_HOMES_DIR)
+                .join("claude")
+                .join(managed.id.to_string())
         );
     }
 }

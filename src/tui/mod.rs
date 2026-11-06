@@ -7,7 +7,7 @@ FORM: dense operator console benchmarked against Lazygit and GitHub CLI, with Co
 FINISH: unreviewed and undocumented is unfinished; this build ends with a reviewed, documented terminal workflow.
 */
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -37,13 +37,16 @@ use ratatui::widgets::{
 };
 use uuid::Uuid;
 
-use crate::app::{Application, StatusView};
+use crate::app::{
+    Application, ExistingLogin, NewProfile, ProfileHomeChoice, StatusView, existing_login_status,
+};
 use crate::checkpoint::CheckpointInput;
 use crate::doctor::{DoctorReport, run_doctor_with_agent_results};
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
     AgentHealth, AuthState, Capability, Checkpoint, CodingAgent, ContinuityRiskLevel,
-    ContinuityRiskStatus, HandoffRecord, Profile, Session, TrustState, UsageSummary, Workspace,
+    ContinuityRiskStatus, HandoffRecord, Profile, ProfileHomeMode, Session, TrustState,
+    UsageSummary, Workspace,
 };
 use crate::paths::{paths_equivalent, simplify_path};
 use crate::security::{SecretScanner, profile_slug, sanitize_terminal, validate_local_name};
@@ -184,11 +187,23 @@ impl AgentFilter {
 #[derive(Clone, Debug)]
 enum InputMode {
     Normal,
-    AddProfile { value: String, agent_index: usize },
-    CreateCheckpoint { value: String },
-    SearchSessions { value: String },
+    // `existing_login` is the user's sign-in choice: the agent's existing
+    // sign-in (when available for the selected agent) or a separate one.
+    AddProfile {
+        value: String,
+        agent_index: usize,
+        existing_login: bool,
+    },
+    CreateCheckpoint {
+        value: String,
+    },
+    SearchSessions {
+        value: String,
+    },
     // The profile id, never a list index: refreshes re-sort the profile list.
-    ConfirmSwitch { target: Uuid },
+    ConfirmSwitch {
+        target: Uuid,
+    },
 }
 
 impl InputMode {
@@ -227,6 +242,7 @@ enum Action {
         name: String,
         agent_id: String,
         agent_name: String,
+        home: ProfileHomeChoice,
     },
     CreateCheckpoint {
         workspace: Workspace,
@@ -707,6 +723,42 @@ struct UiState {
     refresh_requested: bool,
     refreshing: bool,
     ascii: bool,
+    default_homes: DefaultHomes,
+}
+
+// The agents' own default homes (where the user's existing sign-in lives), read
+// from the adapters without probing anything, for the Add Profile form.
+#[derive(Clone, Debug, Default)]
+struct DefaultHomes {
+    managed: PathBuf,
+    homes: BTreeMap<String, PathBuf>,
+}
+
+impl DefaultHomes {
+    fn collect(app: &Application) -> Self {
+        Self {
+            managed: app.paths.agent_homes_dir(),
+            homes: app
+                .agents
+                .implemented()
+                .filter_map(|adapter| {
+                    adapter
+                        .default_home()
+                        .map(|home| (adapter.id().to_string(), home))
+                })
+                .collect(),
+        }
+    }
+
+    // Decided the same way `Application::add_profile` decides it, against the
+    // profiles shown now.
+    fn status(&self, agent_id: &str, profiles: &[Profile]) -> ExistingLogin {
+        self.homes
+            .get(agent_id)
+            .map_or(ExistingLogin::Unsupported, |home| {
+                existing_login_status(Some(home), &self.managed, profiles)
+            })
+    }
 }
 
 impl UiState {
@@ -751,6 +803,7 @@ impl UiState {
             &agent_health,
         );
         let mut state = Self::from_parts(local, agents, probed_with, doctor, ascii);
+        state.default_homes = DefaultHomes::collect(app);
         state.message = state.attention_message();
         state
     }
@@ -812,6 +865,7 @@ impl UiState {
             refresh_requested: false,
             refreshing: false,
             ascii,
+            default_homes: DefaultHomes::default(),
         }
     }
 
@@ -1481,6 +1535,7 @@ impl UiState {
                     *agent_index = (*agent_index + 1) % self.agents.len();
                 }
             }
+            KeyCode::Up | KeyCode::Down => self.toggle_profile_sign_in(),
             _ => {
                 if let Some(character) = text_input(&key)
                     && let Some((value, limit)) = self.input.text_mut()
@@ -1520,11 +1575,18 @@ impl UiState {
     // Checks the name the way create_profile_for_agent will, so a rejected name keeps
     // the prompt open with an explanation instead of failing later.
     fn submit_profile(&mut self) -> Option<Action> {
-        let InputMode::AddProfile { value, agent_index } = &self.input else {
+        let InputMode::AddProfile {
+            value, agent_index, ..
+        } = &self.input
+        else {
             return None;
         };
         let name = value.trim().to_string();
         let agent = self.agents.get(*agent_index).cloned();
+        let home = match self.profile_sign_in() {
+            Some((ExistingLogin::Available(_), true)) => ProfileHomeChoice::ExistingLogin,
+            _ => ProfileHomeChoice::Isolated,
+        };
         if name.is_empty() {
             self.message = Some("Profile name cannot be empty.".into());
             return None;
@@ -1557,7 +1619,54 @@ impl UiState {
             name,
             agent_id: agent.id,
             agent_name: agent.display_name,
+            home,
         })
+    }
+
+    // The Add Profile form's agent sign-in options: whether the selected agent's
+    // existing sign-in can be used, and whether the user chose it.
+    fn profile_sign_in(&self) -> Option<(ExistingLogin, bool)> {
+        let InputMode::AddProfile {
+            agent_index,
+            existing_login,
+            ..
+        } = &self.input
+        else {
+            return None;
+        };
+        let agent = self.agents.get(*agent_index)?;
+        Some((
+            self.default_homes.status(&agent.id, &self.profiles),
+            *existing_login,
+        ))
+    }
+
+    fn toggle_profile_sign_in(&mut self) {
+        let Some((status, _)) = self.profile_sign_in() else {
+            return;
+        };
+        if let ExistingLogin::Available(_) = status {
+            if let InputMode::AddProfile { existing_login, .. } = &mut self.input {
+                *existing_login = !*existing_login;
+            }
+        } else {
+            let agent = self
+                .add_profile_agent_name()
+                .unwrap_or_else(|| "this agent".into());
+            self.message = Some(format!(
+                "This profile gets a separate ContextWake sign-in: {}.",
+                status.reason(&agent)
+            ));
+        }
+    }
+
+    fn add_profile_agent_name(&self) -> Option<String> {
+        let InputMode::AddProfile { agent_index, .. } = &self.input else {
+            return None;
+        };
+        self.agents
+            .get(*agent_index)
+            .map(|agent| agent.display_name.clone())
     }
 
     fn apply_search(&mut self, query: String) {
@@ -1678,6 +1787,7 @@ impl UiState {
                 self.input = InputMode::AddProfile {
                     value: String::new(),
                     agent_index: first_detected_agent(self),
+                    existing_login: true,
                 };
             }
             KeyCode::Char('n' | 'N') if self.screen == Screen::Checkpoints => {
@@ -1771,6 +1881,7 @@ impl UiState {
                 self.input = InputMode::AddProfile {
                     value: "Personal".into(),
                     agent_index: first_detected_agent(self),
+                    existing_login: true,
                 };
             }
             _ => {}
@@ -2210,20 +2321,38 @@ fn execute_action(app: &Application, action: Action, cache: &ProviderCache) -> A
             name,
             agent_id,
             agent_name,
+            home,
         } => {
             let profile = app
-                .create_profile_for_agent(&name, Some(&name), None, &agent_id, None, None)
+                .add_profile(&NewProfile {
+                    name: &name,
+                    display_name: Some(&name),
+                    description: None,
+                    agent_id: &agent_id,
+                    model_provider_id: None,
+                    model_preference: None,
+                    allow_shared_identity: false,
+                    home,
+                })
                 .map_err(|error| {
                     format!(
                         "Could not create profile {name}: {}. Edit the name and press Enter again.",
                         error_text(&error)
                     )
-                })?;
+                })?
+                .profile;
             Ok(ActionOutput {
-                message: format!(
-                    "Created {} for {agent_name}. Authenticate with: ctx profile login {}",
-                    profile.display_name, profile.name
-                ),
+                message: match profile.home_mode {
+                    ProfileHomeMode::AgentDefault => format!(
+                        "Created {} for {agent_name} using your existing {agent_name} sign-in ({}). ContextWake never changes that home.",
+                        profile.display_name,
+                        profile.auth_state.as_str()
+                    ),
+                    ProfileHomeMode::Isolated => format!(
+                        "Created {} for {agent_name} with a separate ContextWake sign-in. Authenticate with: ctx profile login {}",
+                        profile.display_name, profile.name
+                    ),
+                },
                 local: Box::new(LocalSnapshot::collect(app, cache.status_health(app))),
                 next: NextView::Screen(Screen::Profiles),
             })
@@ -4031,8 +4160,37 @@ fn render_footer(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
 fn render_overlay(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
     match &state.input {
         InputMode::Normal => {}
-        InputMode::AddProfile { value, agent_index } => {
-            let popup = centered(area, 62, 10);
+        InputMode::AddProfile {
+            value, agent_index, ..
+        } => {
+            let popup = centered(area, 66, 13);
+            let agent_name = state
+                .agents
+                .get(*agent_index)
+                .map_or("the agent", |agent| agent.display_name.as_str());
+            let (status, chosen) = state
+                .profile_sign_in()
+                .unwrap_or((ExistingLogin::Unsupported, false));
+            let existing = status.is_available() && chosen;
+            let mark = |selected: bool| if selected { "[x]" } else { "[ ]" };
+            let existing_line = match &status {
+                ExistingLogin::Available(_) => {
+                    format!("  {} Use my existing {agent_name} sign-in", mark(existing))
+                }
+                ExistingLogin::InUse { profile, .. } => format!(
+                    "  {} Existing sign-in unavailable: used by profile {}",
+                    mark(false),
+                    sanitize_terminal(profile)
+                ),
+                ExistingLogin::Managed(_) => format!(
+                    "  {} Existing sign-in unavailable: home is a ContextWake home",
+                    mark(false)
+                ),
+                ExistingLogin::Unsupported => format!(
+                    "  {} Existing sign-in: not supported for this agent",
+                    mark(false)
+                ),
+            };
             let agent = state.agents.get(*agent_index).map_or_else(
                 || "unavailable".to_string(),
                 |agent| {
@@ -4048,20 +4206,27 @@ fn render_overlay(frame: &mut ratatui::Frame<'_>, state: &UiState, area: Rect) {
                 Paragraph::new(vec![
                     Line::from("Create a local profile label"),
                     Line::from(format!("Agent: {agent}  [Tab] change")),
+                    Line::from("Sign-in  [Up/Down] change"),
+                    Line::from(existing_line),
+                    Line::from(format!(
+                        "  {} Separate ContextWake sign-in (ctx profile login)",
+                        mark(!existing)
+                    )),
                     Line::from(""),
                     Line::from(Span::styled(
                         format!("> {value}"),
                         Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
                     )),
                     Line::from(""),
-                    Line::from("Enter create · Esc cancel · provider auth remains separate"),
+                    Line::from("Enter create · Esc cancel · credentials stay with the agent"),
                 ])
                 .block(
                     Block::default()
                         .title(" NEW PROFILE ")
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(ACCENT)),
-                ),
+                )
+                .wrap(Wrap { trim: false }),
                 popup,
             );
         }
@@ -5221,6 +5386,7 @@ mod tests {
             state.input = InputMode::AddProfile {
                 value: name.into(),
                 agent_index: 0,
+                existing_login: true,
             };
             assert!(send(&mut state, &app, KeyCode::Enter).is_none(), "{name}");
             assert!(
@@ -5239,12 +5405,105 @@ mod tests {
         state.input = InputMode::AddProfile {
             value: "Personal".into(),
             agent_index: 0,
+            existing_login: true,
         };
         let action = send(&mut state, &app, KeyCode::Enter);
         assert!(
             matches!(&action, Some(Action::CreateProfile { name, agent_id, .. }) if name == "Personal" && agent_id == "codex"),
             "{action:?}"
         );
+    }
+
+    // C1: the Add Profile form offers the agent's existing sign-in by default when
+    // it is available, toggles with Up/Down, and never offers a taken one.
+    #[test]
+    fn profile_form_offers_the_existing_sign_in_and_toggles_it() {
+        let root = tempfile::tempdir().expect("root");
+        let app = test_app(root.path());
+        let mut state = fixture();
+        state.screen = Screen::Profiles;
+        let default_home = PathBuf::from("C:/Users/Test User/.codex");
+        state.default_homes = DefaultHomes {
+            managed: PathBuf::from("C:/state/agent-homes"),
+            homes: BTreeMap::from([("codex".to_string(), default_home.clone())]),
+        };
+        let open = |state: &mut UiState, name: &str| {
+            state.input = InputMode::AddProfile {
+                value: name.into(),
+                agent_index: 0,
+                existing_login: true,
+            };
+        };
+
+        open(&mut state, "Personal");
+        let screen = draw(&state, 120, 36);
+        assert!(screen.contains("[x] Use my existing"), "{screen}");
+        assert!(
+            screen.contains("[ ] Separate ContextWake sign-in"),
+            "{screen}"
+        );
+        assert!(matches!(
+            send(&mut state, &app, KeyCode::Enter),
+            Some(Action::CreateProfile {
+                home: ProfileHomeChoice::ExistingLogin,
+                ..
+            })
+        ));
+
+        open(&mut state, "Personal");
+        assert!(send(&mut state, &app, KeyCode::Down).is_none());
+        let screen = draw(&state, 120, 36);
+        assert!(screen.contains("[ ] Use my existing"), "{screen}");
+        assert!(
+            screen.contains("[x] Separate ContextWake sign-in"),
+            "{screen}"
+        );
+        assert!(
+            matches!(&state.input, InputMode::AddProfile { value, .. } if value == "Personal"),
+            "toggling keeps the typed name"
+        );
+        assert!(matches!(
+            send(&mut state, &app, KeyCode::Enter),
+            Some(Action::CreateProfile {
+                home: ProfileHomeChoice::Isolated,
+                ..
+            })
+        ));
+
+        // Another profile already uses the default home: the form shows why and
+        // creates a separate sign-in; toggling cannot select the taken home.
+        let mut taken = test_profile("mine", "Mine", default_home.clone(), AuthState::SignedIn);
+        taken.home_mode = ProfileHomeMode::AgentDefault;
+        state.profiles.push(taken);
+        open(&mut state, "Personal");
+        let screen = draw(&state, 120, 36);
+        assert!(screen.contains("used by profile Mine"), "{screen}");
+        assert!(
+            screen.contains("[x] Separate ContextWake sign-in"),
+            "{screen}"
+        );
+        assert!(send(&mut state, &app, KeyCode::Up).is_none());
+        assert!(
+            state
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("profile Mine already uses")),
+            "{:?}",
+            state.message
+        );
+        assert!(matches!(
+            send(&mut state, &app, KeyCode::Enter),
+            Some(Action::CreateProfile {
+                home: ProfileHomeChoice::Isolated,
+                ..
+            })
+        ));
+
+        // An agent without a default home never offers it.
+        state.default_homes = DefaultHomes::default();
+        open(&mut state, "Personal");
+        let screen = draw(&state, 120, 36);
+        assert!(screen.contains("not supported for this agent"), "{screen}");
     }
 
     // tui#2: a failed action is a message; the TUI and the prompt stay open.
@@ -5896,6 +6155,7 @@ mod tests {
             InputMode::AddProfile {
                 value: String::new(),
                 agent_index: 0,
+                existing_login: true,
             },
             InputMode::CreateCheckpoint {
                 value: String::new(),

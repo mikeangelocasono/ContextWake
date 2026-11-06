@@ -319,6 +319,13 @@ impl AgentRegistry {
         }
     }
 
+    /// A registry of the given adapters, for tests outside this module that
+    /// need a fake agent.
+    #[cfg(test)]
+    pub(crate) fn from_adapters(adapters: Vec<Arc<dyn AgentAdapter>>) -> Self {
+        Self { adapters }
+    }
+
     pub fn get(&self, id: &str) -> Result<&dyn AgentAdapter> {
         self.adapters
             .iter()
