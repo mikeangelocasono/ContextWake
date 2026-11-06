@@ -373,10 +373,6 @@ impl DiscoveryContext {
     /// user's home (the home itself when `directory` is empty). Like the
     /// executable overrides, `variable` comes from the process environment
     /// only in contexts built by [`Self::from_environment`].
-    #[allow(
-        dead_code,
-        reason = "the Codex and Gemini adapters look up their homes through this"
-    )]
     pub(crate) fn agent_default_home(&self, variable: &str, directory: &str) -> Option<PathBuf> {
         self.configured_agent_home(variable)
             .or_else(|| self.unconfigured_agent_home(directory))
