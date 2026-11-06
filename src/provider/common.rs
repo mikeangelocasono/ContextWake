@@ -490,13 +490,6 @@ pub(crate) fn contained_existing_path(root: &Path, candidate: &Path) -> Option<P
 /// Reads at most the last `max_bytes` of `path`. The flag is `true` when
 /// the file is longer; the returned bytes then start after the first line
 /// break inside that window, so no partial line is returned.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wave 2: used by the Claude, Codex and Gemini transcript readers"
-    )
-)]
 pub(crate) fn read_file_tail(path: &Path, max_bytes: usize) -> Result<(Vec<u8>, bool)> {
     let mut file = File::open(path).at(path)?;
     let length = file.metadata().at(path)?.len();
@@ -530,13 +523,6 @@ pub(crate) struct TranscriptMessages {
 /// Builds a [`ConversationExcerpt`] from transcript text: keeps the newest
 /// requests within the excerpt limits, and sanitizes, redacts and bounds
 /// every text.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "wave 2: used by the Claude, Codex and Gemini transcript readers"
-    )
-)]
 pub(crate) fn conversation_excerpt_from(
     agent_id: &str,
     provider_session_id: &str,
