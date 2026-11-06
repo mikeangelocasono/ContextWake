@@ -367,12 +367,16 @@ function Remove-FileBestEffort {
 function Remove-StaleTransactionFiles {
     # Windows can rename a running executable but cannot delete it, so the backup of a binary that was
     # still running during an earlier update stays behind. Delete those leftovers once they are free.
-    param([Parameter(Mandatory = $true)][string]$Directory)
+    # Returns the names of matching files that are still in use.
+    param(
+        [Parameter(Mandatory = $true)][string]$Directory,
+        [string]$Pattern = $TransactionFilePattern
+    )
 
     $remaining = @()
     if (Test-Path -LiteralPath $Directory -PathType Container) {
         foreach ($item in @(Get-ChildItem -LiteralPath $Directory -Force -File)) {
-            if ($item.Name -cmatch $TransactionFilePattern -and -not (Remove-FileBestEffort -Path $item.FullName)) {
+            if ($item.Name -cmatch $Pattern -and -not (Remove-FileBestEffort -Path $item.FullName)) {
                 $remaining += $item.Name
             }
         }
@@ -441,9 +445,19 @@ function Install-Binaries {
                     Move-Item -LiteralPath $backups[$name] -Destination (Join-Path $DestinationDirectory $name) -Force -ErrorAction Stop
                 }
                 catch {
-                    # Never delete the only remaining copy of the previous binary.
-                    $preserved[$backups[$name]] = $true
-                    Write-Warning "Could not restore the previous $name; it is kept as $($backups[$name])."
+                    # Never delete the only remaining copy of the previous binary. Every later install and
+                    # uninstall deletes transaction files (.backup), so move it to a name outside that pattern.
+                    $kept = $backups[$name]
+                    $preserved[$kept] = $true
+                    $previous = Join-Path $DestinationDirectory ".$name.$transaction.previous.exe"
+                    try {
+                        Move-Item -LiteralPath $kept -Destination $previous -ErrorAction Stop
+                        $kept = $previous
+                    }
+                    catch {
+                        # Keep the backup name; this run still does not delete it.
+                    }
+                    Write-Warning "Could not restore the previous $name; it is kept as $kept. Rename it to $name to use it again."
                 }
             }
             throw $installError
@@ -560,7 +574,7 @@ function Get-UserPathValue {
         $kind = $key.GetValueKind("Path")
         if ($kind -ne [Microsoft.Win32.RegistryValueKind]::ExpandString -and
             $kind -ne [Microsoft.Win32.RegistryValueKind]::String) {
-            throw "the user PATH (HKCU\$KeyPath\Path) has the unsupported registry type $kind; fix it manually or rerun with -NoPathUpdate"
+            throw "the user PATH (HKCU\$KeyPath\Path) has the unsupported registry type $kind; change it to REG_EXPAND_SZ or REG_SZ, or rerun with -NoPathUpdate to leave PATH unchanged"
         }
         return New-Object PSObject -Property @{
             Exists = $true
