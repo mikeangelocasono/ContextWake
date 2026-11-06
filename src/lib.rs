@@ -32,20 +32,15 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Run the `ContextWake` CLI from either the canonical or compatibility binary.
 pub fn run() -> ExitCode {
-    let invoked_name = invoked_binary_name();
-    let mut command = cli::Cli::command().name(BINARY_NAME).bin_name(BINARY_NAME);
-    if invoked_name == LEGACY_BINARY_NAME {
-        command = command
-            .name(LEGACY_BINARY_NAME)
-            .bin_name(LEGACY_BINARY_NAME);
-    }
+    let binary_name = invoked_binary_name();
+    let command = cli::Cli::command().name(binary_name).bin_name(binary_name);
     let matches = command.get_matches();
     let cli = match cli::Cli::from_arg_matches(&matches) {
         Ok(cli) => cli,
         Err(error) => error.exit(),
     };
     let json_output = cli.json;
-    match app::Application::discover().and_then(|application| application.run(cli)) {
+    match dispatch(cli, binary_name) {
         Ok(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
         Err(error) => {
             let safe = security::SecretScanner::new()
@@ -71,14 +66,47 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn invoked_binary_name() -> String {
-    std::env::args_os()
+/// Version and completion need no local state, so they work even when it is
+/// broken. `doctor` and `config` fall back to a degraded mode when the state
+/// cannot be initialized, because every startup error points to them.
+fn dispatch(cli: cli::Cli, binary_name: &'static str) -> error::Result<i32> {
+    match &cli.command {
+        Some(cli::Command::Version) => return app::print_version(binary_name, cli.json),
+        Some(cli::Command::Completion(args)) => {
+            return app::print_completion(args.shell, binary_name);
+        }
+        _ => {}
+    }
+    let tolerates_startup_failure = matches!(
+        cli.command,
+        Some(cli::Command::Doctor(_) | cli::Command::Config(_))
+    );
+    match app::Application::discover() {
+        Ok(application) => application.run(cli),
+        Err(error) if tolerates_startup_failure => app::run_without_state(cli, error),
+        Err(error) => Err(error),
+    }
+}
+
+/// `ctxwake` when the process was started through the compatibility alias,
+/// otherwise `ctx`.
+fn invoked_binary_name() -> &'static str {
+    let stem = std::env::args_os()
         .next()
-        .and_then(|path| std::path::Path::new(&path).file_stem().map(OsString::from))
-        .map_or_else(
-            || BINARY_NAME.into(),
-            |name| name.to_string_lossy().into_owned(),
-        )
+        .and_then(|path| std::path::Path::new(&path).file_stem().map(OsString::from));
+    match stem {
+        Some(stem) if is_legacy_binary_name(&stem.to_string_lossy()) => LEGACY_BINARY_NAME,
+        _ => BINARY_NAME,
+    }
+}
+
+/// Windows file names are case-insensitive, so `CTXWAKE.EXE` is the alias too.
+fn is_legacy_binary_name(stem: &str) -> bool {
+    if cfg!(windows) {
+        stem.eq_ignore_ascii_case(LEGACY_BINARY_NAME)
+    } else {
+        stem == LEGACY_BINARY_NAME
+    }
 }
 
 fn error_code(error: &error::ContextWakeError) -> &'static str {
@@ -97,5 +125,19 @@ fn error_code(error: &error::ContextWakeError) -> &'static str {
         ContextWakeError::Git(_) => "CWK-GIT-ERROR",
         ContextWakeError::Cancelled => "CWK-CANCELLED",
         _ => "CWK-ERROR",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compatibility_alias_is_recognized_by_file_stem() {
+        assert!(is_legacy_binary_name("ctxwake"));
+        assert!(!is_legacy_binary_name("ctx"));
+        assert!(!is_legacy_binary_name("ctxwake-old"));
+        // Windows file names are case-insensitive; Unix names are not.
+        assert_eq!(is_legacy_binary_name("CTXWAKE"), cfg!(windows));
     }
 }
