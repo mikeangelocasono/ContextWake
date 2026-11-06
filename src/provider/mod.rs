@@ -3,6 +3,7 @@ mod codex;
 mod common;
 mod copilot;
 mod cursor;
+mod discovery;
 mod gemini;
 mod grok;
 mod kimi;
@@ -20,33 +21,19 @@ use crate::model::{
     AgentCapabilities, AgentHealth, AgentModel, AuthState, DiscoveredAgentSession, ModelProvider,
 };
 
+use discovery::DiscoveryContext;
+
 pub use claude::ClaudeAdapter;
 pub use copilot::GitHubCopilotAdapter;
 pub use cursor::CursorAdapter;
 
-#[cfg(not(windows))]
-pub(crate) fn find_safe_on_path(executable_name: &str) -> Option<std::path::PathBuf> {
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        if !directory.is_absolute() {
-            continue;
-        }
-        let candidate = directory.join(executable_name);
-        if safe_executable_candidate(&candidate, &current) {
-            return candidate.canonicalize().ok();
-        }
-    }
-    None
-}
+/// Message of the trait's default `list_sessions`: the adapter has no
+/// session-listing implementation.
+const NO_SESSION_LISTING: &str = "does not expose a supported session-listing interface";
+/// Message of the trait's default `available_models`: the adapter has no
+/// model-catalog implementation.
+const NO_MODEL_CATALOG: &str = "does not expose a supported model catalog";
 
-fn safe_executable_candidate(candidate: &Path, current_workspace: &Path) -> bool {
-    candidate.is_file()
-        && !candidate.starts_with(current_workspace)
-        && candidate
-            .canonicalize()
-            .is_ok_and(|resolved| !resolved.starts_with(current_workspace))
-}
 pub use codex::CodexAdapter;
 pub use gemini::GeminiAdapter;
 pub use grok::GrokAdapter;
@@ -137,7 +124,7 @@ pub trait AgentAdapter: Send + Sync {
         _max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
         Err(ContextWakeError::CapabilityUnavailable(format!(
-            "{} does not expose a supported session-listing interface",
+            "{} {NO_SESSION_LISTING}",
             self.display_name()
         )))
     }
@@ -148,7 +135,7 @@ pub trait AgentAdapter: Send + Sync {
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
         Err(ContextWakeError::CapabilityUnavailable(format!(
-            "{} does not expose a supported model catalog",
+            "{} {NO_MODEL_CATALOG}",
             self.display_name()
         )))
     }
@@ -185,18 +172,24 @@ impl fmt::Debug for AgentRegistry {
 }
 
 impl AgentRegistry {
+    /// Resolves every adapter's executable once, from the process `PATH`,
+    /// working directory and `CONTEXTWAKE_*_BIN` overrides. Nothing is run.
     pub fn discover() -> Self {
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
         Self {
             adapters: vec![
-                Arc::new(CodexAdapter::discover()),
-                Arc::new(ClaudeAdapter::discover()),
-                Arc::new(GitHubCopilotAdapter::discover()),
-                Arc::new(CursorAdapter::discover()),
-                Arc::new(OpenCodeAdapter::discover()),
-                Arc::new(GeminiAdapter::discover()),
-                Arc::new(KiroAdapter::discover()),
-                Arc::new(KimiAdapter::discover()),
-                Arc::new(GrokAdapter::discover()),
+                Arc::new(CodexAdapter::discover_in(context)),
+                Arc::new(ClaudeAdapter::discover_in(context)),
+                Arc::new(GitHubCopilotAdapter::discover_in(context)),
+                Arc::new(CursorAdapter::discover_in(context)),
+                Arc::new(OpenCodeAdapter::discover_in(context)),
+                Arc::new(GeminiAdapter::discover_in(context)),
+                Arc::new(KiroAdapter::discover_in(context)),
+                Arc::new(KimiAdapter::discover_in(context)),
+                Arc::new(GrokAdapter::discover_in(context)),
             ],
         }
     }
@@ -256,21 +249,187 @@ impl AgentRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::discovery::commands_built_on_this_thread;
+    use crate::provider::discovery::tests::{executable, git_work_tree};
+
+    const OVERRIDES: [&str; 9] = [
+        "CONTEXTWAKE_CODEX_BIN",
+        "CONTEXTWAKE_CLAUDE_BIN",
+        "CONTEXTWAKE_COPILOT_BIN",
+        "CONTEXTWAKE_CURSOR_BIN",
+        "CONTEXTWAKE_OPENCODE_BIN",
+        "CONTEXTWAKE_GEMINI_BIN",
+        "CONTEXTWAKE_KIRO_BIN",
+        "CONTEXTWAKE_KIMI_BIN",
+        "CONTEXTWAKE_GROK_BIN",
+    ];
+
+    /// A registry in which no agent can be found: empty `PATH`, no overrides.
+    fn registry_without_agents(root: &Path) -> AgentRegistry {
+        AgentRegistry::discover_in(&DiscoveryContext::new(Some(root), Some(root), Vec::new()))
+    }
 
     #[test]
     fn repository_local_agent_binary_is_not_a_safe_implicit_candidate() {
         let root = tempfile::tempdir().expect("root");
-        let workspace = root.path().join("workspace");
-        let system = root.path().join("system-bin");
-        std::fs::create_dir_all(&workspace).expect("workspace");
-        std::fs::create_dir_all(&system).expect("system bin");
-        let hostile = workspace.join("codex");
-        let trusted = system.join("codex");
-        std::fs::write(&hostile, "hostile").expect("hostile binary fixture");
-        std::fs::write(&trusted, "trusted").expect("trusted binary fixture");
+        let workspace = git_work_tree(&root.path().join("workspace"));
+        let hostile = executable(&workspace.join("codex"));
+        let trusted = executable(&root.path().join("system-bin").join("codex"));
+        let context = DiscoveryContext::new(Some(&workspace), Some(root.path()), Vec::new());
 
-        assert!(!safe_executable_candidate(&hostile, &workspace));
-        assert!(safe_executable_candidate(&trusted, &workspace));
+        assert!(!context.is_safe_executable(&hostile));
+        assert!(context.is_safe_executable(&trusted));
+    }
+
+    #[test]
+    fn missing_agents_never_build_a_command() {
+        // A missing agent used to become a fixed, creatable path under C:\
+        // that detection executed (binary planting).
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().join("profile");
+        let workspace = root.path().join("workspace");
+        let handoff = root.path().join("handoff");
+        for directory in [&home, &workspace, &handoff] {
+            std::fs::create_dir_all(directory).expect("fixture directory");
+        }
+        std::fs::write(handoff.join("context.md"), "# Context").expect("context");
+        let registry = registry_without_agents(root.path());
+        let before = commands_built_on_this_thread();
+
+        for (adapter, variable) in registry.implemented().zip(OVERRIDES) {
+            for agent_home in [None, Some(home.as_path())] {
+                let health = adapter.detect(agent_home).expect("detection never fails");
+                assert!(!health.installed, "{}", adapter.id());
+                assert!(health.executable.is_none(), "{}", adapter.id());
+                assert!(health.version.is_none(), "{}", adapter.id());
+                assert_eq!(health.auth_state, AuthState::Unknown);
+                assert!(
+                    health.message.contains(variable),
+                    "{}: {}",
+                    adapter.id(),
+                    health.message
+                );
+            }
+            let _ = adapter.auth_status(&home);
+            for result in [
+                adapter.login(&home, false).map(|_| ()),
+                adapter.logout(&home),
+                adapter.resume(&home, &workspace, "session-123"),
+                adapter.start_with_handoff(&home, &workspace, &handoff, None, None),
+            ] {
+                let error = result.expect_err("a missing agent cannot be started");
+                assert!(
+                    matches!(error, ContextWakeError::CapabilityUnavailable(_)),
+                    "{}: {error}",
+                    adapter.id()
+                );
+            }
+            let _ = adapter.list_sessions(&home, &workspace, 10);
+            let _ = adapter.available_models(&home, Some(&workspace), None);
+            assert!(
+                adapter.acp_transport(Some(&home)).is_none(),
+                "{}",
+                adapter.id()
+            );
+        }
+        assert_eq!(
+            commands_built_on_this_thread(),
+            before,
+            "no command may be built for an agent that was not found"
+        );
+        let detected = registry.detect_all(Some(("codex", home.as_path())));
+        assert_eq!(detected.len(), 9);
+        assert!(
+            detected
+                .iter()
+                .all(|health| health.as_ref().is_ok_and(|health| !health.installed))
+        );
+    }
+
+    #[test]
+    fn launch_errors_name_the_override_variable() {
+        let root = tempfile::tempdir().expect("root");
+        let registry = registry_without_agents(root.path());
+        let codex = registry.get("codex").expect("codex");
+        let error = codex.login(root.path(), false).expect_err("missing agent");
+        let message = error.to_string();
+        assert!(message.contains("could not be found"), "{message}");
+        assert!(message.contains("CONTEXTWAKE_CODEX_BIN"), "{message}");
+    }
+
+    #[test]
+    fn no_placeholder_executable_path_remains_in_sources() {
+        // Built at run time so this test does not match itself.
+        let needle = ["__contextwake", "_missing__"].concat();
+        let mut pending = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut scanned = 0;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("read source directory") {
+                let path = entry.expect("source entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    scanned += 1;
+                    let source = std::fs::read_to_string(&path).expect("read source file");
+                    assert!(
+                        !source.contains(&needle),
+                        "{} still contains a placeholder executable path",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(scanned > 10, "the source tree was not found");
+    }
+
+    #[test]
+    fn capability_flags_match_adapter_implementations() {
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().join("profile");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        // A capability flag must admit exactly the requests the adapter can
+        // serve, under the test its callers use: `ctx session sync` gates on
+        // `is_available()`, model catalogs are used only when `Verified`, and
+        // the TUI's "Supports ACP" filter uses `is_available()`.
+        for adapter in registry_without_agents(root.path()).implemented() {
+            let capabilities = adapter.capabilities();
+            let listing_implemented = !matches!(
+                adapter.list_sessions(&home, &workspace, 1),
+                Err(ContextWakeError::CapabilityUnavailable(message)) if message.contains(NO_SESSION_LISTING)
+            );
+            assert_eq!(
+                capabilities.session_listing.is_available(),
+                listing_implemented,
+                "{} session_listing",
+                adapter.id()
+            );
+            let catalog_implemented = !matches!(
+                adapter.available_models(&home, Some(&workspace), None),
+                Err(ContextWakeError::CapabilityUnavailable(message)) if message.contains(NO_MODEL_CATALOG)
+            );
+            assert_eq!(
+                capabilities.available_models.support == crate::model::CapabilitySupport::Verified,
+                catalog_implemented,
+                "{} available_models",
+                adapter.id()
+            );
+        }
+
+        let mut context = DiscoveryContext::new(Some(root.path()), Some(root.path()), Vec::new());
+        for variable in OVERRIDES {
+            context = context.with_override(variable, "contextwake-test-unused-agent");
+        }
+        for adapter in AgentRegistry::discover_in(&context).implemented() {
+            assert_eq!(
+                adapter.capabilities().acp.is_available(),
+                adapter.acp_transport(None).is_some(),
+                "{} acp",
+                adapter.id()
+            );
+        }
     }
 
     #[test]

@@ -8,36 +8,57 @@ use crate::model::{
     ModelProvider,
 };
 use crate::provider::AgentAdapter;
-use crate::provider::common::{run_probe, safe_agent_text, safe_probe_diagnostic};
+use crate::provider::common::{
+    MAX_PROBE_OUTPUT, ProbeOutput, advisory_auth_state, run_probe, safe_agent_text,
+    safe_probe_diagnostic,
+};
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::security::{validate_external_reference, validate_session_reference};
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Generous enough for Windows' first-run scan of the ~340 MB native binary.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+const BINARY: AgentBinary = AgentBinary {
+    name: "Claude Code",
+    install_hint: "Install Claude Code",
+    variables: &["CONTEXTWAKE_CLAUDE_BIN", "AGENTDECK_CLAUDE_BIN"],
+};
 
 #[derive(Clone, Debug)]
 pub struct ClaudeAdapter {
-    executable: PathBuf,
+    executable: AgentExecutable,
 }
 
 impl ClaudeAdapter {
     pub fn discover() -> Self {
-        let executable = std::env::var_os("CONTEXTWAKE_CLAUDE_BIN")
-            .or_else(|| std::env::var_os("AGENTDECK_CLAUDE_BIN"))
-            .map_or_else(default_executable, PathBuf::from);
-        Self { executable }
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            executable: BINARY.resolve(
+                context,
+                |wrapper, _| {
+                    let packaged = npm_packaged_executable(wrapper.parent()?);
+                    packaged.is_file().then(|| Launcher::direct(packaged))
+                },
+                default_launcher,
+            ),
+        }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            executable: executable.into(),
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.executable);
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("CLAUDE_CONFIG_DIR", home);
         }
-        command
+        Ok(command)
     }
 
     fn stable(detail: &str) -> Capability {
@@ -65,44 +86,51 @@ impl ClaudeAdapter {
     }
 }
 
-fn default_executable() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(path) = discover_windows_native_executable() {
-            return path;
-        }
-        PathBuf::from(r"C:\__contextwake_missing__\claude.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        super::find_safe_on_path("claude")
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/claude"))
-    }
+#[cfg(windows)]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context.search_path().iter().find_map(|directory| {
+        [
+            directory.join("claude.exe"),
+            npm_packaged_executable(directory),
+        ]
+        .into_iter()
+        .find(|candidate| context.is_safe_executable(candidate))
+        .map(Launcher::direct)
+    })
 }
 
-#[cfg(windows)]
-fn discover_windows_native_executable() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    for directory in std::env::split_paths(&path) {
-        if !directory.is_absolute() {
-            continue;
-        }
-        let direct = directory.join("claude.exe");
-        if super::safe_executable_candidate(&direct, &current) {
-            return Some(direct);
-        }
-        let packaged = directory
-            .join("node_modules")
-            .join("@anthropic-ai")
-            .join("claude-code")
-            .join("bin")
-            .join("claude.exe");
-        if super::safe_executable_candidate(&packaged, &current) {
-            return Some(packaged);
-        }
+#[cfg(not(windows))]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context.find_on_path("claude").map(Launcher::direct)
+}
+
+/// The native executable of a global npm installation in `npm_prefix`.
+fn npm_packaged_executable(npm_prefix: &Path) -> PathBuf {
+    npm_prefix
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join("claude-code")
+        .join("bin")
+        .join("claude.exe")
+}
+
+/// `claude auth status --json` prints `{"loggedIn": bool, ...}` for both
+/// states (and exits non-zero when signed out). The JSON is authoritative;
+/// anything unparsable is `Unknown` rather than a guess from the exit code.
+fn parse_auth_status(output: &ProbeOutput) -> AuthState {
+    if output.timed_out {
+        return AuthState::Unknown;
     }
-    None
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let document = stdout.find('{').map_or("", |start| &stdout[start..]);
+    match serde_json::from_str::<serde_json::Value>(document.trim())
+        .ok()
+        .and_then(|value| value.get("loggedIn").and_then(serde_json::Value::as_bool))
+    {
+        Some(true) => AuthState::SignedIn,
+        Some(false) => AuthState::SignedOut,
+        None => AuthState::Unknown,
+    }
 }
 
 impl AgentAdapter for ClaudeAdapter {
@@ -154,8 +182,8 @@ impl AgentAdapter for ClaudeAdapter {
                 "CLAUDE_CONFIG_DIR is documented for side-by-side accounts",
             ),
             native_resume: Self::stable("same-profile `claude --resume <id-or-name>`"),
-            session_listing: Self::partial(
-                "native resume picker and local transcripts are documented; no P0 parser",
+            session_listing: Self::unavailable(
+                "native resume picker and local transcripts are documented; ContextWake has no session parser for them yet",
             ),
             named_sessions: Self::stable("sessions can be named and resumed by name"),
             context_reporting: Self::partial(
@@ -191,32 +219,39 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut command = self.base_command(agent_home);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut command = self.base_command(agent_home)?;
         command.arg("--version");
-        match run_probe(command, PROBE_TIMEOUT) {
+        match run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT) {
             Ok(output) if output.success => {
                 let version = safe_agent_text(String::from_utf8_lossy(&output.stdout).trim());
-                let auth_state = agent_home
-                    .map(|home| self.auth_status(home))
-                    .transpose()?
-                    .unwrap_or(AuthState::Unknown);
+                let mut message = String::from("Claude Code detected");
+                let auth_state = advisory_auth_state(
+                    agent_home.map(|home| self.auth_status(home)),
+                    &mut message,
+                );
                 Ok(AgentHealth {
                     agent_id: self.id().into(),
                     installed: true,
-                    executable: Some(self.executable.clone()),
+                    executable: self.executable.reported_path(),
                     version: Some(version),
                     auth_state,
-                    message: "Claude Code detected".into(),
+                    message,
                 })
             }
             Ok(output) => Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if output.timed_out {
-                    "Claude Code version probe timed out after 5 seconds".into()
+                    format!(
+                        "Claude Code version probe timed out after {} seconds",
+                        PROBE_TIMEOUT.as_secs()
+                    )
                 } else {
                     safe_probe_diagnostic(&output)
                 },
@@ -235,18 +270,12 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn auth_status(&self, agent_home: &Path) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.args(["auth", "status", "--json"]);
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
+        let output = run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT).map_err(|error| {
             ContextWakeError::Provider(format!("could not query Claude Code auth: {error}"))
         })?;
-        Ok(if output.timed_out {
-            AuthState::Unknown
-        } else if output.success {
-            AuthState::SignedIn
-        } else {
-            AuthState::SignedOut
-        })
+        Ok(parse_auth_status(&output))
     }
 
     fn initialize_profile_home(&self, agent_home: &Path) -> Result<()> {
@@ -275,7 +304,7 @@ impl AgentAdapter for ClaudeAdapter {
             ));
         }
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .args(["auth", "login"])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -295,7 +324,7 @@ impl AgentAdapter for ClaudeAdapter {
 
     fn logout(&self, agent_home: &Path) -> Result<()> {
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .args(["auth", "logout"])
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -316,7 +345,7 @@ impl AgentAdapter for ClaudeAdapter {
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .current_dir(workspace)
             .arg("--resume")
             .arg(session_id)
@@ -350,7 +379,7 @@ impl AgentAdapter for ClaudeAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.current_dir(workspace);
         if let Some(model) = model {
             command
@@ -385,6 +414,8 @@ impl AgentAdapter for ClaudeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::common::tests::fake_agent;
+    use crate::provider::discovery::tests::executable;
 
     #[test]
     fn capabilities_are_agent_and_backend_aware() {
@@ -419,5 +450,98 @@ mod tests {
         assert!(!health.installed);
         assert_eq!(health.auth_state, AuthState::Unknown);
         assert!(health.message.contains("could not be found"));
+    }
+
+    fn probe(success: bool, stdout: &str) -> ProbeOutput {
+        ProbeOutput {
+            success,
+            stdout: stdout.as_bytes().to_vec(),
+            ..ProbeOutput::default()
+        }
+    }
+
+    #[test]
+    fn auth_status_json_is_authoritative() {
+        // Shapes captured from Claude Code 2.1.319 (identity fields omitted).
+        let signed_in =
+            r#"{"loggedIn": true, "authMethod": "claude.ai", "apiProvider": "firstParty"}"#;
+        let signed_out = r#"{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty", "loginExpiresAt": null}"#;
+        assert_eq!(
+            parse_auth_status(&probe(true, signed_in)),
+            AuthState::SignedIn
+        );
+        assert_eq!(
+            parse_auth_status(&probe(false, signed_out)),
+            AuthState::SignedOut
+        );
+        // The exit status alone used to decide: success meant signed in.
+        assert_eq!(
+            parse_auth_status(&probe(true, signed_out)),
+            AuthState::SignedOut
+        );
+        assert_eq!(
+            parse_auth_status(&probe(true, &format!("Update available\n{signed_in}\n"))),
+            AuthState::SignedIn
+        );
+        assert_eq!(
+            parse_auth_status(&probe(true, "Logged in")),
+            AuthState::Unknown
+        );
+        assert_eq!(
+            parse_auth_status(&probe(false, "error: unknown option '--json'")),
+            AuthState::Unknown
+        );
+        let timed_out = ProbeOutput {
+            timed_out: true,
+            ..probe(false, signed_in)
+        };
+        assert_eq!(parse_auth_status(&timed_out), AuthState::Unknown);
+    }
+
+    #[test]
+    fn auth_probe_reads_logged_in_from_the_agent() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let adapter = ClaudeAdapter {
+            executable: AgentExecutable::Available(fake_agent(
+                directory.path(),
+                r#"echo {"loggedIn": false, "authMethod": "none"}"#,
+                r#"printf '%s\n' '{"loggedIn": false, "authMethod": "none"}'"#,
+            )),
+        };
+        assert_eq!(
+            adapter.auth_status(directory.path()).expect("auth"),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn native_installer_location_is_found_from_the_home_directory() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let bin = home.join(".local").join("bin");
+        let name = if cfg!(windows) {
+            "claude.exe"
+        } else {
+            "claude"
+        };
+        let claude = executable(&bin.join(name));
+        let context = DiscoveryContext::new(Some(&home), Some(&home), [bin]);
+        assert_eq!(
+            ClaudeAdapter::discover_in(&context).executable,
+            AgentExecutable::direct(claude)
+        );
+    }
+
+    #[test]
+    fn unimplemented_listings_are_not_advertised() {
+        let capabilities = ClaudeAdapter::with_executable("unused").capabilities();
+        // `ctx session sync` gates on `is_available()`; there is no parser.
+        assert!(!capabilities.session_listing.is_available());
+        // Catalog use is gated on `Verified`; the in-session picker stays
+        // descriptive.
+        assert_ne!(
+            capabilities.available_models.support,
+            CapabilitySupport::Verified
+        );
     }
 }

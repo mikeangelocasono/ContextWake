@@ -11,18 +11,26 @@ use crate::model::{
     DiscoveredAgentSession, ModelProvider,
 };
 use crate::provider::common::{
-    ensure_profile_directory, read_file_prefix, run_probe, safe_agent_text, safe_probe_diagnostic,
+    MAX_PROBE_OUTPUT, WorkspaceMatcher, advisory_auth_state, ensure_profile_directory,
+    read_file_prefix, run_probe, safe_agent_text, safe_probe_diagnostic,
 };
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::provider::{AcpTransport, AgentAdapter};
 use crate::security::{validate_external_reference, validate_session_reference};
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const EVENT_PREFIX_LIMIT: usize = 262_144;
 const PROVIDER_RESULT_LIMIT: usize = 500;
 
+const BINARY: AgentBinary = AgentBinary {
+    name: "GitHub Copilot CLI",
+    install_hint: "Install it",
+    variables: &["CONTEXTWAKE_COPILOT_BIN"],
+};
+
 #[derive(Clone, Debug)]
 pub struct GitHubCopilotAdapter {
-    executable: PathBuf,
+    executable: AgentExecutable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,23 +55,44 @@ struct SessionEvent {
 
 impl GitHubCopilotAdapter {
     pub fn discover() -> Self {
-        let executable = std::env::var_os("CONTEXTWAKE_COPILOT_BIN")
-            .map_or_else(default_executable, PathBuf::from);
-        Self { executable }
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            executable: BINARY.resolve(
+                context,
+                |wrapper, _| {
+                    official_native_from_npm_directory(wrapper.parent()?, &|candidate: &Path| {
+                        candidate.is_file()
+                    })
+                    .map(Launcher::direct)
+                },
+                default_launcher,
+            ),
+        }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            executable: executable.into(),
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.executable);
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("COPILOT_HOME", home);
         }
-        command
+        Ok(command)
+    }
+
+    fn unknown(detail: &str) -> Capability {
+        Capability {
+            support: CapabilitySupport::Unknown,
+            maturity: CapabilityMaturity::Unavailable,
+            detail: detail.into(),
+        }
     }
 
     fn partial(detail: &str) -> Capability {
@@ -91,64 +120,59 @@ impl GitHubCopilotAdapter {
     }
 }
 
-fn default_executable() -> PathBuf {
-    #[cfg(windows)]
-    {
-        discover_windows_native_executable()
-            .unwrap_or_else(|| PathBuf::from(r"C:\__contextwake_missing__\copilot.exe"))
-    }
-    #[cfg(not(windows))]
-    {
-        super::find_safe_on_path("copilot")
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/copilot"))
-    }
-}
-
 #[cfg(windows)]
-fn discover_windows_native_executable() -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    for directory in std::env::split_paths(&path) {
-        if !directory.is_absolute() {
-            continue;
-        }
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context.search_path().iter().find_map(|directory| {
         let direct = directory.join("copilot.exe");
-        if super::safe_executable_candidate(&direct, &current) {
-            return Some(direct);
+        if context.is_safe_executable(&direct) {
+            return Some(Launcher::direct(direct));
         }
-        let wrapper = directory.join("copilot.cmd");
-        if super::safe_executable_candidate(&wrapper, &current)
-            && let Some(native) = official_native_from_npm_directory(&directory, &current)
-        {
-            return Some(native);
+        if !context.is_safe_file(&directory.join("copilot.cmd")) {
+            return None;
         }
-    }
-    None
+        official_native_from_npm_directory(directory, &|candidate: &Path| {
+            context.is_safe_executable(candidate)
+        })
+        .map(Launcher::direct)
+    })
 }
 
-#[cfg(windows)]
-fn official_native_from_npm_directory(directory: &Path, current: &Path) -> Option<PathBuf> {
+#[cfg(not(windows))]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context.find_on_path("copilot").map(Launcher::direct)
+}
+
+/// The native `copilot.exe` from npm's platform package next to the
+/// `copilot.cmd` shim in `directory`; the package matching this machine's
+/// architecture is preferred. The shim itself is never run.
+fn official_native_from_npm_directory(
+    directory: &Path,
+    accept: &dyn Fn(&Path) -> bool,
+) -> Option<PathBuf> {
     let platform_packages = directory
         .join("node_modules")
         .join("@github")
         .join("copilot")
         .join("node_modules")
         .join("@github");
-    for package in std::fs::read_dir(platform_packages).ok()? {
-        let package = package.ok()?;
-        if !package
-            .file_name()
-            .to_string_lossy()
-            .starts_with("copilot-win32-")
-        {
-            continue;
-        }
-        let native = package.path().join("copilot.exe");
-        if super::safe_executable_candidate(&native, current) {
-            return Some(native);
+    let preferred = if std::env::consts::ARCH == "aarch64" {
+        "copilot-win32-arm64"
+    } else {
+        "copilot-win32-x64"
+    };
+    let mut candidates = vec![platform_packages.join(preferred).join("copilot.exe")];
+    if let Ok(packages) = std::fs::read_dir(&platform_packages) {
+        for package in packages.flatten() {
+            if package
+                .file_name()
+                .to_string_lossy()
+                .starts_with("copilot-win32-")
+            {
+                candidates.push(package.path().join("copilot.exe"));
+            }
         }
     }
-    None
+    candidates.into_iter().find(|candidate| accept(candidate))
 }
 
 fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
@@ -249,8 +273,8 @@ impl AgentAdapter for GitHubCopilotAdapter {
             version_detection: Self::stable(
                 "`copilot --version`; verified with official CLI 1.0.83",
             ),
-            auth_status: Self::partial(
-                "an authenticated request succeeded through provider-owned GitHub credentials, but no dedicated non-spending status command exists",
+            auth_status: Self::unknown(
+                "an authenticated request succeeded through provider-owned GitHub credentials, but no dedicated non-spending status command exists, so ContextWake reports authentication as unknown",
             ),
             login: Self::partial(
                 "provider-owned `copilot login` OAuth/device flow; live QA pending",
@@ -309,7 +333,10 @@ impl AgentAdapter for GitHubCopilotAdapter {
     }
 
     fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
-        let mut transport = AcpTransport::new(&self.executable)
+        let mut transport = self
+            .executable
+            .launcher()?
+            .acp_transport()
             .argument("--acp")
             .argument("--no-remote")
             .argument("--no-remote-export");
@@ -320,9 +347,12 @@ impl AgentAdapter for GitHubCopilotAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut version_command = self.base_command(None);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut version_command = self.base_command(None)?;
         version_command.arg("--version");
-        let version = run_probe(version_command, PROBE_TIMEOUT);
+        let version = run_probe(version_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         let Ok(version) = version else {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
@@ -337,20 +367,23 @@ impl AgentAdapter for GitHubCopilotAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if version.timed_out {
-                    "GitHub Copilot version probe timed out after 5 seconds".into()
+                    format!(
+                        "GitHub Copilot version probe timed out after {} seconds",
+                        PROBE_TIMEOUT.as_secs()
+                    )
                 } else {
                     safe_probe_diagnostic(&version)
                 },
             });
         }
         let version_text = parse_version_text(&version.stdout, &version.stderr);
-        let mut help_command = self.base_command(None);
+        let mut help_command = self.base_command(None)?;
         help_command.arg("help");
-        let help = run_probe(help_command, PROBE_TIMEOUT);
+        let help = run_probe(help_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         let signature_matches = help.as_ref().is_ok_and(|output| {
             output.success
                 && has_copilot_signature(
@@ -362,23 +395,23 @@ impl AgentAdapter for GitHubCopilotAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: "The discovered `copilot` command did not match GitHub Copilot CLI's version/help signature".into(),
             });
         }
-        let auth_state = agent_home
-            .map(|home| self.auth_status(home))
-            .transpose()?
-            .unwrap_or(AuthState::Unknown);
+        let mut message =
+            String::from("GitHub Copilot CLI detected; credential validation was not attempted");
+        let auth_state =
+            advisory_auth_state(agent_home.map(|home| self.auth_status(home)), &mut message);
         Ok(AgentHealth {
             agent_id: self.id().into(),
             installed: true,
-            executable: Some(self.executable.clone()),
+            executable: self.executable.reported_path(),
             version: Some(safe_agent_text(&version_text)),
             auth_state,
-            message: "GitHub Copilot CLI detected; credential validation was not attempted".into(),
+            message,
         })
     }
 
@@ -391,7 +424,7 @@ impl AgentAdapter for GitHubCopilotAdapter {
     }
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.arg("login");
         if device_auth {
             command.arg("--device-code");
@@ -423,14 +456,15 @@ impl AgentAdapter for GitHubCopilotAdapter {
     fn list_sessions(
         &self,
         agent_home: &Path,
-        _workspace: &Path,
+        workspace: &Path,
         max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
         let root = agent_home.join("session-state");
         if !root.is_dir() {
             return Ok(Vec::new());
         }
-        let mut sessions = Vec::new();
+        let limit = max_count.min(PROVIDER_RESULT_LIMIT);
+        let mut candidates = Vec::new();
         for entry in std::fs::read_dir(&root).map_err(|source| ContextWakeError::Io {
             path: root.clone(),
             source,
@@ -442,7 +476,6 @@ impl AgentAdapter for GitHubCopilotAdapter {
             if !file_type.is_dir() || file_type.is_symlink() {
                 continue;
             }
-            let fallback_id = entry.file_name().to_string_lossy().into_owned();
             let event_path = entry.path().join("events.jsonl");
             let Ok(metadata) = std::fs::symlink_metadata(&event_path) else {
                 continue;
@@ -450,24 +483,43 @@ impl AgentAdapter for GitHubCopilotAdapter {
             if !metadata.is_file() || metadata.file_type().is_symlink() {
                 continue;
             }
+            let updated_at = metadata.modified().ok().map(DateTime::<Utc>::from);
+            let fallback_id = entry.file_name().to_string_lossy().into_owned();
+            candidates.push((updated_at, fallback_id, event_path));
+        }
+        // Newest first. The workspace is matched before the limit applies, so
+        // newer sessions of other workspaces can no longer crowd this one
+        // out, and only as many event prefixes are read as it takes.
+        candidates.sort_by(|left, right| right.0.cmp(&left.0));
+        let mut workspace = WorkspaceMatcher::new(workspace);
+        let mut sessions = Vec::new();
+        for (updated_at, fallback_id, event_path) in candidates {
+            if sessions.len() >= limit {
+                break;
+            }
             let Ok(prefix) = read_file_prefix(&event_path, EVENT_PREFIX_LIMIT) else {
                 continue;
             };
             let Ok(mut session) = parse_session_event(&prefix, &fallback_id) else {
                 continue;
             };
-            session.updated_at = metadata.modified().ok().map(DateTime::<Utc>::from);
+            if !session
+                .workspace_path
+                .as_deref()
+                .is_some_and(|path| workspace.matches(path))
+            {
+                continue;
+            }
+            session.updated_at = updated_at;
             sessions.push(session);
         }
-        sessions.sort_by_key(|session| std::cmp::Reverse(session.updated_at));
-        sessions.truncate(max_count.min(PROVIDER_RESULT_LIMIT));
         Ok(sessions)
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("-C")
             .arg(workspace)
             .arg("--no-remote")
@@ -503,7 +555,7 @@ impl AgentAdapter for GitHubCopilotAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command
             .arg("-C")
             .arg(workspace)
@@ -626,13 +678,79 @@ mod tests {
         std::fs::write(npm_bin.join("copilot.cmd"), b"official npm shim").expect("shim");
         std::fs::write(&native, b"native fixture").expect("native executable");
 
-        let current = std::env::current_dir()
-            .expect("current directory")
-            .canonicalize()
-            .expect("canonical current directory");
         assert_eq!(
-            official_native_from_npm_directory(&npm_bin, &current),
-            Some(native)
+            official_native_from_npm_directory(&npm_bin, &|candidate: &Path| candidate.is_file()),
+            Some(native.clone())
         );
+        let context =
+            DiscoveryContext::new(Some(directory.path()), Some(directory.path()), [npm_bin]);
+        assert_eq!(
+            GitHubCopilotAdapter::discover_in(&context).executable,
+            AgentExecutable::direct(native)
+        );
+    }
+
+    fn write_session(home: &Path, id: &str, cwd: &Path, age: Duration) {
+        let directory = home.join("session-state").join(id);
+        std::fs::create_dir_all(&directory).expect("session directory");
+        let event = serde_json::json!({
+            "type": "session.start",
+            "data": {"sessionId": id, "startTime": "2026-09-12T01:02:03Z", "context": {"cwd": cwd}}
+        });
+        let path = directory.join("events.jsonl");
+        std::fs::write(&path, format!("{event}\n")).expect("events");
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("events file")
+            .set_modified(std::time::SystemTime::now() - age)
+            .expect("modification time");
+    }
+
+    #[test]
+    fn sessions_of_other_workspaces_cannot_crowd_out_this_one() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let home = directory.path().join("copilot");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::create_dir_all(&first).expect("first workspace");
+        std::fs::create_dir_all(&second).expect("second workspace");
+        for index in 0..5_u64 {
+            write_session(
+                &home,
+                &format!("second-{index}"),
+                &second,
+                Duration::from_secs(60 + index),
+            );
+        }
+        for index in 0..2_u64 {
+            write_session(
+                &home,
+                &format!("first-{index}"),
+                &first,
+                Duration::from_secs(3_600 + index),
+            );
+        }
+        let adapter = GitHubCopilotAdapter::with_executable("unused");
+        // The old listing took the 3 newest sessions overall (all from the
+        // second workspace) before `session sync` filtered by workspace.
+        let sessions = adapter.list_sessions(&home, &first, 3).expect("sessions");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.provider_session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["first-0", "first-1"]
+        );
+        let sessions = adapter.list_sessions(&home, &second, 3).expect("sessions");
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(sessions[0].provider_session_id, "second-0");
+    }
+
+    #[test]
+    fn authentication_is_not_advertised_without_a_status_probe() {
+        let capabilities = GitHubCopilotAdapter::with_executable("unused").capabilities();
+        assert!(!capabilities.auth_status.is_available());
+        assert!(capabilities.acp.is_available());
     }
 }

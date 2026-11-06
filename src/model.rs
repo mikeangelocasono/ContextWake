@@ -418,13 +418,29 @@ pub enum CapabilityMaturity {
     Unavailable,
 }
 
+/// How far a coding agent's capability is supported through its adapter.
+///
+/// Where [`Capability::is_available`] gates a `ContextWake` operation (model
+/// selection, session listing, native resume, the ACP transport, portable
+/// handoff), `Partial` and `Experimental` mean the adapter implements the
+/// operation with documented limits. An operation the adapter does not
+/// implement is declared `Unsupported` or `Unknown`, keeping its descriptive
+/// detail, so the gate never admits a request the adapter can only refuse.
+/// Model catalogs are used only when `Verified`. The remaining capabilities
+/// describe the coding agent itself. The provider registry tests check these
+/// rules for the operations that have an implementation-level signal.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilitySupport {
+    /// Implemented and verified against the agent.
     Verified,
+    /// Implemented with documented limits or pending QA.
     Partial,
+    /// Not implemented, or deliberately disabled.
     Unsupported,
+    /// Whether it works cannot be established.
     Unknown,
+    /// Implemented behind an experimental agent interface.
     Experimental,
 }
 
@@ -436,6 +452,9 @@ pub struct Capability {
 }
 
 impl Capability {
+    /// Whether `ContextWake` may offer this capability: `Verified`, `Partial`
+    /// or `Experimental` support. See [`CapabilitySupport`] for what adapters
+    /// must declare for capabilities they do not implement.
     pub const fn is_available(&self) -> bool {
         matches!(
             self.support,
