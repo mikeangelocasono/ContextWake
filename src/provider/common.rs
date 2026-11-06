@@ -743,6 +743,28 @@ pub(crate) mod tests {
             "{error}"
         );
         assert!(error.to_string().contains("no such listing"), "{error}");
+
+        // A listing that hangs is reported as a timeout (Kiro's used to be
+        // reported as a generic failure with whatever partial stderr existed).
+        let slow_directory = directory.path().join("slow");
+        std::fs::create_dir_all(&slow_directory).expect("slow fixture directory");
+        let slow = fake_agent(&slow_directory, "ping -n 6 127.0.0.1 >nul", "sleep 5");
+        let started = Instant::now();
+        let error = run_listing(
+            slow.command(),
+            Duration::from_secs(1),
+            MAX_LISTING_OUTPUT,
+            "fixture listing",
+            None,
+        )
+        .expect_err("hanging listing");
+        assert!(
+            error
+                .to_string()
+                .contains("fixture listing timed out after 1 seconds"),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     #[test]
