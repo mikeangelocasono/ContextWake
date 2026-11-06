@@ -4,6 +4,60 @@ All notable changes will be documented here. The project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- Cross-agent continuity for Claude Code, Codex CLI and Gemini CLI:
+  `ctx profile use <profile> --handoff --launch` and `ctx handoff continue`
+  resume the destination profile's own session in the workspace when the
+  agent's native resume is verified (Claude Code `--resume`, `codex resume`)
+  and deliver the handoff into it, otherwise start a new session; `--new-session`
+  forces a new one. The TUI handoff preview shows the same decision.
+- Delivery verification: after the agent exits, ContextWake finds the session
+  the launch used in the agent's own local store and checks its transcript for
+  the launch marker. "Restored from Handoff" and "Native Resume + Handoff" are
+  reported only when the marker is found; otherwise ContextWake says plainly that
+  delivery could not be confirmed.
+- Profiles that use the agent's existing sign-in (`--existing-login`, the
+  default when available): ContextWake never sets the agent's home variable,
+  never writes into that home and never deletes it. `--isolated` keeps a
+  separately signed-in, ContextWake-managed home. Store schema v6.
+- Conversation excerpts: checkpoints (schema v3) store a bounded, redacted
+  excerpt of the source agent's recent typed requests and latest answer from
+  its local transcript (never tool output, reasoning or injected context);
+  switch handoffs carry it to the next agent. Off with
+  `capture_conversation_excerpts = false` or `--no-conversation`.
+- A bounded launch prompt (at most 12,000 characters, secret-scanned) built by
+  ContextWake: objective, current work, pending and completed tasks, decisions,
+  known issues, the conversation excerpt, Git state, changed files and the path
+  of the full `context.md`.
+
+### Fixed
+
+- Claude Code launches lost the handoff prompt: the variadic `--add-dir`
+  swallowed it. Options now end with `--` before the prompt.
+- Workspace detection no longer saves checkpoints to the wrong project, never
+  silently switches workspace, refuses broad roots such as the home directory
+  without `--workspace`, and treats verbatim (`\\?\`), case and separator
+  variants of a Windows path as the same directory.
+- Agent discovery ignores executables planted in the current repository,
+  never runs `.cmd`/`.bat` wrappers, resolves npm shims to the native binary,
+  bounds probe output and kills timed-out probe process trees.
+- Git runs with repository-controlled programs disabled (hooks, fsmonitor,
+  filters, external diff and textconv, submodule recursion) and bounded waits.
+- Secret redaction covers whole secret values, private keys and more credential
+  formats in checkpoints, handoffs, prompts and terminal output; hidden terminal
+  control characters are stripped.
+- Session sync no longer unarchives sessions or overstates resume capability;
+  unreadable checkpoints and missing workspaces degrade to warnings instead of
+  blocking commands.
+- The Windows installer preserves unexpanded `%VARIABLE%` PATH entries and the
+  registry value type, broadcasts the environment change, and updates in place;
+  release builds link the C runtime statically.
+- TUI stability on Windows: AltGr characters can be typed, pasted text and
+  type-ahead no longer trigger commands, errors and missing workspaces no longer
+  end the TUI, slow agent probes no longer block input, and the terminal state
+  is restored on every exit path.
+
 ## [0.1.0-alpha.3] - 2026-09-16
 
 ### Added

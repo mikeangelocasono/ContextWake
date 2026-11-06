@@ -3,6 +3,7 @@ mod codex;
 mod common;
 mod copilot;
 mod cursor;
+mod discovery;
 mod gemini;
 mod grok;
 mod kimi;
@@ -15,38 +16,32 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
+
 use crate::error::{ContextWakeError, Result};
 use crate::model::{
-    AgentCapabilities, AgentHealth, AgentModel, AuthState, DiscoveredAgentSession, ModelProvider,
+    AgentCapabilities, AgentHealth, AgentModel, AuthState, ConversationExcerpt,
+    DiscoveredAgentSession, ModelProvider,
 };
+
+use discovery::DiscoveryContext;
 
 pub use claude::ClaudeAdapter;
 pub use copilot::GitHubCopilotAdapter;
 pub use cursor::CursorAdapter;
 
-#[cfg(not(windows))]
-pub(crate) fn find_safe_on_path(executable_name: &str) -> Option<std::path::PathBuf> {
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let path = std::env::var_os("PATH")?;
-    for directory in std::env::split_paths(&path) {
-        if !directory.is_absolute() {
-            continue;
-        }
-        let candidate = directory.join(executable_name);
-        if safe_executable_candidate(&candidate, &current) {
-            return candidate.canonicalize().ok();
-        }
-    }
-    None
-}
+/// Message of the trait's default `list_sessions`: the adapter has no
+/// session-listing implementation.
+const NO_SESSION_LISTING: &str = "does not expose a supported session-listing interface";
+/// Message of the trait's default `available_models`: the adapter has no
+/// model-catalog implementation.
+const NO_MODEL_CATALOG: &str = "does not expose a supported model catalog";
+/// Message of the trait's default `conversation_excerpt`.
+const NO_CONVERSATION_EXCERPT: &str = "does not expose a readable conversation transcript";
+/// Message of the trait's default `launch_with_handoff` for a resume.
+const NO_RESUME_WITH_HANDOFF: &str =
+    "cannot deliver a handoff into a natively resumed session; start a new session instead";
 
-fn safe_executable_candidate(candidate: &Path, current_workspace: &Path) -> bool {
-    candidate.is_file()
-        && !candidate.starts_with(current_workspace)
-        && candidate
-            .canonicalize()
-            .is_ok_and(|resolved| !resolved.starts_with(current_workspace))
-}
 pub use codex::CodexAdapter;
 pub use gemini::GeminiAdapter;
 pub use grok::GrokAdapter;
@@ -100,6 +95,54 @@ impl AcpTransport {
     }
 }
 
+/// How `ContextWake` asks a coding agent to continue from a handoff, for
+/// [`AgentAdapter::launch_with_handoff`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandoffLaunch {
+    /// Directory of the validated AWHF handoff; it contains `context.md`.
+    pub handoff_directory: PathBuf,
+    /// The complete first message for the agent, built, bounded and redacted
+    /// by `ContextWake` with LF line endings. Adapters pass it unchanged as
+    /// one argument.
+    pub prompt: String,
+    /// Unique text contained in `prompt`, used afterwards to confirm from
+    /// the agent's transcript that the prompt was delivered.
+    pub marker: String,
+    pub model_provider: Option<String>,
+    pub model: Option<String>,
+    /// Natively resume this provider session and deliver `prompt` into it.
+    /// `None` starts a new session.
+    pub resume_session_id: Option<String>,
+    /// A provider session ID for a new session, for agents that accept one
+    /// (Claude Code `--session-id`). Ignored when resuming and by agents that
+    /// cannot assign session IDs.
+    pub new_session_id: Option<String>,
+}
+
+/// What `ContextWake` knows about a launch it performed, for
+/// [`AgentAdapter::launched_session`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchRecord {
+    /// When `ContextWake` started the agent process.
+    pub started_at: DateTime<Utc>,
+    /// The marker contained in the delivered prompt.
+    pub marker: String,
+    /// The session the launch resumed, or the ID it assigned to a new one.
+    pub expected_session_id: Option<String>,
+}
+
+/// The provider session a launch created or resumed, as found afterwards in
+/// the agent's own local session store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchedSession {
+    pub provider_session_id: String,
+    pub title: Option<String>,
+    pub last_activity_at: Option<DateTime<Utc>>,
+    /// A user message containing the launch marker is in the session's
+    /// transcript, so the agent received the handoff prompt.
+    pub prompt_delivered: bool,
+}
+
 /// Stable, compile-time interface for an AI coding CLI. Model backends are
 /// reported separately through `model_providers`.
 pub trait AgentAdapter: Send + Sync {
@@ -137,7 +180,7 @@ pub trait AgentAdapter: Send + Sync {
         _max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
         Err(ContextWakeError::CapabilityUnavailable(format!(
-            "{} does not expose a supported session-listing interface",
+            "{} {NO_SESSION_LISTING}",
             self.display_name()
         )))
     }
@@ -148,7 +191,7 @@ pub trait AgentAdapter: Send + Sync {
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
         Err(ContextWakeError::CapabilityUnavailable(format!(
-            "{} does not expose a supported model catalog",
+            "{} {NO_MODEL_CATALOG}",
             self.display_name()
         )))
     }
@@ -161,6 +204,75 @@ pub trait AgentAdapter: Send + Sync {
         model_provider: Option<&str>,
         model: Option<&str>,
     ) -> Result<()>;
+
+    /// The configuration home the agent uses when `ContextWake` sets no
+    /// override, which is where the user's existing sign-in lives. `None`
+    /// means profiles of this agent always use a `ContextWake`-managed home.
+    ///
+    /// For a profile that uses this home, `ContextWake` never sets the
+    /// agent's home variable, never writes into the directory and never
+    /// deletes it.
+    fn default_home(&self) -> Option<PathBuf> {
+        None
+    }
+
+    /// Reads a bounded, redacted excerpt of the agent's conversation in
+    /// `workspace` from its local transcripts: the given provider session, or
+    /// the most recently active one when `provider_session_id` is `None`.
+    /// `Ok(None)` means that no transcript was found for the workspace.
+    fn conversation_excerpt(
+        &self,
+        _agent_home: &Path,
+        _workspace: &Path,
+        _provider_session_id: Option<&str>,
+    ) -> Result<Option<ConversationExcerpt>> {
+        Err(ContextWakeError::CapabilityUnavailable(format!(
+            "{} {NO_CONVERSATION_EXCERPT}",
+            self.display_name()
+        )))
+    }
+
+    /// Runs the agent interactively in `workspace` with `launch.prompt` as
+    /// its first message, and returns when the agent exits. With
+    /// `launch.resume_session_id` the agent natively resumes that session and
+    /// the prompt is delivered into it; otherwise a new session starts.
+    ///
+    /// The default implementation starts a new session through
+    /// [`Self::start_with_handoff`] (with the adapter's own prompt) and
+    /// refuses to resume.
+    fn launch_with_handoff(
+        &self,
+        agent_home: &Path,
+        workspace: &Path,
+        launch: &HandoffLaunch,
+    ) -> Result<()> {
+        if launch.resume_session_id.is_some() {
+            return Err(ContextWakeError::CapabilityUnavailable(format!(
+                "{} {NO_RESUME_WITH_HANDOFF}",
+                self.display_name()
+            )));
+        }
+        self.start_with_handoff(
+            agent_home,
+            workspace,
+            &launch.handoff_directory,
+            launch.model_provider.as_deref(),
+            launch.model.as_deref(),
+        )
+    }
+
+    /// Finds the provider session that the launch described by `record`
+    /// created or resumed in `workspace`, and whether the handoff prompt
+    /// reached it. `Ok(None)` means the adapter cannot tell, in which case
+    /// `ContextWake` must not claim that the context was delivered.
+    fn launched_session(
+        &self,
+        _agent_home: &Path,
+        _workspace: &Path,
+        _record: &LaunchRecord,
+    ) -> Result<Option<LaunchedSession>> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
@@ -185,20 +297,33 @@ impl fmt::Debug for AgentRegistry {
 }
 
 impl AgentRegistry {
+    /// Resolves every adapter's executable once, from the process `PATH`,
+    /// working directory and `CONTEXTWAKE_*_BIN` overrides. Nothing is run.
     pub fn discover() -> Self {
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
         Self {
             adapters: vec![
-                Arc::new(CodexAdapter::discover()),
-                Arc::new(ClaudeAdapter::discover()),
-                Arc::new(GitHubCopilotAdapter::discover()),
-                Arc::new(CursorAdapter::discover()),
-                Arc::new(OpenCodeAdapter::discover()),
-                Arc::new(GeminiAdapter::discover()),
-                Arc::new(KiroAdapter::discover()),
-                Arc::new(KimiAdapter::discover()),
-                Arc::new(GrokAdapter::discover()),
+                Arc::new(CodexAdapter::discover_in(context)),
+                Arc::new(ClaudeAdapter::discover_in(context)),
+                Arc::new(GitHubCopilotAdapter::discover_in(context)),
+                Arc::new(CursorAdapter::discover_in(context)),
+                Arc::new(OpenCodeAdapter::discover_in(context)),
+                Arc::new(GeminiAdapter::discover_in(context)),
+                Arc::new(KiroAdapter::discover_in(context)),
+                Arc::new(KimiAdapter::discover_in(context)),
+                Arc::new(GrokAdapter::discover_in(context)),
             ],
         }
+    }
+
+    /// A registry of the given adapters, for tests outside this module that
+    /// need a fake agent.
+    #[cfg(test)]
+    pub(crate) fn from_adapters(adapters: Vec<Arc<dyn AgentAdapter>>) -> Self {
+        Self { adapters }
     }
 
     pub fn get(&self, id: &str) -> Result<&dyn AgentAdapter> {
@@ -256,21 +381,228 @@ impl AgentRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::discovery::commands_built_on_this_thread;
+    use crate::provider::discovery::tests::{executable, git_work_tree};
+
+    fn launch(resume_session_id: Option<&str>) -> HandoffLaunch {
+        HandoffLaunch {
+            handoff_directory: PathBuf::from("handoff"),
+            prompt: "ContextWake handoff test".into(),
+            marker: "ContextWake handoff test".into(),
+            model_provider: None,
+            model: None,
+            resume_session_id: resume_session_id.map(str::to_string),
+            new_session_id: None,
+        }
+    }
+
+    #[test]
+    fn continuity_hooks_default_to_honest_refusals() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let adapter = CursorAdapter::with_executable(root.path().join("missing-agent"));
+        assert_eq!(adapter.default_home(), None);
+        assert!(matches!(
+            adapter.conversation_excerpt(root.path(), root.path(), None),
+            Err(ContextWakeError::CapabilityUnavailable(_))
+        ));
+        let record = LaunchRecord {
+            started_at: chrono::Utc::now(),
+            marker: "marker".into(),
+            expected_session_id: None,
+        };
+        assert_eq!(
+            adapter
+                .launched_session(root.path(), root.path(), &record)
+                .expect("no verification"),
+            None
+        );
+        // Resuming with a handoff is refused before any process is built.
+        let before = commands_built_on_this_thread();
+        assert!(matches!(
+            adapter.launch_with_handoff(root.path(), root.path(), &launch(Some("session"))),
+            Err(ContextWakeError::CapabilityUnavailable(_))
+        ));
+        assert_eq!(commands_built_on_this_thread(), before);
+    }
+
+    const OVERRIDES: [&str; 9] = [
+        "CONTEXTWAKE_CODEX_BIN",
+        "CONTEXTWAKE_CLAUDE_BIN",
+        "CONTEXTWAKE_COPILOT_BIN",
+        "CONTEXTWAKE_CURSOR_BIN",
+        "CONTEXTWAKE_OPENCODE_BIN",
+        "CONTEXTWAKE_GEMINI_BIN",
+        "CONTEXTWAKE_KIRO_BIN",
+        "CONTEXTWAKE_KIMI_BIN",
+        "CONTEXTWAKE_GROK_BIN",
+    ];
+
+    /// A registry in which no agent can be found: empty `PATH`, no overrides.
+    fn registry_without_agents(root: &Path) -> AgentRegistry {
+        AgentRegistry::discover_in(&DiscoveryContext::new(Some(root), Some(root), Vec::new()))
+    }
 
     #[test]
     fn repository_local_agent_binary_is_not_a_safe_implicit_candidate() {
         let root = tempfile::tempdir().expect("root");
-        let workspace = root.path().join("workspace");
-        let system = root.path().join("system-bin");
-        std::fs::create_dir_all(&workspace).expect("workspace");
-        std::fs::create_dir_all(&system).expect("system bin");
-        let hostile = workspace.join("codex");
-        let trusted = system.join("codex");
-        std::fs::write(&hostile, "hostile").expect("hostile binary fixture");
-        std::fs::write(&trusted, "trusted").expect("trusted binary fixture");
+        let workspace = git_work_tree(&root.path().join("workspace"));
+        let hostile = executable(&workspace.join("codex"));
+        let trusted = executable(&root.path().join("system-bin").join("codex"));
+        let context = DiscoveryContext::new(Some(&workspace), Some(root.path()), Vec::new());
 
-        assert!(!safe_executable_candidate(&hostile, &workspace));
-        assert!(safe_executable_candidate(&trusted, &workspace));
+        assert!(!context.is_safe_executable(&hostile));
+        assert!(context.is_safe_executable(&trusted));
+    }
+
+    #[test]
+    fn missing_agents_never_build_a_command() {
+        // A missing agent used to become a fixed, creatable path under C:\
+        // that detection executed (binary planting).
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().join("profile");
+        let workspace = root.path().join("workspace");
+        let handoff = root.path().join("handoff");
+        for directory in [&home, &workspace, &handoff] {
+            std::fs::create_dir_all(directory).expect("fixture directory");
+        }
+        std::fs::write(handoff.join("context.md"), "# Context").expect("context");
+        let registry = registry_without_agents(root.path());
+        let before = commands_built_on_this_thread();
+
+        for (adapter, variable) in registry.implemented().zip(OVERRIDES) {
+            for agent_home in [None, Some(home.as_path())] {
+                let health = adapter.detect(agent_home).expect("detection never fails");
+                assert!(!health.installed, "{}", adapter.id());
+                assert!(health.executable.is_none(), "{}", adapter.id());
+                assert!(health.version.is_none(), "{}", adapter.id());
+                assert_eq!(health.auth_state, AuthState::Unknown);
+                assert!(
+                    health.message.contains(variable),
+                    "{}: {}",
+                    adapter.id(),
+                    health.message
+                );
+            }
+            let _ = adapter.auth_status(&home);
+            for result in [
+                adapter.login(&home, false).map(|_| ()),
+                adapter.logout(&home),
+                adapter.resume(&home, &workspace, "session-123"),
+                adapter.start_with_handoff(&home, &workspace, &handoff, None, None),
+            ] {
+                let error = result.expect_err("a missing agent cannot be started");
+                assert!(
+                    matches!(error, ContextWakeError::CapabilityUnavailable(_)),
+                    "{}: {error}",
+                    adapter.id()
+                );
+            }
+            let _ = adapter.list_sessions(&home, &workspace, 10);
+            let _ = adapter.available_models(&home, Some(&workspace), None);
+            assert!(
+                adapter.acp_transport(Some(&home)).is_none(),
+                "{}",
+                adapter.id()
+            );
+        }
+        assert_eq!(
+            commands_built_on_this_thread(),
+            before,
+            "no command may be built for an agent that was not found"
+        );
+        let detected = registry.detect_all(Some(("codex", home.as_path())));
+        assert_eq!(detected.len(), 9);
+        assert!(
+            detected
+                .iter()
+                .all(|health| health.as_ref().is_ok_and(|health| !health.installed))
+        );
+    }
+
+    #[test]
+    fn launch_errors_name_the_override_variable() {
+        let root = tempfile::tempdir().expect("root");
+        let registry = registry_without_agents(root.path());
+        let codex = registry.get("codex").expect("codex");
+        let error = codex.login(root.path(), false).expect_err("missing agent");
+        let message = error.to_string();
+        assert!(message.contains("could not be found"), "{message}");
+        assert!(message.contains("CONTEXTWAKE_CODEX_BIN"), "{message}");
+    }
+
+    #[test]
+    fn no_placeholder_executable_path_remains_in_sources() {
+        // Built at run time so this test does not match itself.
+        let needle = ["__contextwake", "_missing__"].concat();
+        let mut pending = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let mut scanned = 0;
+        while let Some(directory) = pending.pop() {
+            for entry in std::fs::read_dir(&directory).expect("read source directory") {
+                let path = entry.expect("source entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "rs") {
+                    scanned += 1;
+                    let source = std::fs::read_to_string(&path).expect("read source file");
+                    assert!(
+                        !source.contains(&needle),
+                        "{} still contains a placeholder executable path",
+                        path.display()
+                    );
+                }
+            }
+        }
+        assert!(scanned > 10, "the source tree was not found");
+    }
+
+    #[test]
+    fn capability_flags_match_adapter_implementations() {
+        let root = tempfile::tempdir().expect("root");
+        let home = root.path().join("profile");
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        // A capability flag must admit exactly the requests the adapter can
+        // serve, under the test its callers use: `ctx session sync` gates on
+        // `is_available()`, model catalogs are used only when `Verified`, and
+        // the TUI's "Supports ACP" filter uses `is_available()`.
+        for adapter in registry_without_agents(root.path()).implemented() {
+            let capabilities = adapter.capabilities();
+            let listing_implemented = !matches!(
+                adapter.list_sessions(&home, &workspace, 1),
+                Err(ContextWakeError::CapabilityUnavailable(message)) if message.contains(NO_SESSION_LISTING)
+            );
+            assert_eq!(
+                capabilities.session_listing.is_available(),
+                listing_implemented,
+                "{} session_listing",
+                adapter.id()
+            );
+            let catalog_implemented = !matches!(
+                adapter.available_models(&home, Some(&workspace), None),
+                Err(ContextWakeError::CapabilityUnavailable(message)) if message.contains(NO_MODEL_CATALOG)
+            );
+            assert_eq!(
+                capabilities.available_models.support == crate::model::CapabilitySupport::Verified,
+                catalog_implemented,
+                "{} available_models",
+                adapter.id()
+            );
+        }
+
+        let mut context = DiscoveryContext::new(Some(root.path()), Some(root.path()), Vec::new());
+        for variable in OVERRIDES {
+            context = context.with_override(variable, "contextwake-test-unused-agent");
+        }
+        for adapter in AgentRegistry::discover_in(&context).implemented() {
+            assert_eq!(
+                adapter.capabilities().acp.is_available(),
+                adapter.acp_transport(None).is_some(),
+                "{} acp",
+                adapter.id()
+            );
+        }
     }
 
     #[test]

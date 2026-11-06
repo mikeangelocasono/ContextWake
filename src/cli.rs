@@ -55,8 +55,10 @@ pub enum Command {
 
 #[derive(Clone, Debug, Args)]
 pub struct StatusArgs {
-    #[arg(default_value = ".")]
-    pub path: PathBuf,
+    /// Directory to inspect. Defaults to the workspace that contains the
+    /// current directory; from the home directory or a drive root, the active
+    /// workspace is shown with a warning.
+    pub path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Args)]
@@ -86,6 +88,22 @@ pub enum ProfileCommand {
         model_provider: Option<String>,
         #[arg(long)]
         model: Option<String>,
+        /// Allow another profile for an agent that cannot keep separate sign-ins
+        /// per profile (Kiro CLI, Cursor CLI). Such profiles share one identity.
+        #[arg(long)]
+        allow_shared_identity: bool,
+        /// Give the profile its own ContextWake-managed agent home, with a
+        /// separate sign-in (`ctx profile login NAME`). Without this flag, a
+        /// profile uses the agent's existing sign-in when the agent supports
+        /// that and no other profile uses it yet.
+        #[arg(long, conflicts_with = "existing_login")]
+        isolated: bool,
+        /// Use the agent's own default home and existing sign-in (for example
+        /// `%USERPROFILE%\.claude`). The agent's home variable is never set,
+        /// and that home is never written into or deleted. Fails when the
+        /// agent cannot do this or another profile already uses it.
+        #[arg(long)]
+        existing_login: bool,
     },
     List,
     Show {
@@ -98,8 +116,23 @@ pub enum ProfileCommand {
         handoff: bool,
         #[arg(long)]
         objective: Option<String>,
+        /// Workspace for the handoff. Defaults to the registered workspace or Git
+        /// work tree that contains the current directory (never the last active
+        /// workspace); the home directory and drive roots require this option.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// After switching, start the target profile's agent with the new
+        /// handoff (requires --handoff). Resumes the profile's own session in
+        /// the workspace when its agent supports verified native resume.
+        #[arg(long)]
+        launch: bool,
+        /// With --launch, always start a new agent session instead of resuming.
+        #[arg(long)]
+        new_session: bool,
+        /// Do not store the current agent's recent conversation excerpt in the
+        /// switch checkpoint.
+        #[arg(long)]
+        no_conversation: bool,
     },
     Remove {
         profile: String,
@@ -128,6 +161,8 @@ pub struct WorkspaceArgs {
 
 #[derive(Clone, Debug, Subcommand)]
 pub enum WorkspaceCommand {
+    /// Register a directory (or the Git work tree containing it) and make it the
+    /// active workspace.
     Add {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -149,6 +184,8 @@ pub enum WorkspaceCommand {
     },
     /// Run trusted project validation commands after an explicit user action.
     Validate {
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
@@ -164,8 +201,12 @@ pub struct SessionArgs {
 pub enum SessionCommand {
     /// Discover supported provider sessions and index those for one workspace.
     Sync {
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Index at most this many of the workspace's most recent sessions (1-500).
+        /// Sessions of other workspaces do not count toward the limit.
         #[arg(long, default_value_t = 100, value_parser = parse_session_count)]
         max_count: usize,
     },
@@ -187,6 +228,11 @@ pub enum SessionCommand {
     Resume {
         /// `ContextWake` session UUID or provider session UUID/name.
         session: String,
+        /// Workspace for a provider session that `ContextWake` has not indexed;
+        /// defaults to the workspace of the current directory. Indexed sessions
+        /// always resume in their recorded workspace.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     Archive {
         session: String,
@@ -221,6 +267,9 @@ pub enum CheckpointCommand {
         task: Option<String>,
         #[arg(long)]
         notes: Option<String>,
+        /// Defaults to the registered workspace or Git work tree that contains the
+        /// current directory (never the last active workspace); the home directory
+        /// and drive roots require this option.
         #[arg(long)]
         workspace: Option<PathBuf>,
         #[arg(long = "completed")]
@@ -234,6 +283,9 @@ pub enum CheckpointCommand {
         /// Explicitly run trusted project validation commands and capture their statuses.
         #[arg(long)]
         validate: bool,
+        /// Do not store the active agent's recent conversation excerpt.
+        #[arg(long)]
+        no_conversation: bool,
     },
     List,
     Show {
@@ -280,12 +332,17 @@ pub enum HandoffCommand {
     Import {
         path: PathBuf,
     },
-    /// Start a new provider session using an explicit handoff.
+    /// Continue from a handoff in the active profile's agent: resumes that
+    /// profile's own session in the workspace when native resume is verified,
+    /// otherwise starts a new session, and delivers the handoff either way.
     Continue {
         handoff: String,
         /// Required for imported handoffs without a local checkpoint association.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Always start a new agent session instead of resuming.
+        #[arg(long)]
+        new_session: bool,
     },
 }
 
@@ -347,6 +404,10 @@ pub enum ConfigCommand {
         git_timeout_ms: Option<u64>,
         #[arg(long)]
         validation_timeout_ms: Option<u64>,
+        /// Store a redacted excerpt of the source agent's recent conversation in
+        /// new checkpoints.
+        #[arg(long)]
+        capture_conversation_excerpts: Option<bool>,
     },
 }
 

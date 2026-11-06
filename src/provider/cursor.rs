@@ -1,4 +1,3 @@
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -9,61 +8,52 @@ use crate::model::{
     CapabilitySupport, ModelCostClassification, ModelProvider,
 };
 use crate::provider::common::{
-    ensure_profile_directory, run_probe, safe_agent_text, safe_probe_diagnostic,
+    MAX_LISTING_OUTPUT, MAX_PROBE_OUTPUT, advisory_auth_state, ensure_profile_directory,
+    run_listing, run_probe, safe_agent_text, safe_probe_diagnostic,
 };
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::provider::{AcpTransport, AgentAdapter};
 use crate::security::{validate_external_reference, validate_session_reference};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_RESULT_LIMIT: usize = 500;
 
-#[derive(Clone, Debug)]
-struct CursorLauncher {
-    executable: PathBuf,
-    prefix_arguments: Vec<OsString>,
-}
-
-impl CursorLauncher {
-    fn direct(executable: impl Into<PathBuf>) -> Self {
-        Self {
-            executable: executable.into(),
-            prefix_arguments: Vec::new(),
-        }
-    }
-
-    fn command(&self) -> Command {
-        let mut command = Command::new(&self.executable);
-        command.args(&self.prefix_arguments);
-        command
-    }
-}
+const BINARY: AgentBinary = AgentBinary {
+    name: "Cursor CLI",
+    install_hint: "Install Cursor CLI",
+    variables: &["CONTEXTWAKE_CURSOR_BIN"],
+};
 
 #[derive(Clone, Debug)]
 pub struct CursorAdapter {
-    launcher: CursorLauncher,
+    executable: AgentExecutable,
 }
 
 impl CursorAdapter {
     pub fn discover() -> Self {
-        let launcher = std::env::var_os("CONTEXTWAKE_CURSOR_BIN")
-            .map_or_else(default_launcher, |path| {
-                CursorLauncher::direct(PathBuf::from(path))
-            });
-        Self { launcher }
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            // Cursor's installer ships no batch wrapper ContextWake could
+            // resolve, so a `.cmd`/`.bat` override is refused.
+            executable: BINARY.resolve(context, |_, _| None, default_launcher),
+        }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            launcher: CursorLauncher::direct(executable),
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = self.launcher.command();
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("CURSOR_CONFIG_DIR", home);
         }
-        command
+        Ok(command)
     }
 
     fn stable(detail: &str) -> Capability {
@@ -91,20 +81,12 @@ impl CursorAdapter {
     }
 }
 
-fn default_launcher() -> CursorLauncher {
-    #[cfg(windows)]
-    {
-        discover_windows_launcher().unwrap_or_else(|| {
-            CursorLauncher::direct(r"C:\__contextwake_missing__\cursor-agent.exe")
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        let executable = super::find_safe_on_path("cursor-agent")
-            .or_else(|| super::find_safe_on_path("agent"))
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/cursor-agent"));
-        CursorLauncher::direct(executable)
-    }
+#[cfg(not(windows))]
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    context
+        .find_on_path("cursor-agent")
+        .or_else(|| context.find_on_path("agent"))
+        .map(Launcher::direct)
 }
 
 /// Cursor's JavaScript CLI does not accept Windows verbatim (`\\?\`) paths in
@@ -113,6 +95,7 @@ fn default_launcher() -> CursorLauncher {
 /// prefix at the provider boundary.
 #[cfg(windows)]
 fn cursor_cli_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
     const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
@@ -143,52 +126,33 @@ fn cursor_cli_path(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Three tiers, in order: `cursor-agent.exe` on `PATH`; the newest bundle in
+/// `%LOCALAPPDATA%\cursor-agent\versions` (its `node.exe` running
+/// `index.js`); `agent.exe` on `PATH`. A missing or unreadable versions
+/// directory falls through to the last tier.
 #[cfg(windows)]
-fn discover_windows_launcher() -> Option<CursorLauncher> {
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    let path = std::env::var_os("PATH");
-    if let Some(path) = &path {
-        for directory in std::env::split_paths(path).filter(|path| path.is_absolute()) {
-            let candidate = directory.join("cursor-agent.exe");
-            if super::safe_executable_candidate(&candidate, &current) {
-                return Some(CursorLauncher::direct(candidate));
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    if let Some(direct) = context.find_on_path("cursor-agent.exe") {
+        return Some(Launcher::direct(direct));
+    }
+    if let Some(local_app_data) = context.local_app_data() {
+        let versions = local_app_data.join("cursor-agent").join("versions");
+        if let Ok(entries) = std::fs::read_dir(versions) {
+            let mut candidates = entries
+                .filter_map(std::result::Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(std::fs::DirEntry::file_name);
+            for entry in candidates.into_iter().rev() {
+                let node = entry.path().join("node.exe");
+                let script = entry.path().join("index.js");
+                if context.is_safe_executable(&node) && context.is_safe_file(&script) {
+                    return Some(Launcher::script(node, script));
+                }
             }
         }
     }
-
-    if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-        let versions = PathBuf::from(local_app_data)
-            .join("cursor-agent")
-            .join("versions");
-        let mut candidates = std::fs::read_dir(versions)
-            .ok()?
-            .filter_map(std::result::Result::ok)
-            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in candidates.into_iter().rev() {
-            let node = entry.path().join("node.exe");
-            let script = entry.path().join("index.js");
-            if super::safe_executable_candidate(&node, &current)
-                && super::safe_executable_candidate(&script, &current)
-            {
-                return Some(CursorLauncher {
-                    executable: node,
-                    prefix_arguments: vec![script.into_os_string()],
-                });
-            }
-        }
-    }
-
-    if let Some(path) = path {
-        for directory in std::env::split_paths(&path).filter(|path| path.is_absolute()) {
-            let candidate = directory.join("agent.exe");
-            if super::safe_executable_candidate(&candidate, &current) {
-                return Some(CursorLauncher::direct(candidate));
-            }
-        }
-    }
-    None
+    context.find_on_path("agent.exe").map(Launcher::direct)
 }
 
 fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
@@ -352,11 +316,7 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
-        let mut transport = AcpTransport::new(&self.launcher.executable);
-        for argument in &self.launcher.prefix_arguments {
-            transport = transport.argument(argument.clone());
-        }
-        transport = transport.argument("acp");
+        let mut transport = self.executable.launcher()?.acp_transport().argument("acp");
         if let Some(home) = agent_home {
             transport = transport.environment("CURSOR_CONFIG_DIR", home.as_os_str());
         }
@@ -364,9 +324,12 @@ impl AgentAdapter for CursorAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut version_command = self.base_command(None);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut version_command = self.base_command(None)?;
         version_command.arg("--version");
-        let version = run_probe(version_command, PROBE_TIMEOUT);
+        let version = run_probe(version_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         let Ok(version) = version else {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
@@ -381,7 +344,7 @@ impl AgentAdapter for CursorAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.launcher.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if version.timed_out {
@@ -391,42 +354,41 @@ impl AgentAdapter for CursorAdapter {
                 },
             });
         }
-        let mut help_command = self.base_command(None);
+        let mut help_command = self.base_command(None)?;
         help_command.arg("--help");
-        let help = run_probe(help_command, PROBE_TIMEOUT);
+        let help = run_probe(help_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         if !help.as_ref().is_ok_and(|output| {
             output.success && has_cursor_signature(&output_text(&output.stdout, &output.stderr))
         }) {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.launcher.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: "The discovered `agent` command did not match Cursor CLI's vendor help signature".into(),
             });
         }
-        let auth_state = agent_home
-            .map(|home| self.auth_status(home))
-            .transpose()?
-            .unwrap_or(AuthState::Unknown);
+        let mut message = String::from("Cursor CLI detected with a Cursor-specific signature");
+        let auth_state =
+            advisory_auth_state(agent_home.map(|home| self.auth_status(home)), &mut message);
         Ok(AgentHealth {
             agent_id: self.id().into(),
             installed: true,
-            executable: Some(self.launcher.executable.clone()),
+            executable: self.executable.reported_path(),
             version: Some(safe_agent_text(&output_text(
                 &version.stdout,
                 &version.stderr,
             ))),
             auth_state,
-            message: "Cursor CLI detected with a Cursor-specific signature".into(),
+            message,
         })
     }
 
     fn auth_status(&self, agent_home: &Path) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.arg("status");
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
+        let output = run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT).map_err(|error| {
             ContextWakeError::Provider(format!("could not query Cursor authentication: {error}"))
         })?;
         if output.timed_out {
@@ -444,7 +406,7 @@ impl AgentAdapter for CursorAdapter {
 
     fn login(&self, agent_home: &Path, _device_auth: bool) -> Result<AuthState> {
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("login")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -464,7 +426,7 @@ impl AgentAdapter for CursorAdapter {
 
     fn logout(&self, agent_home: &Path) -> Result<()> {
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("logout")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -488,25 +450,26 @@ impl AgentAdapter for CursorAdapter {
         workspace: Option<&Path>,
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         if let Some(workspace) = workspace {
             command.current_dir(workspace);
         }
         command.arg("--list-models");
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            ContextWakeError::Provider(format!("could not query Cursor models: {error}"))
-        })?;
-        if output.timed_out || !output.success {
-            return Err(ContextWakeError::Provider(safe_probe_diagnostic(&output)));
-        }
-        parse_models(&output.stdout)
+        let stdout = run_listing(
+            command,
+            PROBE_TIMEOUT,
+            MAX_LISTING_OUTPUT,
+            "Cursor model listing",
+            None,
+        )?;
+        parse_models(&stdout)
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let workspace = cursor_cli_path(workspace);
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("--workspace")
             .arg(&workspace)
             .arg("--resume")
@@ -541,7 +504,7 @@ impl AgentAdapter for CursorAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         let workspace = cursor_cli_path(workspace);
         let handoff_directory = cursor_cli_path(handoff_directory);
         command
@@ -634,5 +597,41 @@ mod tests {
             .detect(None)
             .expect("health");
         assert!(!health.installed);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_agent_is_used_when_the_versions_bundle_is_missing() {
+        use crate::provider::discovery::tests::executable;
+
+        // `read_dir(versions).ok()?` used to return before the agent.exe tier.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let local_app_data = home.join(r"AppData\Local");
+        std::fs::create_dir_all(&local_app_data).expect("local app data");
+        let bin = home.join("bin");
+        let agent = executable(&bin.join("agent.exe"));
+        let context = DiscoveryContext::new(Some(&home), Some(&home), [bin.clone()])
+            .with_local_app_data(&local_app_data);
+        assert_eq!(
+            CursorAdapter::discover_in(&context).executable,
+            AgentExecutable::direct(&agent)
+        );
+
+        // The per-user bundle wins over agent.exe, even when started from the
+        // home directory that contains it.
+        let bundle = local_app_data.join(r"cursor-agent\versions\2026.10.01-abc");
+        let node = executable(&bundle.join("node.exe"));
+        let script = executable(&bundle.join("index.js"));
+        let adapter = CursorAdapter::discover_in(&context);
+        let launcher = adapter.executable.launcher().expect("bundle found");
+        assert_eq!(launcher.program(), node);
+        assert_eq!(launcher.reported_path(), script);
+
+        let direct = executable(&bin.join("cursor-agent.exe"));
+        assert_eq!(
+            CursorAdapter::discover_in(&context).executable,
+            AgentExecutable::direct(direct)
+        );
     }
 }

@@ -11,8 +11,11 @@ use crate::model::{
     CapabilitySupport, DiscoveredAgentSession, ModelCostClassification, ModelProvider,
 };
 use crate::provider::common::{
-    ensure_profile_directory, read_file_bounded, run_probe, safe_agent_text, safe_probe_diagnostic,
+    MAX_LISTING_OUTPUT, MAX_PROBE_OUTPUT, WorkspaceMatcher, advisory_auth_state,
+    ensure_profile_directory, read_file_bounded, run_listing, run_probe, safe_agent_label,
+    safe_agent_text, safe_probe_diagnostic,
 };
+use crate::provider::discovery::{AgentBinary, AgentExecutable, DiscoveryContext, Launcher};
 use crate::provider::{AcpTransport, AgentAdapter};
 use crate::security::{validate_external_reference, validate_session_reference};
 
@@ -20,9 +23,15 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 const SUMMARY_LIMIT: usize = 262_144;
 const PROVIDER_RESULT_LIMIT: usize = 500;
 
+const BINARY: AgentBinary = AgentBinary {
+    name: "Grok Build",
+    install_hint: "Install the official `grok` CLI",
+    variables: &["CONTEXTWAKE_GROK_BIN"],
+};
+
 #[derive(Clone, Debug)]
 pub struct GrokAdapter {
-    executable: PathBuf,
+    executable: AgentExecutable,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,23 +51,29 @@ struct GrokSessionInfo {
 
 impl GrokAdapter {
     pub fn discover() -> Self {
-        let executable =
-            std::env::var_os("CONTEXTWAKE_GROK_BIN").map_or_else(default_executable, PathBuf::from);
-        Self { executable }
+        Self::discover_in(&DiscoveryContext::from_environment())
+    }
+
+    pub(crate) fn discover_in(context: &DiscoveryContext) -> Self {
+        Self {
+            // Grok Build ships a native executable only; a batch-file
+            // override cannot be resolved and is refused.
+            executable: BINARY.resolve(context, |_, _| None, default_launcher),
+        }
     }
 
     pub fn with_executable(executable: impl Into<PathBuf>) -> Self {
         Self {
-            executable: executable.into(),
+            executable: AgentExecutable::direct(executable),
         }
     }
 
-    fn base_command(&self, agent_home: Option<&Path>) -> Command {
-        let mut command = Command::new(&self.executable);
+    fn base_command(&self, agent_home: Option<&Path>) -> Result<Command> {
+        let mut command = self.executable.command()?;
         if let Some(home) = agent_home {
             command.env("GROK_HOME", home);
         }
-        command
+        Ok(command)
     }
 
     fn stable(detail: &str) -> Capability {
@@ -86,27 +101,9 @@ impl GrokAdapter {
     }
 }
 
-fn default_executable() -> PathBuf {
-    #[cfg(windows)]
-    {
-        find_windows_executable("grok.exe")
-            .unwrap_or_else(|| PathBuf::from(r"C:\__contextwake_missing__\grok.exe"))
-    }
-    #[cfg(not(windows))]
-    {
-        super::find_safe_on_path("grok")
-            .unwrap_or_else(|| PathBuf::from("/__contextwake_missing__/grok"))
-    }
-}
-
-#[cfg(windows)]
-fn find_windows_executable(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    let current = std::env::current_dir().ok()?.canonicalize().ok()?;
-    std::env::split_paths(&path)
-        .filter(|directory| directory.is_absolute())
-        .map(|directory| directory.join(name))
-        .find(|candidate| super::safe_executable_candidate(candidate, &current))
+fn default_launcher(context: &DiscoveryContext) -> Option<Launcher> {
+    let name = if cfg!(windows) { "grok.exe" } else { "grok" };
+    context.find_on_path(name).map(Launcher::direct)
 }
 
 fn output_text(stdout: &[u8], stderr: &[u8]) -> String {
@@ -165,15 +162,18 @@ fn parse_summary(bytes: &[u8]) -> Result<DiscoveredAgentSession> {
     let summary: GrokSessionSummary = serde_json::from_slice(bytes).map_err(|error| {
         ContextWakeError::Provider(format!("Grok session summary is not valid JSON: {error}"))
     })?;
+    // A title that is empty after sanitizing (only whitespace or control
+    // sequences) falls back to the summary instead of becoming a diagnostic.
     let title = summary
         .generated_title
-        .filter(|title| !title.trim().is_empty())
+        .as_deref()
+        .and_then(safe_agent_label)
         .or_else(|| {
             summary
                 .session_summary
-                .filter(|title| !title.trim().is_empty())
-        })
-        .map(|title| safe_agent_text(&title));
+                .as_deref()
+                .and_then(safe_agent_label)
+        });
     Ok(DiscoveredAgentSession {
         provider_session_id: validate_session_reference(&summary.info.id)?,
         title,
@@ -267,7 +267,10 @@ impl AgentAdapter for GrokAdapter {
     }
 
     fn acp_transport(&self, agent_home: Option<&Path>) -> Option<AcpTransport> {
-        let mut transport = AcpTransport::new(&self.executable)
+        let mut transport = self
+            .executable
+            .launcher()?
+            .acp_transport()
             .argument("agent")
             .argument("stdio");
         if let Some(home) = agent_home {
@@ -277,9 +280,12 @@ impl AgentAdapter for GrokAdapter {
     }
 
     fn detect(&self, agent_home: Option<&Path>) -> Result<AgentHealth> {
-        let mut version_command = self.base_command(None);
+        if let Some(health) = self.executable.unavailable_health(self.id()) {
+            return Ok(health);
+        }
+        let mut version_command = self.base_command(None)?;
         version_command.arg("--version");
-        let version = run_probe(version_command, PROBE_TIMEOUT);
+        let version = run_probe(version_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         let Ok(version) = version else {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
@@ -294,7 +300,7 @@ impl AgentAdapter for GrokAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: if version.timed_out {
@@ -305,9 +311,9 @@ impl AgentAdapter for GrokAdapter {
             });
         }
         let version_text = output_text(&version.stdout, &version.stderr);
-        let mut help_command = self.base_command(None);
+        let mut help_command = self.base_command(None)?;
         help_command.arg("--help");
-        let help = run_probe(help_command, PROBE_TIMEOUT);
+        let help = run_probe(help_command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT);
         if !help.as_ref().is_ok_and(|output| {
             output.success
                 && has_grok_signature(&version_text, &output_text(&output.stdout, &output.stderr))
@@ -315,30 +321,29 @@ impl AgentAdapter for GrokAdapter {
             return Ok(AgentHealth {
                 agent_id: self.id().into(),
                 installed: false,
-                executable: Some(self.executable.clone()),
+                executable: self.executable.reported_path(),
                 version: None,
                 auth_state: AuthState::Unknown,
                 message: "The discovered `grok` command did not match Grok Build's version/help signature".into(),
             });
         }
-        let auth_state = agent_home
-            .map(|home| self.auth_status(home))
-            .transpose()?
-            .unwrap_or(AuthState::Unknown);
+        let mut message = String::from("Grok Build detected with its vendor interface signature");
+        let auth_state =
+            advisory_auth_state(agent_home.map(|home| self.auth_status(home)), &mut message);
         Ok(AgentHealth {
             agent_id: self.id().into(),
             installed: true,
-            executable: Some(self.executable.clone()),
+            executable: self.executable.reported_path(),
             version: Some(safe_agent_text(&version_text)),
             auth_state,
-            message: "Grok Build detected with its vendor interface signature".into(),
+            message,
         })
     }
 
     fn auth_status(&self, agent_home: &Path) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.arg("models");
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
+        let output = run_probe(command, PROBE_TIMEOUT, MAX_PROBE_OUTPUT).map_err(|error| {
             ContextWakeError::Provider(format!("could not query Grok authentication: {error}"))
         })?;
         if output.timed_out {
@@ -355,7 +360,7 @@ impl AgentAdapter for GrokAdapter {
     }
 
     fn login(&self, agent_home: &Path, device_auth: bool) -> Result<AuthState> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.arg("login");
         if device_auth {
             command.arg("--device-auth");
@@ -379,7 +384,7 @@ impl AgentAdapter for GrokAdapter {
 
     fn logout(&self, agent_home: &Path) -> Result<()> {
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("logout")
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
@@ -400,13 +405,14 @@ impl AgentAdapter for GrokAdapter {
     fn list_sessions(
         &self,
         agent_home: &Path,
-        _workspace: &Path,
+        workspace: &Path,
         max_count: usize,
     ) -> Result<Vec<DiscoveredAgentSession>> {
         let root = agent_home.join("sessions");
         if !root.is_dir() {
             return Ok(Vec::new());
         }
+        let mut workspace = WorkspaceMatcher::new(workspace);
         let mut sessions = Vec::new();
         let groups = std::fs::read_dir(&root).map_err(|source| ContextWakeError::Io {
             path: root.clone(),
@@ -439,7 +445,14 @@ impl AgentAdapter for GrokAdapter {
                 let Ok(bytes) = read_file_bounded(&summary_path, SUMMARY_LIMIT) else {
                     continue;
                 };
-                if let Ok(session) = parse_summary(&bytes) {
+                // Matched before the limit applies, so newer sessions of other
+                // workspaces cannot crowd this workspace's sessions out.
+                if let Ok(session) = parse_summary(&bytes)
+                    && session
+                        .workspace_path
+                        .as_deref()
+                        .is_some_and(|path| workspace.matches(path))
+                {
                     sessions.push(session);
                 }
             }
@@ -455,24 +468,25 @@ impl AgentAdapter for GrokAdapter {
         workspace: Option<&Path>,
         _provider_id: Option<&str>,
     ) -> Result<Vec<AgentModel>> {
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         if let Some(workspace) = workspace {
             command.current_dir(workspace);
         }
         command.arg("models");
-        let output = run_probe(command, PROBE_TIMEOUT).map_err(|error| {
-            ContextWakeError::Provider(format!("could not query Grok models: {error}"))
-        })?;
-        if output.timed_out || !output.success {
-            return Err(ContextWakeError::Provider(safe_probe_diagnostic(&output)));
-        }
-        parse_models(&output.stdout)
+        let stdout = run_listing(
+            command,
+            PROBE_TIMEOUT,
+            MAX_LISTING_OUTPUT,
+            "Grok Build model listing",
+            None,
+        )?;
+        parse_models(&stdout)
     }
 
     fn resume(&self, agent_home: &Path, workspace: &Path, session_id: &str) -> Result<()> {
         let session_id = validate_session_reference(session_id)?;
         let status = self
-            .base_command(Some(agent_home))
+            .base_command(Some(agent_home))?
             .arg("--cwd")
             .arg(workspace)
             .arg("--resume")
@@ -507,7 +521,7 @@ impl AgentAdapter for GrokAdapter {
                 "handoff context.md is unavailable".into(),
             ));
         }
-        let mut command = self.base_command(Some(agent_home));
+        let mut command = self.base_command(Some(agent_home))?;
         command.arg("--cwd").arg(workspace);
         if let Some(model) = model {
             command
@@ -581,5 +595,58 @@ mod tests {
             .detect(None)
             .expect("health");
         assert!(!health.installed);
+    }
+
+    #[test]
+    fn invisible_generated_title_falls_back_to_the_summary() {
+        let session = parse_summary(
+            br#"{"info":{"id":"019abc","cwd":"/work/repo"},"session_summary":"CSV export","generated_title":"\u001b[31m\u001b[0m"}"#,
+        )
+        .expect("summary");
+        assert_eq!(session.title.as_deref(), Some("CSV export"));
+        let untitled = parse_summary(
+            br#"{"info":{"id":"019abd","cwd":"/work/repo"},"session_summary":" ","generated_title":""}"#,
+        )
+        .expect("summary");
+        assert_eq!(untitled.title, None);
+    }
+
+    #[test]
+    fn sessions_of_other_workspaces_cannot_crowd_out_this_one() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let home = directory.path().join("grok");
+        let first = directory.path().join("first");
+        let second = directory.path().join("second");
+        std::fs::create_dir_all(&first).expect("first workspace");
+        std::fs::create_dir_all(&second).expect("second workspace");
+        for (id, cwd, updated) in [
+            ("second-1", &second, "2026-09-05T00:00:00Z"),
+            ("second-2", &second, "2026-09-06T00:00:00Z"),
+            ("second-3", &second, "2026-09-07T00:00:00Z"),
+            ("first-1", &first, "2026-09-01T00:00:00Z"),
+        ] {
+            let entry = home.join("sessions").join("group").join(id);
+            std::fs::create_dir_all(&entry).expect("session directory");
+            let summary = serde_json::json!({
+                "info": {"id": id, "cwd": cwd},
+                "generated_title": id,
+                "updated_at": updated
+            });
+            std::fs::write(entry.join("summary.json"), summary.to_string()).expect("summary");
+        }
+        let adapter = GrokAdapter::with_executable("unused");
+        // The old listing kept the 2 newest sessions overall (second
+        // workspace) before `session sync` filtered by workspace.
+        let sessions = adapter.list_sessions(&home, &first, 2).expect("sessions");
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].provider_session_id, "first-1");
+        let sessions = adapter.list_sessions(&home, &second, 2).expect("sessions");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.provider_session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["second-3", "second-2"]
+        );
     }
 }

@@ -47,11 +47,56 @@ pub struct Profile {
     pub description: Option<String>,
     #[serde(alias = "provider_home")]
     pub agent_home: PathBuf,
+    /// Whether `agent_home` is a `ContextWake`-managed directory or the
+    /// agent's own default home (the user's existing sign-in).
+    #[serde(default)]
+    pub home_mode: ProfileHomeMode,
     pub account_fingerprint: Option<String>,
     pub auth_state: AuthState,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// Where a profile's coding agent keeps its configuration and sign-in.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileHomeMode {
+    /// A `ContextWake`-managed directory, passed to the agent through its
+    /// home variable (for example `CLAUDE_CONFIG_DIR`). The profile signs in
+    /// separately.
+    #[default]
+    Isolated,
+    /// The agent's own default home, so the profile uses the existing
+    /// sign-in. `ContextWake` never sets the agent's home variable, writes
+    /// into this directory or deletes it.
+    AgentDefault,
+}
+
+impl ProfileHomeMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::AgentDefault => "agent_default",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Isolated => "ContextWake-managed home (separate sign-in)",
+            Self::AgentDefault => "agent's default home (existing sign-in)",
+        }
+    }
+}
+
+impl From<&str> for ProfileHomeMode {
+    fn from(value: &str) -> Self {
+        if value == "agent_default" {
+            Self::AgentDefault
+        } else {
+            Self::Isolated
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -215,6 +260,9 @@ impl DiscoveredAgentSession {
 pub enum ContinuityKind {
     NativeResume,
     RestoredFromHandoff,
+    /// A native resume of the agent's own session into which a handoff was
+    /// delivered, so it also knows what happened in other agents since.
+    ResumedWithHandoff,
     NewSession,
     Unknown,
 }
@@ -224,6 +272,7 @@ impl ContinuityKind {
         match self {
             Self::NativeResume => "native_resume",
             Self::RestoredFromHandoff => "restored_from_handoff",
+            Self::ResumedWithHandoff => "resumed_with_handoff",
             Self::NewSession => "new_session",
             Self::Unknown => "unknown",
         }
@@ -233,6 +282,7 @@ impl ContinuityKind {
         match self {
             Self::NativeResume => "Native Resume",
             Self::RestoredFromHandoff => "Restored from Handoff",
+            Self::ResumedWithHandoff => "Native Resume + Handoff",
             Self::NewSession => "New Session",
             Self::Unknown => "Unknown",
         }
@@ -244,6 +294,7 @@ impl From<&str> for ContinuityKind {
         match value {
             "native_resume" => Self::NativeResume,
             "restored_from_handoff" => Self::RestoredFromHandoff,
+            "resumed_with_handoff" => Self::ResumedWithHandoff,
             "new_session" => Self::NewSession,
             _ => Self::Unknown,
         }
@@ -331,6 +382,11 @@ pub struct Checkpoint {
     pub validation_results: Vec<ValidationResult>,
     pub created_at: DateTime<Utc>,
     pub redaction_status: RedactionStatus,
+    /// Recent conversation of the source agent in this workspace (checkpoint
+    /// schema v3). Absent in v1 and v2 checkpoints and when nothing was
+    /// captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationExcerpt>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -418,13 +474,29 @@ pub enum CapabilityMaturity {
     Unavailable,
 }
 
+/// How far a coding agent's capability is supported through its adapter.
+///
+/// Where [`Capability::is_available`] gates a `ContextWake` operation (model
+/// selection, session listing, native resume, the ACP transport, portable
+/// handoff), `Partial` and `Experimental` mean the adapter implements the
+/// operation with documented limits. An operation the adapter does not
+/// implement is declared `Unsupported` or `Unknown`, keeping its descriptive
+/// detail, so the gate never admits a request the adapter can only refuse.
+/// Model catalogs are used only when `Verified`. The remaining capabilities
+/// describe the coding agent itself. The provider registry tests check these
+/// rules for the operations that have an implementation-level signal.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilitySupport {
+    /// Implemented and verified against the agent.
     Verified,
+    /// Implemented with documented limits or pending QA.
     Partial,
+    /// Not implemented, or deliberately disabled.
     Unsupported,
+    /// Whether it works cannot be established.
     Unknown,
+    /// Implemented behind an experimental agent interface.
     Experimental,
 }
 
@@ -436,6 +508,9 @@ pub struct Capability {
 }
 
 impl Capability {
+    /// Whether `ContextWake` may offer this capability: `Verified`, `Partial`
+    /// or `Experimental` support. See [`CapabilitySupport`] for what adapters
+    /// must declare for capabilities they do not implement.
     pub const fn is_available(&self) -> bool {
         matches!(
             self.support,
@@ -532,9 +607,68 @@ pub struct UsageSummary {
     pub local_profile_switch_count: u64,
 }
 
+/// A bounded excerpt of a coding agent's own conversation in one workspace,
+/// read from the agent's local transcript so that the next agent sees what
+/// the user last asked for and the latest answer.
+///
+/// Only typed user requests and the agent's final answers are included:
+/// never tool calls or tool output, hidden reasoning, or system, developer
+/// and injected context. Every text is terminal-sanitized and
+/// secret-redacted before it is stored.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ConversationExcerpt {
+    /// The coding agent whose transcript was read (for example `claude`).
+    pub agent_id: String,
+    pub provider_session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_title: Option<String>,
+    pub captured_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activity_at: Option<DateTime<Utc>>,
+    /// The most recent user requests, oldest first.
+    pub user_requests: Vec<String>,
+    /// The agent's most recent final answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_agent_message: Option<String>,
+    /// Whether older messages or longer text were left out to stay within
+    /// the limits.
+    pub truncated: bool,
+}
+
+impl ConversationExcerpt {
+    /// At most this many user requests are kept.
+    pub const MAX_USER_REQUESTS: usize = 5;
+    /// Each user request is cut to this many characters.
+    pub const MAX_REQUEST_CHARS: usize = 600;
+    /// The latest agent answer is cut to this many characters.
+    pub const MAX_AGENT_MESSAGE_CHARS: usize = 3_000;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn continuity_and_home_modes_round_trip_through_their_names() {
+        for kind in [
+            ContinuityKind::NativeResume,
+            ContinuityKind::RestoredFromHandoff,
+            ContinuityKind::ResumedWithHandoff,
+            ContinuityKind::NewSession,
+            ContinuityKind::Unknown,
+        ] {
+            assert_eq!(ContinuityKind::from(kind.as_str()), kind);
+        }
+        for mode in [ProfileHomeMode::Isolated, ProfileHomeMode::AgentDefault] {
+            assert_eq!(ProfileHomeMode::from(mode.as_str()), mode);
+        }
+        // Rows and JSON written before home modes existed are managed homes.
+        assert_eq!(
+            ProfileHomeMode::from("unexpected"),
+            ProfileHomeMode::Isolated
+        );
+        assert_eq!(ProfileHomeMode::default(), ProfileHomeMode::Isolated);
+    }
 
     #[test]
     fn discovered_session_without_created_time_starts_at_update_time() {
