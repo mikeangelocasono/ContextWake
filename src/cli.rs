@@ -121,6 +121,18 @@ pub enum ProfileCommand {
         /// workspace); the home directory and drive roots require this option.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// After switching, start the target profile's agent with the new
+        /// handoff (requires --handoff). Resumes the profile's own session in
+        /// the workspace when its agent supports verified native resume.
+        #[arg(long)]
+        launch: bool,
+        /// With --launch, always start a new agent session instead of resuming.
+        #[arg(long)]
+        new_session: bool,
+        /// Do not store the current agent's recent conversation excerpt in the
+        /// switch checkpoint.
+        #[arg(long)]
+        no_conversation: bool,
     },
     Remove {
         profile: String,
@@ -271,6 +283,9 @@ pub enum CheckpointCommand {
         /// Explicitly run trusted project validation commands and capture their statuses.
         #[arg(long)]
         validate: bool,
+        /// Do not store the active agent's recent conversation excerpt.
+        #[arg(long)]
+        no_conversation: bool,
     },
     List,
     Show {
@@ -317,12 +332,17 @@ pub enum HandoffCommand {
     Import {
         path: PathBuf,
     },
-    /// Start a new provider session using an explicit handoff.
+    /// Continue from a handoff in the active profile's agent: resumes that
+    /// profile's own session in the workspace when native resume is verified,
+    /// otherwise starts a new session, and delivers the handoff either way.
     Continue {
         handoff: String,
         /// Required for imported handoffs without a local checkpoint association.
         #[arg(long)]
         workspace: Option<PathBuf>,
+        /// Always start a new agent session instead of resuming.
+        #[arg(long)]
+        new_session: bool,
     },
 }
 
@@ -384,6 +404,10 @@ pub enum ConfigCommand {
         git_timeout_ms: Option<u64>,
         #[arg(long)]
         validation_timeout_ms: Option<u64>,
+        /// Store a redacted excerpt of the source agent's recent conversation in
+        /// new checkpoints.
+        #[arg(long)]
+        capture_conversation_excerpts: Option<bool>,
     },
 }
 

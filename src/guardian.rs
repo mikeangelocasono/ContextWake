@@ -225,6 +225,7 @@ mod tests {
             validation_results: Vec::<ValidationResult>::new(),
             created_at,
             redaction_status: RedactionStatus::Clean,
+            conversation: None,
         }
     }
 

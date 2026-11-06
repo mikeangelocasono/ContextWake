@@ -15,6 +15,10 @@ use crate::paths::AppPaths;
 /// handoffs or session records on its own, and has no Codex app-server
 /// integration. [`AppConfig::save`] refuses to switch them on, and
 /// [`AppConfig::reserved_setting_notices`] reports any that a file sets.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent on/off settings of a configuration file"
+)]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
 pub struct AppConfig {
@@ -28,6 +32,10 @@ pub struct AppConfig {
     pub update_check: bool,
     pub git_timeout_ms: u64,
     pub validation_timeout_ms: u64,
+    /// Whether checkpoints (including switch checkpoints) store a bounded,
+    /// redacted excerpt of the source agent's recent conversation in the
+    /// workspace, read from that agent's local transcripts.
+    pub capture_conversation_excerpts: bool,
     #[serde(alias = "provider_experimental")]
     pub agent_experimental: AgentExperimental,
 }
@@ -49,6 +57,7 @@ impl Default for AppConfig {
             update_check: false,
             git_timeout_ms: 2_000,
             validation_timeout_ms: 120_000,
+            capture_conversation_excerpts: true,
             agent_experimental: AgentExperimental::default(),
         }
     }
@@ -329,6 +338,26 @@ mod tests {
         .save(&paths)
         .expect("reserved settings can be reset");
         assert!(AppConfig::default().reserved_setting_notices().is_empty());
+    }
+
+    #[test]
+    fn conversation_excerpts_are_captured_unless_switched_off() {
+        let older: AppConfig = toml::from_str("schema_version = 1\n").expect("older config");
+        assert!(older.capture_conversation_excerpts);
+        let off: AppConfig =
+            toml::from_str("schema_version = 1\ncapture_conversation_excerpts = false\n")
+                .expect("config");
+        assert!(!off.capture_conversation_excerpts);
+        assert!(off.reserved_setting_notices().is_empty());
+
+        let root = tempfile::tempdir().expect("root");
+        let paths = AppPaths::from_root(root.path());
+        off.save(&paths).expect("not a reserved setting");
+        assert!(
+            !AppConfig::read_or_create(&paths)
+                .expect("reload")
+                .capture_conversation_excerpts
+        );
     }
 
     #[test]

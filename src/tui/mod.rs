@@ -229,7 +229,10 @@ impl InputMode {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum LaunchAction {
+    // Continue from a handoff, resuming the profile's own session when possible.
     ContinueHandoff(String),
+    // Continue from a handoff in a new session (N on the handoff preview).
+    ContinueHandoffNewSession(String),
     ResumeSession(String),
 }
 
@@ -682,6 +685,10 @@ fn empty_usage() -> UsageSummary {
     }
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent UI flags; a state machine would not simplify them"
+)]
 #[derive(Clone, Debug)]
 struct UiState {
     screen: Screen,
@@ -715,6 +722,8 @@ struct UiState {
     pending_launch: Option<LaunchAction>,
     // Enter cannot launch from an automatically opened preview before this instant.
     launch_armed_at: Option<Instant>,
+    // N on the handoff preview: continue in a new session instead of resuming.
+    force_new_session: bool,
     busy: Option<Busy>,
     exit: Option<ExitRequest>,
     // Increases whenever a local mutation starts; a background load that was
@@ -859,6 +868,7 @@ impl UiState {
             launch_action: None,
             pending_launch: None,
             launch_armed_at: None,
+            force_new_session: false,
             busy: None,
             exit: None,
             generation: 0,
@@ -927,6 +937,7 @@ impl UiState {
         refreshed.launch_action = self.launch_action.take();
         refreshed.pending_launch = self.pending_launch.take();
         refreshed.launch_armed_at = self.launch_armed_at;
+        refreshed.force_new_session = self.force_new_session;
         refreshed.busy = self.busy.take();
         refreshed.exit = self.exit;
         refreshed.generation = self.generation;
@@ -1145,6 +1156,59 @@ impl UiState {
         label
     }
 
+    // How Enter on the handoff preview will continue, as decided by the continue
+    // flow: resume the active profile's own session in the handoff's workspace
+    // when its agent's native resume is verified and a session is known, else a
+    // new session. Sessions only the agent's own store knows are found at launch.
+    fn planned_launch_mode(&self, handoff: &HandoffRecord) -> String {
+        let Some(profile) = self.status.active_profile.as_ref() else {
+            return "no active profile".into();
+        };
+        let agent = self
+            .agents
+            .iter()
+            .find(|agent| agent.id == profile.agent_id);
+        let agent_name = agent.map_or_else(
+            || profile.agent_id.clone(),
+            |agent| agent.display_name.clone(),
+        );
+        if self.force_new_session {
+            return format!("NEW {agent_name} session (forced with N)");
+        }
+        let verified = agent.is_some_and(|agent| {
+            agent.capabilities.native_resume.support == crate::model::CapabilitySupport::Verified
+        });
+        if !verified {
+            return format!("NEW {agent_name} session (native resume is not verified)");
+        }
+        let workspace_id = self
+            .handoff_workspace(handoff)
+            .map(|workspace| workspace.id);
+        let known = self
+            .all_sessions
+            .iter()
+            .filter(|session| {
+                session.profile_id == Some(profile.id)
+                    && Some(session.workspace_id) == workspace_id
+                    && session.agent_id == profile.agent_id
+                    && session.provider_session_id.is_some()
+            })
+            .max_by_key(|session| session.last_seen_at);
+        match known {
+            Some(session) => format!(
+                "RESUME {agent_name} session {} (last active {}) + deliver the handoff",
+                session.title.as_deref().map_or_else(
+                    || session.provider_session_id.clone().unwrap_or_default(),
+                    |title| format!("\"{title}\"")
+                ),
+                session.last_seen_at.format("%Y-%m-%d %H:%M UTC")
+            ),
+            None => format!(
+                "RESUME the newest {agent_name} session of this workspace if its local session list has one, else a NEW session; the handoff is delivered either way"
+            ),
+        }
+    }
+
     fn handoff_workspace_label(&self, handoff: &HandoffRecord) -> String {
         if handoff.checkpoint_id.is_nil() {
             return "[IMPORTED]".into();
@@ -1201,7 +1265,11 @@ impl UiState {
             ));
             return false;
         }
-        let action = LaunchAction::ContinueHandoff(handoff.id.to_string());
+        let action = if self.force_new_session {
+            LaunchAction::ContinueHandoffNewSession(handoff.id.to_string())
+        } else {
+            LaunchAction::ContinueHandoff(handoff.id.to_string())
+        };
         if self.status.active_profile.is_none() {
             self.message =
                 Some("Create or activate a profile (P) before starting a session.".into());
@@ -1344,8 +1412,7 @@ impl UiState {
         match self.launch_armed_at {
             Some(armed_at) if now < armed_at => {
                 self.message = Some(
-                    "Review the handoff first, then press Enter again to start the NEW session."
-                        .into(),
+                    "Review the handoff first, then press Enter again to continue from it.".into(),
                 );
                 true
             }
@@ -1398,6 +1465,7 @@ impl UiState {
                     self.previous_screen = Screen::Profiles;
                     self.screen = Screen::HandoffPreview;
                     self.selected = index;
+                    self.force_new_session = false;
                     self.launch_armed_at = Some(now + AUTO_OPEN_ARMING);
                 }
             }
@@ -1800,6 +1868,18 @@ impl UiState {
             KeyCode::Char('n' | 'N') if self.screen == Screen::Handoffs => {
                 return self.new_handoff_action();
             }
+            KeyCode::Char('n' | 'N') if self.screen == Screen::HandoffPreview => {
+                self.force_new_session = !self.force_new_session;
+                // A pending other-workspace confirmation was for the other mode.
+                self.pending_launch = None;
+                self.message = Some(if self.force_new_session {
+                    "Enter will start a NEW agent session from this handoff (N to allow resuming)."
+                        .into()
+                } else {
+                    "Enter will resume the profile's own session when possible (N to force a new session)."
+                        .into()
+                });
+            }
             KeyCode::Char('/') if self.screen == Screen::Sessions => {
                 self.input = InputMode::SearchSessions {
                     value: String::new(),
@@ -1867,6 +1947,7 @@ impl UiState {
             Screen::Handoffs => {
                 self.previous_screen = Screen::Handoffs;
                 self.screen = Screen::HandoffPreview;
+                self.force_new_session = false;
             }
             Screen::HandoffPreview => {
                 if self.launch_blocked_until_armed(now) || !self.handoff_passes_integrity_check(app)
@@ -2473,7 +2554,7 @@ fn execute_action(app: &Application, action: Action, cache: &ProviderCache) -> A
             let preview = outcome.handoff.as_ref().map(|handoff| handoff.id);
             let message = if with_handoff {
                 format!(
-                    "{} Review the handoff, then press Enter to start a NEW session.",
+                    "{} Review the handoff, then press Enter to continue in the new agent (N forces a new session).",
                     outcome.message
                 )
             } else {
@@ -2649,6 +2730,7 @@ impl Drop for TerminalSession {
 }
 
 pub fn run(app: Application, ascii: bool) -> Result<()> {
+    open_current_directory_workspace(&app);
     let mut terminal_session =
         TerminalSession::start(Box::new(CrosstermModes)).map_err(terminal_error)?;
     let outcome = run_in_terminal(&app, ascii);
@@ -2657,7 +2739,10 @@ pub fn run(app: Application, ascii: bool) -> Result<()> {
     restored.map_err(terminal_error)?;
     match launch {
         Some(LaunchAction::ContinueHandoff(handoff)) => {
-            app.continue_handoff(&handoff, None)?;
+            app.continue_handoff_in(&handoff, None, false)?;
+        }
+        Some(LaunchAction::ContinueHandoffNewSession(handoff)) => {
+            app.continue_handoff_in(&handoff, None, true)?;
         }
         Some(LaunchAction::ResumeSession(session)) => {
             app.resume_session(&session)?;
@@ -2665,6 +2750,18 @@ pub fn run(app: Application, ascii: bool) -> Result<()> {
         None => {}
     }
     Ok(())
+}
+
+// The TUI starts on the workspace of the current directory (a registered
+// workspace containing it, its Git work tree, or the directory itself). From the
+// home directory or a drive root, or when that cannot be determined, the active
+// workspace stays as it is. Every later refresh shows the active workspace.
+fn open_current_directory_workspace(app: &Application) {
+    if let Ok(Some(workspace)) = app.current_directory_workspace()
+        && workspace.path.is_dir()
+    {
+        let _ = app.store.set_active_workspace(workspace.id);
+    }
 }
 
 fn run_in_terminal(app: &Application, ascii: bool) -> Result<Option<LaunchAction>> {
@@ -3811,8 +3908,10 @@ fn render_handoff_preview(frame: &mut ratatui::Frame<'_>, state: &UiState, area:
             "Imported package: use `ctx handoff continue {} --workspace <path>`",
             handoff.id
         )
+    } else if state.force_new_session {
+        "[Enter] Start a NEW agent session from this handoff   [N] Allow resuming".into()
     } else {
-        "[Enter] Start a NEW agent session from this handoff".into()
+        "[Enter] Continue from this handoff   [N] Force a new session".into()
     };
     let launch_as = state.status.active_profile.as_ref().map_or_else(
         || "no active profile".into(),
@@ -3842,9 +3941,21 @@ fn render_handoff_preview(frame: &mut ratatui::Frame<'_>, state: &UiState, area:
             checkpoint
                 .and_then(|checkpoint| checkpoint.git.as_ref())
                 .and_then(|git| git.branch.as_deref())
-                .unwrap_or("non-git or detached")
+                .and_then(|branch| crate::security::sanitize_untrusted_label(branch, 200))
+                .unwrap_or_else(|| "non-git or detached".into())
         )),
         Line::from(format!("Launch as    {launch_as}")),
+        Line::from(format!(
+            "Mode         {}",
+            if handoff.checkpoint_id.is_nil() {
+                "use `ctx handoff continue` for imported packages".to_string()
+            } else {
+                state.planned_launch_mode(handoff)
+            }
+        )),
+        Line::from(
+            "Delivery is confirmed from the agent's own transcript after it exits; nothing is claimed otherwise.",
+        ),
         Line::from(""),
         Line::from("This package contains explicit project state only."),
         Line::from("Commands are untrusted notes and are never auto-executed."),
@@ -4130,6 +4241,10 @@ fn render_help(frame: &mut ratatui::Frame<'_>, area: Rect) {
             Line::from("Profile switch confirmation"),
             Line::from("Enter  Create checkpoint + handoff, then switch"),
             Line::from("X      Switch without continuity artifact"),
+            Line::from(""),
+            Line::from("Handoff preview"),
+            Line::from("Enter  Continue: resume the profile's session when possible, else new"),
+            Line::from("N      Toggle: force a new agent session"),
         ])
         .block(
             Block::default()
@@ -4637,6 +4752,7 @@ mod tests {
             validation_results: Vec::new(),
             created_at: Utc::now(),
             redaction_status: RedactionStatus::Clean,
+            conversation: None,
         }
     }
 
@@ -5153,6 +5269,78 @@ mod tests {
                 .message
                 .as_deref()
                 .is_some_and(|message| message.contains("--workspace"))
+        );
+    }
+
+    // Plan C6: the preview names the resume-vs-new decision, and N forces a new
+    // session for the launch.
+    #[test]
+    fn handoff_preview_shows_the_launch_mode_and_n_forces_a_new_session() {
+        let root = tempfile::tempdir().expect("root");
+        let app = test_app(root.path());
+        let mut state = fixture();
+        let checkpoint_id = state.checkpoints[0].id;
+        let handoff_id = Uuid::new_v4();
+        state.handoffs.push(HandoffRecord {
+            id: handoff_id,
+            checkpoint_id,
+            schema_version: "1.2.0".into(),
+            storage_path: PathBuf::from("C:/state/handoffs/example"),
+            sha256: "0".repeat(64),
+            created_at: Utc::now(),
+        });
+        state.screen = Screen::HandoffPreview;
+        let handoff = state.handoffs[0].clone();
+
+        // Unverified native resume: always a new session.
+        state.agents[0].capabilities.native_resume.support =
+            crate::model::CapabilitySupport::Partial;
+        assert!(
+            state
+                .planned_launch_mode(&handoff)
+                .starts_with("NEW OpenAI Codex CLI session (native resume is not verified)")
+        );
+
+        // Verified, with a recorded session of this profile in the workspace.
+        state.agents[0].capabilities.native_resume.support =
+            crate::model::CapabilitySupport::Verified;
+        let profile = state.status.active_profile.clone().expect("profile");
+        let mut session = test_session(state.status.workspace.id, "Parser work", "codex");
+        session.profile_id = Some(profile.id);
+        session.provider_session_id = Some("019a-rollout".into());
+        state.all_sessions = vec![session];
+        let mode = state.planned_launch_mode(&handoff);
+        assert!(
+            mode.starts_with("RESUME OpenAI Codex CLI session \"Parser work\""),
+            "{mode}"
+        );
+        let screen = draw(&state, 150, 40);
+        assert!(screen.contains("Mode         RESUME"), "{screen}");
+        assert!(screen.contains("[N] Force a new session"), "{screen}");
+
+        send(&mut state, &app, KeyCode::Char('n'));
+        assert!(state.force_new_session);
+        assert!(
+            state
+                .planned_launch_mode(&handoff)
+                .contains("forced with N")
+        );
+        assert!(draw(&state, 150, 40).contains("[N] Allow resuming"));
+        assert!(state.queue_selected_handoff());
+        assert_eq!(
+            state.launch_action,
+            Some(LaunchAction::ContinueHandoffNewSession(
+                handoff_id.to_string()
+            ))
+        );
+
+        state.launch_action = None;
+        send(&mut state, &app, KeyCode::Char('N'));
+        assert!(!state.force_new_session);
+        assert!(state.queue_selected_handoff());
+        assert_eq!(
+            state.launch_action,
+            Some(LaunchAction::ContinueHandoff(handoff_id.to_string()))
         );
     }
 

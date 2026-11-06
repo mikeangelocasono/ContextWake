@@ -1250,6 +1250,30 @@ impl Store {
         resolve_session(&connection, reference)
     }
 
+    /// Records how the latest launch into an existing session row continued
+    /// (for example `resumed_with_handoff`, or `unknown` when delivery could
+    /// not be confirmed). The archive state and resume capability are kept.
+    pub fn update_session_continuity(
+        &self,
+        id: Uuid,
+        continuity: crate::model::ContinuityKind,
+    ) -> Result<Session> {
+        let mut connection = self.connection()?;
+        let transaction = write_transaction(&mut connection)?;
+        let id = id.to_string();
+        let changed = transaction.execute(
+            "UPDATE sessions SET continuity = ?1 WHERE id = ?2",
+            params![continuity.as_str(), id],
+        )?;
+        if changed == 0 {
+            return Err(ContextWakeError::SessionNotFound(id));
+        }
+        let updated = session_by_id(&transaction, &id)?
+            .ok_or_else(|| ContextWakeError::SessionNotFound(id))?;
+        transaction.commit()?;
+        Ok(updated)
+    }
+
     pub fn archive_session(&self, reference: &str, archived: bool) -> Result<Session> {
         let mut connection = self.connection()?;
         let transaction = write_transaction(&mut connection)?;

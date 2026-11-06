@@ -238,7 +238,52 @@ ctx handoff continue <handoff-id>
 Session listing, native resume, and model selection depend on the active agent's
 reported capabilities. ContextWake reports unsupported features directly.
 
-## Example: Switching AI Coding Agents
+## Example: Claude Code, Codex CLI and Gemini CLI on one project
+
+Each agent keeps its own conversation history; nothing is merged between them.
+ContextWake carries the working context: a checkpoint of the project state, a
+short excerpt of the previous agent's recent conversation, and a handoff that
+becomes the next agent's first message. Profiles use your existing agent
+sign-ins (see `ctx profile add --help`).
+
+```powershell
+cd D:\Projects\app
+ctx profile add claude --agent claude
+ctx profile add codex  --agent codex --model gpt-6-luna
+ctx profile add gemini --agent gemini
+ctx profile use claude --handoff --launch   # start or continue in Claude Code
+# ...work in Claude Code, then quit it...
+ctx profile use codex --handoff --launch    # checkpoint + Claude excerpt -> Codex CLI
+# ...work in Codex CLI, then quit it...
+ctx profile use gemini --handoff --launch   # -> Gemini CLI (new session)
+ctx profile use claude --handoff --launch   # resumes the earlier Claude session + delivers what changed
+```
+
+Before launching, ContextWake prints its decision: "Resuming Claude Code session
+... and delivering handoff ..." when the profile has a known session in the
+workspace and the agent's native resume is verified, otherwise "Starting a new
+... session". Pass `--new-session` to always start fresh. After the agent exits,
+ContextWake looks for the session the launch used in the agent's own local
+session store and checks its transcript for the handoff's launch marker. It
+reports "Native Resume + Handoff" only when the marker is in the session that
+was to be resumed, and "Restored from Handoff" when it is in a new session;
+otherwise it says that delivery could not be confirmed, and whether the
+transcript lacked the marker or no transcript could be checked (the agent's
+session store did not show which session the launch used). The same flow
+is in the TUI: switch profile, review the handoff preview (target workspace,
+destination profile, resume or new; N forces a new session), press Enter.
+
+| Agent | Continue from a handoff | Native resume + handoff | Conversation excerpt |
+| --- | --- | --- | --- |
+| Claude Code | yes | when `ctx agent info claude` reports native resume as verified | from local transcripts |
+| OpenAI Codex CLI | yes | when `ctx agent info codex` reports native resume as verified | from local rollouts |
+| Gemini CLI | yes | experimental, opt-in; not verified by ContextWake | documented format, not verified |
+| Other agents | new session only | no | no |
+
+Turn excerpts off with `ctx config set --capture-conversation-excerpts false`
+or per command with `--no-conversation`.
+
+## Example: Switching AI Coding Agents step by step
 
 This example moves from GitHub Copilot CLI to Codex CLI. The agents do not share
 the same native conversation; ContextWake carries the accessible project state
@@ -284,8 +329,11 @@ Codex CLI
 Restored from Handoff
 ```
 
-Previewing is separate from launching. `ctx handoff continue` starts a new agent
-session using the handoff; it does not claim to transfer the original chat.
+Previewing is separate from launching. `ctx handoff continue` delivers the
+handoff into the active profile's agent: it resumes that profile's own earlier
+session in the workspace when the agent's native resume is verified, otherwise
+it starts a new session (`--new-session` forces one). It never claims to
+transfer the original chat.
 
 ## Native Resume vs Portable Handoff
 
@@ -296,6 +344,10 @@ same-agent, same-profile session.
 project information such as the workspace, branch, changed files, current
 objective and task, completed work, decisions, constraints, Git state, known
 issues, pending work, and checkpoints into a new session.
+
+**Native Resume + Handoff** combines both when you return to an agent: the
+agent resumes its own earlier session in the workspace and receives a handoff
+with what happened in other agents since its last turn.
 
 ContextWake does not transfer credentials, hidden model reasoning,
 chain-of-thought, or inaccessible provider state.

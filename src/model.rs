@@ -382,6 +382,11 @@ pub struct Checkpoint {
     pub validation_results: Vec<ValidationResult>,
     pub created_at: DateTime<Utc>,
     pub redaction_status: RedactionStatus,
+    /// Recent conversation of the source agent in this workspace (checkpoint
+    /// schema v3). Absent in v1 and v2 checkpoints and when nothing was
+    /// captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation: Option<ConversationExcerpt>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
