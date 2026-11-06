@@ -97,7 +97,14 @@ Silicon.
 ```
 
 The installer uses `%LOCALAPPDATA%\ContextWake\bin` and adds it to your user
-`PATH` when needed. Administrator access is not required.
+`PATH` when needed. It appends only that directory and leaves every other entry,
+including unexpanded `%VARIABLE%` references, unchanged. Administrator access is
+not required. A custom `-InstallDir` must be an absolute path.
+
+Windows requirements: 64-bit (x86_64) Windows 10 or 11. Releases after
+`v0.1.0-alpha.3` link the C runtime statically and need nothing else;
+`v0.1.0-alpha.3` and earlier also need the Microsoft Visual C++ 2015-2022
+Redistributable (x64), which most developer machines already have.
 
 ### Windows Command Prompt
 
@@ -142,7 +149,9 @@ cargo build --release --locked
 Run `target\release\ctx.exe` on Windows or `target/release/ctx` on Linux and
 macOS. Building from source is the only installation method that requires Rust.
 
-To update, rerun the same installer command. To uninstall, run
+To update, rerun the same installer command. On Windows this also works while
+`ctx` is running; the replaced executable is deleted by the next install or
+uninstall after that process exits. To uninstall, run
 `scripts/uninstall.ps1` on Windows or `scripts/uninstall.sh` on Linux/macOS;
 only the binaries and installer-owned PATH entry are removed, while profiles,
 workspaces, sessions, checkpoints, handoffs, and configuration are preserved.
