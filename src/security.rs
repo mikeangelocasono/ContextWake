@@ -6,7 +6,7 @@ use std::path::{Component, Path};
 use std::str::Chars;
 use std::sync::OnceLock;
 
-use regex::{Captures, Regex};
+use regex::{Captures, Match, Regex};
 use sha2::{Digest, Sha256};
 
 use crate::error::{ContextWakeError, Result};
@@ -47,12 +47,16 @@ impl RedactionReport {
 ///   reorder or hide displayed text, or carry instructions that a reviewer
 ///   cannot see but a coding agent reads. Zero-width joiners and non-joiners
 ///   are kept only between two non-ASCII characters, where emoji sequences
-///   and Arabic, Persian and Indic scripts need them.
+///   and Arabic, Persian and Indic scripts need them. Variation selectors
+///   U+FE00 to U+FE0F are kept only one at a time directly after a non-ASCII
+///   character (emoji presentation) or in a keycap sequence such as `1️⃣`;
+///   runs of them, the supplementary selectors U+E0100 to U+E01EF and the
+///   Hangul fillers can encode hidden data, so they are removed.
 ///
 /// The result is stable: sanitizing it again returns it unchanged.
 pub fn sanitize_terminal(input: &str) -> String {
     let mut output = String::with_capacity(input.len());
-    let mut has_joiner = false;
+    let mut has_contextual = false;
     let mut chars = input.chars().peekable();
     while let Some(ch) = chars.next() {
         match ch {
@@ -60,16 +64,27 @@ pub fn sanitize_terminal(input: &str) -> String {
             '\r' if chars.peek() == Some(&'\n') => output.push('\r'),
             '\r' | '\u{2028}' | '\u{2029}' => output.push('\n'),
             '\n' | '\t' => output.push(ch),
-            ZERO_WIDTH_NON_JOINER | ZERO_WIDTH_JOINER => {
-                has_joiner = true;
+            _ if is_joiner(ch) || is_variation_selector(ch) => {
+                has_contextual = true;
                 output.push(ch);
             }
             _ if ch.is_control() || is_hidden_format_character(ch) => {}
             _ => output.push(ch),
         }
     }
-    if has_joiner {
+    if has_contextual {
+        // Selectors first: whether one is kept depends only on the base
+        // character before it, which neither pass removes. Joiners are then
+        // judged against the selectors that remain.
         let kept = output.chars().collect::<Vec<_>>();
+        let kept = kept
+            .iter()
+            .enumerate()
+            .filter(|&(index, &ch)| {
+                !is_variation_selector(ch) || selector_is_attached(&kept, index)
+            })
+            .map(|(_, &ch)| ch)
+            .collect::<Vec<_>>();
         output = kept
             .iter()
             .enumerate()
@@ -106,6 +121,8 @@ pub fn display_path(path: &Path) -> String {
         .map(|(index, &ch)| {
             let unsafe_character = if is_joiner(ch) {
                 !joiner_is_attached(&chars, index)
+            } else if is_variation_selector(ch) {
+                !selector_is_attached(&chars, index)
             } else {
                 ch.is_control()
                     || is_hidden_format_character(ch)
@@ -163,7 +180,8 @@ fn skip_escape_sequence(chars: &mut Peekable<Chars<'_>>) {
 /// the soft hyphen, the Arabic letter mark, the Mongolian vowel separator,
 /// the zero-width space, left-to-right and right-to-left marks,
 /// bidirectional embeddings, overrides and isolates, the word joiner and
-/// invisible operators, interlinear annotation controls, and tag characters.
+/// invisible operators, interlinear annotation controls, tag characters, the
+/// supplementary variation selectors and the Hangul fillers.
 fn is_hidden_format_character(ch: char) -> bool {
     matches!(
         ch,
@@ -175,8 +193,40 @@ fn is_hidden_format_character(ch: char) -> bool {
             | '\u{202a}'..='\u{202e}'
             | '\u{2060}'..='\u{206f}'
             | '\u{fff9}'..='\u{fffb}'
+            | '\u{115f}'..='\u{1160}'
+            | '\u{3164}'
+            | '\u{ffa0}'
             | '\u{e0000}'..='\u{e007f}'
+            | '\u{e0100}'..='\u{e01ef}'
     )
+}
+
+const COMBINING_ENCLOSING_KEYCAP: char = '\u{20e3}';
+
+fn is_variation_selector(ch: char) -> bool {
+    matches!(ch, '\u{fe00}'..='\u{fe0f}')
+}
+
+/// A variation selector picks the text or emoji form of the character just
+/// before it. One is kept after a visible non-ASCII character, or after `0`
+/// to `9`, `#` or `*` in a keycap sequence; a run of selectors, or one after
+/// other ASCII text, only carries hidden data.
+fn selector_is_attached(chars: &[char], index: usize) -> bool {
+    let Some(&base) = index
+        .checked_sub(1)
+        .and_then(|position| chars.get(position))
+    else {
+        return false;
+    };
+    if base.is_ascii() {
+        return (base.is_ascii_digit() || matches!(base, '#' | '*'))
+            && chars.get(index + 1) == Some(&COMBINING_ENCLOSING_KEYCAP);
+    }
+    !base.is_whitespace()
+        && !base.is_control()
+        && !is_joiner(base)
+        && !is_variation_selector(base)
+        && !is_hidden_format_character(base)
 }
 
 fn is_joiner(ch: char) -> bool {
@@ -625,17 +675,176 @@ fn key_words(key: &str) -> Vec<String> {
 }
 
 fn assigned_secret_value(text: &str, captures: &Captures<'_>) -> Option<Range<usize>> {
-    let key = secret_key_kind(captures.name("key")?.as_str())?;
-    let start = captures.get(0)?.end();
+    let name = captures.name("key")?.as_str();
+    let key = secret_key_kind(name)?;
+    let whole = captures.get(0)?;
+    let start = whole.end();
+    let separator = captures.name("separator")?;
+    if let Some(line) = LineAssignment::at(text, whole.start(), &separator, start) {
+        return line.secret_value(text, name, key);
+    }
     if let Some(secret) = secret_value_at(text, start, key) {
         return Some(secret);
     }
     // `NAME: Type = value` declarations (Rust, TypeScript, Python, Kotlin):
     // the assigned value follows the type annotation.
-    if captures.name("separator")?.as_str() != ":" {
+    if separator.as_str() != ":" {
         return None;
     }
     secret_value_at(text, declared_value_start(text, start)?, key)
+}
+
+/// Longest rest of a line judged as one [`LineAssignment`] value. A longer
+/// line is judged like an inline value, which keeps scanning bounded.
+const LINE_VALUE_BYTES: usize = 1024;
+/// Shortest value made only of lowercase letters and underscores that a
+/// [`LineAssignment`] treats as a secret, such as `correcthorsebattery`.
+const MIN_SECRET_WORD_CHARS: usize = 8;
+
+/// An unquoted `NAME=value` or `name: value` assignment that is the only
+/// thing on its line, as in dotenv, INI, shell, properties and YAML files.
+/// The value runs to the end of the line, before trailing whitespace or an
+/// inline ` #` comment, so a secret containing `&`, `;`, `,` or brackets is
+/// judged and redacted whole. Values with spaces, connection and query
+/// strings (`a;Server=db`, `a&b=c`) and quoted values are judged like inline
+/// values instead.
+struct LineAssignment {
+    value: Range<usize>,
+    /// `name = value`: a space before the `=` is typical of code and INI
+    /// files, not of dotenv files.
+    spaced_equals: bool,
+}
+
+impl LineAssignment {
+    fn at(text: &str, match_start: usize, separator: &Match<'_>, start: usize) -> Option<Self> {
+        if !matches!(separator.as_str(), "=" | ":") {
+            return None;
+        }
+        // The key must start the line; only indentation may come before it
+        // (a YAML `- ` list marker is part of the matched key).
+        let before = text[..match_start].trim_end_matches([' ', '\t']);
+        if !(before.is_empty() || before.ends_with(['\n', '\r'])) {
+            return None;
+        }
+        let rest = &text[start..];
+        if rest.starts_with(['"', '\'', '`']) {
+            return None;
+        }
+        let mut line_end = rest.len();
+        for (offset, ch) in rest.char_indices() {
+            if matches!(ch, '\n' | '\r') {
+                line_end = offset;
+                break;
+            }
+            if offset >= LINE_VALUE_BYTES {
+                return None;
+            }
+        }
+        let line = rest[..line_end].trim_end();
+        let value = match line.find(char::is_whitespace) {
+            None => line,
+            Some(space) if line[space..].trim_start().starts_with('#') => &line[..space],
+            Some(_) => return None,
+        };
+        if value.is_empty() || has_inline_fields(value) {
+            return None;
+        }
+        Some(Self {
+            value: start..start + value.len(),
+            spaced_equals: separator.as_str() == "="
+                && text[..separator.start()].ends_with([' ', '\t']),
+        })
+    }
+
+    fn secret_value(&self, text: &str, name: &str, key: SecretKey) -> Option<Range<usize>> {
+        let value = &text[self.value.clone()];
+        // A trailing `,` or `;` ends a statement or an argument in code.
+        let judged = value.trim_end_matches([',', ';']);
+        if judged.is_empty() || looks_like_code_expression(judged) {
+            return None;
+        }
+        let secret = looks_like_secret_value(judged, false, key)
+            || (value == judged && self.word_is_secret(judged, name));
+        secret.then(|| self.value.clone())
+    }
+
+    /// A value of lowercase letters and underscores, such as
+    /// `correcthorsebattery` or `my_secret_pass`, that does not look like a
+    /// type, keyword or variable name.
+    fn word_is_secret(&self, value: &str, name: &str) -> bool {
+        value.chars().count() >= MIN_SECRET_WORD_CHARS
+            && value
+                .chars()
+                .all(|ch| (ch.is_alphabetic() && !ch.is_uppercase()) || ch == '_')
+            // `password = user_password` in code.
+            && (!self.spaced_equals || !value.contains('_'))
+            && !is_common_word(value)
+            && !is_code_keyword(value)
+            && !names_the_setting(value, name)
+    }
+}
+
+/// `Password=a;Server=db` or `token=a&scope=b`: several fields on one line,
+/// separated like a connection or query string.
+fn has_inline_fields(value: &str) -> bool {
+    value.match_indices([';', '&']).any(|(index, _)| {
+        let rest = &value[index + 1..];
+        let field = rest
+            .find(|ch: char| !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-')))
+            .unwrap_or(rest.len());
+        field > 0 && rest[field..].starts_with('=') && !rest[field + 1..].starts_with('=')
+    })
+}
+
+/// A call, index, generic type or macro: `os.environ["X"]`, `getpass()`,
+/// `std::env::var("X")?`, `Vec<u8>`, `${TOKEN}`. A name that mixes digits
+/// and letters (`Tr0ub4dor[2024]`) is a password, not a function.
+fn looks_like_code_expression(value: &str) -> bool {
+    let Some(open) = value.find(['(', '[', '<', '{']) else {
+        return false;
+    };
+    let head = &value[..open];
+    let digit_then_letter = head
+        .as_bytes()
+        .windows(2)
+        .any(|pair| pair[0].is_ascii_digit() && pair[1].is_ascii_alphabetic());
+    head.starts_with(|ch: char| ch.is_alphabetic() || matches!(ch, '_' | '$'))
+        && head
+            .chars()
+            .all(|ch| ch.is_alphanumeric() || matches!(ch, '_' | '$' | '.' | ':' | '!'))
+        && !digit_then_letter
+        && value
+            .trim_end_matches(['?', '!', '.'])
+            .ends_with([')', ']', '>', '}'])
+}
+
+/// `password: password`, `api_key=api_key`, `DB_PASSWORD=db_password`: the
+/// value repeats the setting's name, as in code that passes a variable on.
+fn names_the_setting(value: &str, name: &str) -> bool {
+    let value = key_words(value).concat();
+    let words = key_words(name);
+    (0..words.len()).any(|first| words[first..].concat() == value)
+}
+
+/// Lowercase type names and schema keywords that follow `name:` in code and
+/// configuration schemas.
+fn is_code_keyword(value: &str) -> bool {
+    [
+        "readonly",
+        "nullable",
+        "unsigned",
+        "function",
+        "interface",
+        "datetime",
+        "timestamp",
+        "bytearray",
+        "external",
+        "sensitive",
+        "generated",
+        "inherited",
+    ]
+    .iter()
+    .any(|word| value.eq_ignore_ascii_case(word))
 }
 
 /// Bytes of an assigned value inspected to judge it. Longer values are
@@ -1047,6 +1256,32 @@ mod tests {
             .map(|ch| char::from_u32(0xe_0000 + u32::from(ch)).expect("tag character"))
             .collect::<String>();
         assert_eq!(sanitize_terminal(&format!("ok{smuggled}\u{e007f}")), "ok");
+        // So can variation selectors: 256 of them encode a byte each.
+        let smuggled = (0..200_u32)
+            .map(|index| char::from_u32(0xe_0100 + index % 0xf0).expect("selector"))
+            .collect::<String>();
+        let payload = format!("Add CSV tests\u{fe0f}{smuggled}");
+        assert_eq!(sanitize_terminal(&payload), "Add CSV tests");
+        assert!(contains_terminal_control_data(&payload));
+        assert_eq!(
+            sanitize_terminal("x\u{fe00}\u{fe01}\u{fe0f}y \u{2764}\u{fe0f}\u{fe0e}\u{fe0f}"),
+            "xy \u{2764}\u{fe0f}"
+        );
+        // Emoji presentation and keycap sequences keep their single selector.
+        let emoji = "\u{2764}\u{fe0f} 1\u{fe0f}\u{20e3} #\u{fe0f}\u{20e3} \u{a9}\u{fe0f}";
+        assert_eq!(sanitize_terminal(emoji), emoji);
+        assert_eq!(
+            sanitize_terminal("1\u{fe0f}2\u{fe0f}\u{fe0f}\u{20e3}"),
+            "12\u{20e3}"
+        );
+        // Hangul fillers render as blank space.
+        for filler in ['\u{115f}', '\u{1160}', '\u{3164}', '\u{ffa0}'] {
+            assert_eq!(sanitize_terminal(&format!("a{filler}b")), "ab");
+        }
+        assert_eq!(
+            display_path(Path::new("dir\u{fe0f}\u{3164}x")),
+            "dir\u{fffd}\u{fffd}x"
+        );
         // A byte order mark is harmless and common in Windows-authored files.
         assert_eq!(
             sanitize_terminal("\u{feff}Keep changes local.\r\n"),
@@ -1517,6 +1752,42 @@ mod tests {
                 "",
                 "openai_api_key",
             ),
+            // Letters-only values on their own line (dotenv, INI, YAML).
+            ("password=", "correcthorsebattery", "", "assigned_secret"),
+            ("secret: ", "mysecretvalue", "", "assigned_secret"),
+            ("api_key=", "abcdefghijkl", "", "assigned_secret"),
+            ("password: ", "mysecretpassword", "\n", "assigned_secret"),
+            (
+                "DB_PASSWORD=",
+                "correcthorsebatterystaple",
+                "\r\n",
+                "assigned_secret",
+            ),
+            ("password=", "my_secret_pass", "", "assigned_secret"),
+            ("password = ", "correcthorsebattery", "", "assigned_secret"),
+            ("  - token: ", "abcdefghijk", "", "assigned_secret"),
+            // Symbols that end inline values stay inside a line's value.
+            (
+                "DB_PASSWORD=",
+                "Tr0ub4dor&3xyz",
+                " # prod",
+                "assigned_secret",
+            ),
+            ("PASSWORD=", "p(4ssw0rd)x", "", "assigned_secret"),
+            ("SECRET=", "ab,cd;ef9876", "", "assigned_secret"),
+            (
+                "export DB_PASSWORD=",
+                "Tr0ub4dor[2024]",
+                "",
+                "assigned_secret",
+            ),
+            ("api_key: ", "9x<y>{z}", "\n", "assigned_secret"),
+            (
+                "Password=",
+                "Sup3rSecret",
+                ";Server=db;Database=app",
+                "assigned_secret",
+            ),
         ];
         for (before, secret, after, rule) in cases {
             let text = format!("{before}{secret}{after}");
@@ -1598,6 +1869,23 @@ mod tests {
             "Basic usage: run the tool",
             "https://user@host/path and http://[::1]:8080/x",
             "Rotate the PRIVATE KEY before release",
+            // Whole-line assignments in code.
+            "self.password = password",
+            "password = user_password",
+            "    password=password,",
+            "    secret=get_secret(),",
+            "    token=request.headers.get(\"X-Token\"),",
+            "token = tokens[0]",
+            "api_key = os.getenv(\"API_KEY\")",
+            "  password: hashedPassword,",
+            "  token: accessToken",
+            "token: str",
+            "password: string;",
+            "secret: Vec<u8>,",
+            "api_key: DATABASE_API_KEY",
+            "password: required",
+            "secret: sensitive",
+            "PASSWORD=${DB_PASSWORD}",
         ];
         for sample in samples {
             let report = redact(sample);
